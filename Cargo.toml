@@ -1,0 +1,3 @@
+[workspace]
+members = ["esp-tui"]
+resolver = "2"

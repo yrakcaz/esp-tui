@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: clippy, rustfmt
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Run Rustfmt
+        run: cargo fmt -- --check
+
+      - name: Run Clippy
+        run: cargo clippy -- -D clippy::all -D clippy::cargo -D clippy::pedantic
+
+      - name: Run Tests
+        run: RUST_BACKTRACE=1 cargo test --verbose
