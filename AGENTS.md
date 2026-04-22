@@ -98,6 +98,7 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 
 ### Generated Text
 - Do not use em-dashes in any generated text (README, doc comments, commit messages, etc.); use a colon, comma, or rewrite the sentence instead
+- Do not add `Co-Authored-By:` trailers to commit messages; AI tools are not collaborators
 
 ### Functional over Imperative
 - Prefer functional style over imperative
