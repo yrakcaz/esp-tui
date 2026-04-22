@@ -1,4 +1,4 @@
-# esptui
+# esp32-tui
 
 ESP32 developer workstation for the terminal. A persistent ratatui TUI combining serial monitoring, flash controls, and live device telemetry into a single interface. Language-agnostic from the user's perspective; works with any ESP32 firmware (C, C++, Rust, Arduino).
 
@@ -8,8 +8,8 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 
 | Crate | Purpose | Status |
 |---|---|---|
-| `esp-tui` | Host-side ratatui TUI application | Active |
-| `esptui-agent` | ESP32-side no_std telemetry agent (C-ABI static lib) | Deferred to Phase 3 |
+| `esp32-tui` | Host-side ratatui TUI application | Active |
+| `esp32-tui-agent` | ESP32-side no_std telemetry agent (C-ABI static lib) | Deferred to Phase 3 |
 
 ---
 
@@ -30,7 +30,7 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 ## Layout
 
 ```
-┌─ esptui ──────────────────────────────────────────────────────┐
+┌─ esp32-tui ───────────────────────────────────────────────────┐
 │ [F]lash  [R]eset  [E]rase  [C]onnect   Port: /dev/ttyUSB0 ▼  │
 ├──────────────────────────┬────────────────────────────────────┤
 │  Serial Monitor          │  System Inspector                  │
@@ -63,14 +63,14 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - Flash progress bar in bottom pane
 - Board info display on connect
 - Partition table viewer popup
-- ELF path configuration (`--elf`, `esptui.toml`)
+- ELF path configuration (`--elf`, `esp32-tui.toml`)
 
 ### Phase 3: Agent + System Inspector
-- `esptui-agent` crate (FreeRTOS task, heap/CPU/task sampling, COBS framing)
-- C ABI (`esptui_agent_start()` via `#[no_mangle] extern "C"`)
+- `esp32-tui-agent` crate (FreeRTOS task, heap/CPU/task sampling, COBS framing)
+- C ABI (`esp32_tui_agent_start()` via `#[no_mangle] extern "C"`)
 - Pre-compiled `.a` variants for all chips, bundled via `include_bytes!`
 - In-TUI agent install flow (`[A]` keybinding)
-- `esptui agent install` CLI command
+- `esp32-tui agent install` CLI command
 - Host-side COBS demuxer (magic header `0xAE 0x73`)
 - System Inspector pane: heap gauges, CPU bars, task list
 
@@ -80,7 +80,7 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - WiFi stats pane
 - Defmt log format support
 - Multi-device tab switching
-- `esptui.toml` config file
+- `esp32-tui.toml` config file
 
 ---
 
@@ -126,22 +126,3 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - **`AGENTS.md`**: update when new conventions are established or tech stack decisions are made
 - **`.github/workflows/ci.yml`**: update when new system dependencies, toolchain requirements, or build steps are introduced
 - **`cargo fmt` and `cargo clippy`**: run after every code change and fix all issues before committing; CI denies all clippy warnings
-
----
-
-## Non-Goals
-
-- No JTAG / debugger; use `probe-rs`
-- No IDE plugin; terminal only
-- No ESP-IDF SDK management; use `esp-generate`
-- No Windows-first support; Linux/macOS primary, Windows best-effort
-
----
-
-## Open Design Questions
-
-1. **COBS magic header collision**: `0xAE 0x73` must never appear in valid UTF-8 log output; verify.
-2. **Agent on no_std / Embassy**: initial agent targets `esp-idf-svc` (std). Embassy variant needs separate approach to FreeRTOS introspection.
-3. **Defmt demuxing**: defmt frames + agent frames both on the same UART; framing strategy TBD.
-4. **Flash port handoff**: espflash takes ownership of serial port during flashing; TUI must cleanly yield and reclaim without losing buffered logs.
-5. **Multi-UART routing**: ESP32-S3/C3/C6 USB-JTAG-SERIAL may allow routing agent telemetry to a second virtual COM port, eliminating multiplexing entirely.

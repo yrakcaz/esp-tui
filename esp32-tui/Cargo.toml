@@ -2,12 +2,12 @@
 workspace = true
 
 [package]
-name = "esp-tui"
+name = "esp32-tui"
 version = "0.1.0"
 edition = "2021"
 description = "ESP32 developer workstation for the terminal"
 license = "MIT"
-repository = "https://github.com/yrakcaz/esp-tui"
+repository = "https://github.com/yrakcaz/esp32-tui"
 readme = "../README.md"
 keywords = ["esp32", "tui", "serial", "embedded", "ratatui"]
 categories = ["command-line-utilities", "embedded", "development-tools"]

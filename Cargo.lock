@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "esp-tui"
+name = "esp32-tui"
 version = "0.1.0"
