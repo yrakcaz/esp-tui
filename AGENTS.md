@@ -1,6 +1,6 @@
 # esptui
 
-ESP32 developer workstation for the terminal. A persistent ratatui TUI combining serial monitoring, flash controls, and live device telemetry into a single interface. Language-agnostic from the user's perspective — works with any ESP32 firmware (C, C++, Rust, Arduino).
+ESP32 developer workstation for the terminal. A persistent ratatui TUI combining serial monitoring, flash controls, and live device telemetry into a single interface. Language-agnostic from the user's perspective; works with any ESP32 firmware (C, C++, Rust, Arduino).
 
 ---
 
@@ -49,7 +49,7 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 
 ## Implementation Phases
 
-### Phase 1 — Serial Monitor MVP
+### Phase 1: Serial Monitor MVP
 - Basic ratatui layout (monitor pane, inspector pane, flash bar)
 - UART stream rendering
 - ESP-IDF log level color coding (ERROR/WARN/INFO/DEBUG/VERBOSE)
@@ -58,14 +58,14 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - Port auto-detection
 - `--demo` flag: synthetic log output for UI dev without hardware
 
-### Phase 2 — Flash Integration
+### Phase 2: Flash Integration
 - espflash library integration
 - Flash progress bar in bottom pane
 - Board info display on connect
 - Partition table viewer popup
 - ELF path configuration (`--elf`, `esptui.toml`)
 
-### Phase 3 — Agent + System Inspector
+### Phase 3: Agent + System Inspector
 - `esptui-agent` crate (FreeRTOS task, heap/CPU/task sampling, COBS framing)
 - C ABI (`esptui_agent_start()` via `#[no_mangle] extern "C"`)
 - Pre-compiled `.a` variants for all chips, bundled via `include_bytes!`
@@ -74,7 +74,7 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - Host-side COBS demuxer (magic header `0xAE 0x73`)
 - System Inspector pane: heap gauges, CPU bars, task list
 
-### Phase 4 — Polish
+### Phase 4: Polish
 - Panic backtrace decoding (addr2line + ELF)
 - Historical sparklines for heap/CPU
 - WiFi stats pane
@@ -87,24 +87,32 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 ## Code Style
 
 ### Comments
-- Do not add comments to explain what code does — the code should be clear enough to read on its own
+- Do not add comments to explain what code does; the code should be clear enough to read on its own
 - Only add a comment when there is a specific reason to believe the logic will not be self-evident to a reader (e.g. a non-obvious algorithm, an intentional workaround, or an external constraint)
 - Never add boilerplate or redundant comments such as `// initialize`, `// return result`, or anything that merely restates the code
 
+### Library Documentation (library crates only)
+- Public functions/methods must document `# Arguments`, `# Returns`, and `# Errors` sections
+- Public structs/enums must have a doc comment describing their purpose
+- Public fields must have inline doc comments explaining their role
+
+### Generated Text
+- Do not use em-dashes in any generated text (README, doc comments, commit messages, etc.); use a colon, comma, or rewrite the sentence instead
+
 ### Functional over Imperative
 - Prefer functional style over imperative
-- Avoid using `return` statements — use expression-based returns instead
+- Avoid using `return` statements; use expression-based returns instead
 - Use `match`, `if let`, `map`, `and_then`, `unwrap_or_else` over early returns
 - Prefer iterator methods (`map`, `filter`, `fold`) over `for` loops with mutation
 
 ### Error Handling
 - Use `anyhow::Result` for error handling
-- Use `?` operator — avoid `.unwrap()` except in tests
+- Use `?` operator; avoid `.unwrap()` except in tests
 - Prefer `ok_or_else` / `map_err` over `match` for Option/Result conversions
 
 ### Formatting & Linting
 - Run `cargo fmt` after every code change (`max_width = 85` in `.rustfmt.toml`)
-- Run `cargo clippy` and fix all warnings — `clippy::all`, `clippy::cargo`, and `clippy::pedantic` are denied via `[workspace.lints]` in `Cargo.toml`
+- Run `cargo clippy` and fix all warnings; `clippy::all`, `clippy::cargo`, and `clippy::pedantic` are denied via `[workspace.lints]` in `Cargo.toml`
 - Follow standard Rust naming conventions (`snake_case` for functions/modules, `PascalCase` for types)
 
 ### Dependency Management
@@ -113,27 +121,27 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 
 ## Maintenance
 
-- **`TODO.md`** — check off items as they are completed; add new items when scope expands
-- **`README.md`** — update when new features are usable or installation/usage instructions change
-- **`AGENTS.md`** — update when new conventions are established or tech stack decisions are made
-- **`.github/workflows/ci.yml`** — update when new system dependencies, toolchain requirements, or build steps are introduced
-- **`cargo fmt` and `cargo clippy`** — run after every code change and fix all issues before committing; CI denies all clippy warnings
+- **`TODO.md`**: check off items as they are completed; add new items when scope expands
+- **`README.md`**: update when new features are usable or installation/usage instructions change
+- **`AGENTS.md`**: update when new conventions are established or tech stack decisions are made
+- **`.github/workflows/ci.yml`**: update when new system dependencies, toolchain requirements, or build steps are introduced
+- **`cargo fmt` and `cargo clippy`**: run after every code change and fix all issues before committing; CI denies all clippy warnings
 
 ---
 
 ## Non-Goals
 
-- No JTAG / debugger — use `probe-rs`
-- No IDE plugin — terminal only
-- No ESP-IDF SDK management — use `esp-generate`
-- No Windows-first support — Linux/macOS primary, Windows best-effort
+- No JTAG / debugger; use `probe-rs`
+- No IDE plugin; terminal only
+- No ESP-IDF SDK management; use `esp-generate`
+- No Windows-first support; Linux/macOS primary, Windows best-effort
 
 ---
 
 ## Open Design Questions
 
-1. **COBS magic header collision**: `0xAE 0x73` must never appear in valid UTF-8 log output — verify.
+1. **COBS magic header collision**: `0xAE 0x73` must never appear in valid UTF-8 log output; verify.
 2. **Agent on no_std / Embassy**: initial agent targets `esp-idf-svc` (std). Embassy variant needs separate approach to FreeRTOS introspection.
-3. **Defmt demuxing**: defmt frames + agent frames both on the same UART — framing strategy TBD.
-4. **Flash port handoff**: espflash takes ownership of serial port during flashing — TUI must cleanly yield and reclaim without losing buffered logs.
+3. **Defmt demuxing**: defmt frames + agent frames both on the same UART; framing strategy TBD.
+4. **Flash port handoff**: espflash takes ownership of serial port during flashing; TUI must cleanly yield and reclaim without losing buffered logs.
 5. **Multi-UART routing**: ESP32-S3/C3/C6 USB-JTAG-SERIAL may allow routing agent telemetry to a second virtual COM port, eliminating multiplexing entirely.

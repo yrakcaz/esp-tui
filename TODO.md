@@ -40,6 +40,16 @@
 - [ ] In-TUI agent install flow (`[A]` keybinding)
 - [ ] `esptui agent install` CLI subcommand
 
+## Release
+
+- [ ] Make the repo public
+- [ ] Add CI and license badges to README
+- [ ] Publish `esp-tui` to crates.io
+- [ ] Add crates.io version badge to README
+- [ ] Pre-built binaries via GitHub Releases (Linux x86_64, macOS x86_64/ARM64)
+- [ ] Homebrew tap
+- [ ] Install script (`curl -fsSL https://esptui.dev/install.sh | sh`)
+
 ## Phase 4 — Polish
 
 - [ ] Panic/backtrace decoder: addr2line + ELF symbol resolution
