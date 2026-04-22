@@ -1,3 +1,8 @@
 [workspace]
 members = ["esp-tui"]
 resolver = "2"
+
+[workspace.lints.clippy]
+all = "deny"
+cargo = "deny"
+pedantic = "deny"

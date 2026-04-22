@@ -30,7 +30,7 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Run Clippy
-        run: cargo clippy -- -D clippy::all -D clippy::cargo -D clippy::pedantic
+        run: cargo clippy
 
       - name: Run Tests
         run: RUST_BACKTRACE=1 cargo test --verbose

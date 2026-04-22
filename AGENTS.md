@@ -104,7 +104,7 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 
 ### Formatting & Linting
 - Run `cargo fmt` after every code change (`max_width = 85` in `.rustfmt.toml`)
-- Run `cargo clippy` and fix all warnings — `clippy::all`, `clippy::cargo`, and `clippy::pedantic` are denied
+- Run `cargo clippy` and fix all warnings — `clippy::all`, `clippy::cargo`, and `clippy::pedantic` are denied via `[workspace.lints]` in `Cargo.toml`
 - Follow standard Rust naming conventions (`snake_case` for functions/modules, `PascalCase` for types)
 
 ### Dependency Management
@@ -117,6 +117,7 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - **`README.md`** — update when new features are usable or installation/usage instructions change
 - **`AGENTS.md`** — update when new conventions are established or tech stack decisions are made
 - **`.github/workflows/ci.yml`** — update when new system dependencies, toolchain requirements, or build steps are introduced
+- **`cargo fmt` and `cargo clippy`** — run after every code change and fix all issues before committing; CI denies all clippy warnings
 
 ---
 
