@@ -1,5 +1,5 @@
 [workspace]
-members = ["esp32-tui"]
+members = ["esp-tui"]
 resolver = "2"
 
 [workspace.lints.clippy]

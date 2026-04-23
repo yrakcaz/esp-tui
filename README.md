@@ -1,4 +1,4 @@
-# esp32-tui
+# esp-tui
 
 ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 serial monitoring, flash controls, and live device telemetry into a single interface.

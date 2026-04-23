@@ -1,4 +1,4 @@
-# esp32-tui
+# esp-tui
 
 ESP32 developer workstation for the terminal. A persistent ratatui TUI combining serial monitoring, flash controls, and live device telemetry into a single interface. Language-agnostic from the user's perspective; works with any ESP32 firmware (C, C++, Rust, Arduino).
 
@@ -8,8 +8,8 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 
 | Crate | Purpose | Status |
 |---|---|---|
-| `esp32-tui` | Host-side ratatui TUI application | Active |
-| `esp32-tui-agent` | ESP32-side no_std telemetry agent (C-ABI static lib) | Deferred to Phase 3 |
+| `esp-tui` | Host-side ratatui TUI application | Active |
+| `esp-tui-agent` | ESP32-side no_std telemetry agent (C-ABI static lib) | Deferred to Phase 3 |
 
 ---
 
@@ -30,7 +30,7 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 ## Layout
 
 ```
-┌─ esp32-tui ───────────────────────────────────────────────────┐
+┌─ esp-tui ─────────────────────────────────────────────────────┐
 │ [F]lash  [R]eset  [E]rase  [C]onnect   Port: /dev/ttyUSB0 ▼  │
 ├──────────────────────────┬────────────────────────────────────┤
 │  Serial Monitor          │  System Inspector                  │
@@ -63,14 +63,14 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - Flash progress bar in bottom pane
 - Board info display on connect
 - Partition table viewer popup
-- ELF path configuration (`--elf`, `esp32-tui.toml`)
+- ELF path configuration (`--elf`, `esp-tui.toml`)
 
 ### Phase 3: Agent + System Inspector
-- `esp32-tui-agent` crate (FreeRTOS task, heap/CPU/task sampling, COBS framing)
-- C ABI (`esp32_tui_agent_start()` via `#[no_mangle] extern "C"`)
+- `esp-tui-agent` crate (FreeRTOS task, heap/CPU/task sampling, COBS framing)
+- C ABI (`esp_tui_agent_start()` via `#[no_mangle] extern "C"`)
 - Pre-compiled `.a` variants for all chips, bundled via `include_bytes!`
 - In-TUI agent install flow (`[A]` keybinding)
-- `esp32-tui agent install` CLI command
+- `esp-tui agent install` CLI command
 - Host-side COBS demuxer (magic header `0xAE 0x73`)
 - System Inspector pane: heap gauges, CPU bars, task list
 
@@ -80,7 +80,7 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - WiFi stats pane
 - Defmt log format support
 - Multi-device tab switching
-- `esp32-tui.toml` config file
+- `esp-tui.toml` config file
 
 ---
 
