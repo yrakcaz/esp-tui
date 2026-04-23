@@ -17,10 +17,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          override: true
           components: clippy, rustfmt
 
       - name: Build
@@ -30,7 +28,7 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Run Clippy
-        run: cargo clippy
+        run: cargo clippy --all-targets
 
       - name: Run Tests
-        run: RUST_BACKTRACE=1 cargo test --verbose
+        run: RUST_BACKTRACE=1 cargo test --all-targets --verbose
