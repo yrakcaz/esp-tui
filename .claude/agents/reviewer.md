@@ -41,8 +41,17 @@ You are a senior Rust engineer reviewing code for esp-tui, an ESP32 TUI applicat
 ## Performance
 
 - Unnecessary allocations in hot paths (serial read loop, render loop)
-- Cloning where a borrow suffices
 - Blocking calls on the async executor without `spawn_blocking`
+
+## Ownership and Copying
+
+Flag unnecessary cloning or copying anywhere in the codebase, not just hot paths:
+
+- `.clone()` on a value where a reference or reborrow would work
+- Passing owned values into functions that only need a reference
+- Deriving or implementing `Copy` on types that are large or contain heap data
+- Collecting into a `Vec` only to immediately iterate, when an iterator chain suffices
+- `.to_string()` / `.to_owned()` / `.into()` allocations that serve no purpose beyond satisfying the borrow checker where a lifetime adjustment would be cleaner
 
 ---
 

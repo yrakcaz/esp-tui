@@ -106,6 +106,12 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - Use `match`, `if let`, `map`, `and_then`, `unwrap_or_else` over early returns
 - Prefer iterator methods (`map`, `filter`, `fold`) over `for` loops with mutation
 
+### Ownership and Copying
+- Prefer borrowing over cloning; only clone when ownership is genuinely required
+- Pass references into functions that do not need to own the value
+- Avoid `.to_string()` / `.to_owned()` / `.clone()` allocations that exist only to satisfy the borrow checker; fix the lifetime instead
+- Do not collect into a `Vec` only to immediately iterate; keep it as an iterator chain
+
 ### Error Handling
 - Use `anyhow::Result` for error handling
 - Use `?` operator; avoid `.unwrap()` except in tests
