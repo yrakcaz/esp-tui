@@ -391,14 +391,22 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
     let mut tick = interval(Duration::from_millis(250));
 
     let key_tx = tx.clone();
+    let key_shutdown = shutdown_rx.clone();
     tokio::task::spawn_blocking(move || loop {
-        match crossterm::event::read() {
-            Ok(Event::Key(key)) => {
-                if key_tx.send(event::Message::Key(key)).is_err() {
-                    break;
+        if *key_shutdown.borrow() {
+            break;
+        }
+        match crossterm::event::poll(std::time::Duration::from_millis(50)) {
+            Ok(true) => match crossterm::event::read() {
+                Ok(Event::Key(key)) => {
+                    if key_tx.send(event::Message::Key(key)).is_err() {
+                        break;
+                    }
                 }
-            }
-            Ok(_) => {}
+                Ok(_) => {}
+                Err(_) => break,
+            },
+            Ok(false) => {}
             Err(_) => break,
         }
     });
