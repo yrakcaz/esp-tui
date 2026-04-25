@@ -162,39 +162,69 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
+    use crate::filter;
+
     let filter = app.filter();
     let tags = filter.known_tags();
-    let height = (u16::try_from(tags.len())
-        .unwrap_or(u16::MAX)
-        .saturating_add(4))
-    .max(6)
+    let levels = filter::State::levels();
+
+    let tag_rows = u16::try_from(tags.len()).unwrap_or(u16::MAX);
+    let height = (2
+        + 1
+        + u16::try_from(levels.len()).unwrap_or(5)
+        + if tags.is_empty() { 0 } else { 1 + tag_rows })
     .min(area.height);
     let popup = centered_rect(40, height, area);
 
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" Filter by Tag ")
+        .title(" Filter ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
 
-    let items: Vec<ListItem> = tags
-        .iter()
-        .enumerate()
-        .map(|(i, tag)| {
+    let section_style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD);
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    items.push(ListItem::new(" Severity").style(section_style));
+    for (i, &level) in levels.iter().enumerate() {
+        let marker = if filter.is_level_hidden(level) {
+            "[ ]"
+        } else {
+            "[x]"
+        };
+        let style = if filter.cursor() == i {
+            Style::default()
+                .fg(level.color())
+                .add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default().fg(level.color())
+        };
+        items.push(
+            ListItem::new(format!("  {marker} {}", level.label().trim()))
+                .style(style),
+        );
+    }
+
+    if !tags.is_empty() {
+        items.push(ListItem::new(" Tags").style(section_style));
+        for (i, tag) in tags.iter().enumerate() {
             let marker = if filter.is_tag_hidden(tag) {
                 "[ ]"
             } else {
                 "[x]"
             };
-            let style = if i == filter.cursor() {
+            let style = if filter.cursor() == levels.len() + i {
                 Style::default().add_modifier(Modifier::REVERSED)
             } else {
                 Style::default()
             };
-            ListItem::new(format!("  {marker} {tag}")).style(style)
-        })
-        .collect();
+            items.push(ListItem::new(format!("  {marker} {tag}")).style(style));
+        }
+    }
 
     let list = List::new(items).block(block);
     frame.render_widget(list, popup);

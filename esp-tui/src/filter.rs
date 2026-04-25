@@ -2,21 +2,33 @@ use std::collections::HashSet;
 
 use crate::log;
 
-/// Tracks which ESP-IDF tags are visible and manages the filter popup state.
+const LEVELS: [log::Level; 5] = [
+    log::Level::Error,
+    log::Level::Warn,
+    log::Level::Info,
+    log::Level::Debug,
+    log::Level::Verbose,
+];
+
+/// Tracks which severity levels and ESP-IDF tags are visible, and manages
+/// the filter popup state.
 pub struct State {
     known_tags: Vec<String>,
     hidden_tags: HashSet<String>,
+    hidden_levels: HashSet<log::Level>,
     popup_open: bool,
     cursor: usize,
 }
 
 impl State {
-    /// Creates a new empty filter state with no tags and the popup closed.
+    /// Creates a new empty filter state with all levels visible, no tags, and
+    /// the popup closed.
     #[must_use]
     pub fn new() -> Self {
         Self {
             known_tags: Vec::new(),
             hidden_tags: HashSet::new(),
+            hidden_levels: HashSet::new(),
             popup_open: false,
             cursor: 0,
         }
@@ -41,39 +53,49 @@ impl State {
     ///
     /// # Returns
     ///
-    /// `true` if the entry's tag is not hidden (or the entry has no tag).
+    /// `true` if neither the entry's level nor its tag is hidden.
     #[must_use]
     pub fn is_visible(&self, entry: &log::Entry) -> bool {
-        !self.hidden_tags.contains(entry.tag())
+        !self.hidden_levels.contains(entry.level())
+            && !self.hidden_tags.contains(entry.tag())
     }
 
-    /// Toggles the visibility of the tag at the current cursor position.
+    /// Toggles the item at the current cursor position. Cursor indices 0–4
+    /// address severity levels; indices 5 and above address known tags.
     pub fn toggle_at_cursor(&mut self) {
-        let Some(tag) = self.known_tags.get(self.cursor).cloned() else {
-            return;
-        };
-        if self.hidden_tags.contains(&tag) {
-            self.hidden_tags.remove(&tag);
+        if self.cursor < LEVELS.len() {
+            let level = LEVELS[self.cursor];
+            if self.hidden_levels.contains(&level) {
+                self.hidden_levels.remove(&level);
+            } else {
+                self.hidden_levels.insert(level);
+            }
         } else {
-            self.hidden_tags.insert(tag);
+            let Some(tag) = self.known_tags.get(self.cursor - LEVELS.len()).cloned()
+            else {
+                return;
+            };
+            if self.hidden_tags.contains(&tag) {
+                self.hidden_tags.remove(&tag);
+            } else {
+                self.hidden_tags.insert(tag);
+            }
         }
     }
 
-    /// Moves the cursor by `delta` positions, clamped to the tag list bounds.
+    /// Moves the cursor by `delta` positions, clamped to the total item count.
     ///
     /// # Arguments
     ///
     /// * `delta` - Positive to move down, negative to move up.
     pub fn move_cursor(&mut self, delta: isize) {
-        let len = self.known_tags.len();
-        if len == 0 {
-            return;
-        }
-        self.cursor = self.cursor.saturating_add_signed(delta).min(len - 1);
+        let total = LEVELS.len() + self.known_tags.len();
+        self.cursor = self.cursor.saturating_add_signed(delta).min(total - 1);
     }
 
-    /// Clears all hidden tags, making every tag visible.
+    /// Clears all hidden levels and tags, making every entry visible.
     pub fn clear_hidden(&mut self) {
+        self.hidden_levels.clear();
         self.hidden_tags.clear();
     }
 
@@ -94,6 +116,12 @@ impl State {
         &self.known_tags
     }
 
+    /// Returns the fixed ordered list of all severity levels.
+    #[must_use]
+    pub fn levels() -> &'static [log::Level] {
+        &LEVELS
+    }
+
     /// Returns whether the given tag is currently hidden.
     ///
     /// # Arguments
@@ -104,7 +132,17 @@ impl State {
         self.hidden_tags.contains(tag)
     }
 
-    /// Returns the current cursor index within the known tags list.
+    /// Returns whether the given severity level is currently hidden.
+    ///
+    /// # Arguments
+    ///
+    /// * `level` - The level to check.
+    #[must_use]
+    pub fn is_level_hidden(&self, level: log::Level) -> bool {
+        self.hidden_levels.contains(&level)
+    }
+
+    /// Returns the current cursor index within the combined level + tag list.
     #[must_use]
     pub fn cursor(&self) -> usize {
         self.cursor
@@ -121,6 +159,10 @@ impl Default for State {
 mod tests {
     use super::*;
     use crate::log;
+
+    fn tag_cursor(tag_index: usize) -> usize {
+        LEVELS.len() + tag_index
+    }
 
     #[test]
     fn records_tags_once() {
@@ -142,6 +184,7 @@ mod tests {
     fn toggle_hides_and_shows_tag() {
         let mut s = State::new();
         s.record_tag("wifi");
+        s.cursor = tag_cursor(0);
         assert!(!s.is_tag_hidden("wifi"));
         s.toggle_at_cursor();
         assert!(s.is_tag_hidden("wifi"));
@@ -150,9 +193,20 @@ mod tests {
     }
 
     #[test]
-    fn is_visible_respects_hidden() {
+    fn toggle_hides_and_shows_level() {
+        let mut s = State::new();
+        assert!(!s.is_level_hidden(log::Level::Error));
+        s.toggle_at_cursor(); // cursor=0 → Error
+        assert!(s.is_level_hidden(log::Level::Error));
+        s.toggle_at_cursor();
+        assert!(!s.is_level_hidden(log::Level::Error));
+    }
+
+    #[test]
+    fn is_visible_respects_hidden_tag() {
         let mut s = State::new();
         s.record_tag("wifi");
+        s.cursor = tag_cursor(0);
         s.toggle_at_cursor();
         let entry = log::parse_line("I (1) wifi: msg");
         assert!(!s.is_visible(&entry));
@@ -161,11 +215,24 @@ mod tests {
     }
 
     #[test]
+    fn is_visible_respects_hidden_level() {
+        let mut s = State::new();
+        s.toggle_at_cursor(); // cursor=0 → hide Error
+        let error = log::parse_line("E (1) app: boom");
+        assert!(!s.is_visible(&error));
+        let info = log::parse_line("I (1) app: ok");
+        assert!(s.is_visible(&info));
+    }
+
+    #[test]
     fn clear_hidden_restores_all() {
         let mut s = State::new();
         s.record_tag("wifi");
-        s.toggle_at_cursor();
+        s.toggle_at_cursor(); // hide Error
+        s.cursor = tag_cursor(0);
+        s.toggle_at_cursor(); // hide wifi
         s.clear_hidden();
+        assert!(!s.is_level_hidden(log::Level::Error));
         assert!(!s.is_tag_hidden("wifi"));
     }
 
@@ -178,6 +245,6 @@ mod tests {
         s.move_cursor(-5_isize);
         assert_eq!(s.cursor(), 0);
         s.move_cursor(100);
-        assert_eq!(s.cursor(), 2);
+        assert_eq!(s.cursor(), LEVELS.len() + 3 - 1);
     }
 }

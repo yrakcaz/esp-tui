@@ -7,7 +7,7 @@ static RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([EWIDV]) \((\d+)\) ([^:]+): (.+)$").unwrap());
 
 /// Severity level of an ESP-IDF log entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Level {
     Error,
     Warn,
