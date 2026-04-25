@@ -37,6 +37,7 @@ pub enum Action {
     None,
     Quit,
     ResetDevice,
+    ScanPorts,
     /// Connect to the given port name (emitted by the port selector popup).
     ConnectPort(String),
 }
@@ -193,10 +194,7 @@ impl App {
                 self.set_status("Erase: not implemented (Phase 2)".into());
                 Action::None
             }
-            KeyCode::Char('c') => {
-                self.set_status("Connect: not implemented (Phase 2)".into());
-                Action::None
-            }
+            KeyCode::Char('c') => Action::ScanPorts,
             KeyCode::Tab => {
                 self.filter.toggle_popup();
                 Action::None
@@ -371,13 +369,18 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
         None
     } else {
         let ports = resolve_ports(args.port)?;
-        if ports.len() == 1 {
-            let port = ports.into_iter().next().unwrap();
-            serial::Port::new(port.clone()).spawn(tx.clone(), shutdown_rx.clone());
-            Some(port)
-        } else {
-            pending_ports = Some(ports);
-            None
+        match ports.len() {
+            0 => None,
+            1 => {
+                let port = ports.into_iter().next().unwrap();
+                serial::Port::new(port.clone())
+                    .spawn(tx.clone(), shutdown_rx.clone());
+                Some(port)
+            }
+            _ => {
+                pending_ports = Some(ports);
+                None
+            }
         }
     };
 
@@ -426,10 +429,11 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
                             app.set_status("No port connected.".into());
                         }
                     }
+                    Action::ScanPorts => {
+                        apply_scan(&mut app, &tx, &shutdown_rx);
+                    }
                     Action::ConnectPort(port) => {
-                        app.set_port(port.clone());
-                        serial::Port::new(port)
-                            .spawn(tx.clone(), shutdown_rx.clone());
+                        connect_port(&mut app, port, &tx, &shutdown_rx);
                     }
                     Action::None => {}
                 }
@@ -447,13 +451,37 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn connect_port(
+    app: &mut App,
+    port: String,
+    tx: &mpsc::UnboundedSender<event::Message>,
+    shutdown_rx: &watch::Receiver<bool>,
+) {
+    app.set_port(port.clone());
+    serial::Port::new(port).spawn(tx.clone(), shutdown_rx.clone());
+}
+
+fn apply_scan(
+    app: &mut App,
+    tx: &mpsc::UnboundedSender<event::Message>,
+    shutdown_rx: &watch::Receiver<bool>,
+) {
+    match serial::detect_esp_ports() {
+        Err(e) => app.set_status(format!("Port scan failed: {e}")),
+        Ok(ports) if ports.is_empty() => {
+            app.set_status("No devices detected.".into());
+        }
+        Ok(ports) if ports.len() == 1 => {
+            let port = ports.into_iter().next().unwrap();
+            connect_port(app, port, tx, shutdown_rx);
+        }
+        Ok(ports) => app.open_port_selector(ports),
+    }
+}
+
 fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
     if let Some(p) = port_arg {
         return Ok(vec![p]);
     }
-    let ports = serial::detect_esp_ports()?;
-    if ports.is_empty() {
-        anyhow::bail!("no serial ports found; use --port or --demo");
-    }
-    Ok(ports)
+    serial::detect_esp_ports()
 }
