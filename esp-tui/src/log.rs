@@ -180,4 +180,59 @@ mod tests {
         assert_eq!(Level::try_from('V').unwrap(), Level::Verbose);
         assert!(Level::try_from('X').is_err());
     }
+
+    #[test]
+    fn parses_warn_line() {
+        let e = parse_line("W (2000) heap: Stack near limit");
+        assert_eq!(e.level(), &Level::Warn);
+        assert_eq!(e.tag(), "heap");
+        assert_eq!(e.message(), "Stack near limit");
+    }
+
+    #[test]
+    fn parses_debug_line() {
+        let e = parse_line("D (3000) gpio: Pin 2 HIGH");
+        assert_eq!(e.level(), &Level::Debug);
+        assert_eq!(e.tag(), "gpio");
+        assert_eq!(e.message(), "Pin 2 HIGH");
+    }
+
+    #[test]
+    fn parses_verbose_line() {
+        let e = parse_line("V (4500) spi: Transfer done");
+        assert_eq!(e.level(), &Level::Verbose);
+        assert_eq!(e.tag(), "spi");
+        assert_eq!(e.message(), "Transfer done");
+    }
+
+    #[test]
+    fn parsed_entry_preserves_raw() {
+        let line = "I (1234) wifi: Connected";
+        let e = parse_line(line);
+        assert_eq!(e.raw(), line);
+    }
+
+    #[test]
+    fn level_labels() {
+        assert_eq!(Level::Error.label(), "ERROR");
+        assert_eq!(Level::Warn.label(), "WARN ");
+        assert_eq!(Level::Info.label(), "INFO ");
+        assert_eq!(Level::Debug.label(), "DEBUG");
+        assert_eq!(Level::Verbose.label(), "VERBOSE");
+    }
+
+    #[test]
+    fn level_colors() {
+        assert_eq!(Level::Error.color(), Color::Red);
+        assert_eq!(Level::Warn.color(), Color::Yellow);
+        assert_eq!(Level::Info.color(), Color::Green);
+        assert_eq!(Level::Debug.color(), Color::Cyan);
+        assert_eq!(Level::Verbose.color(), Color::White);
+    }
+
+    #[test]
+    fn tag_is_trimmed() {
+        let e = parse_line("I (1) wifi : msg");
+        assert_eq!(e.tag(), "wifi");
+    }
 }

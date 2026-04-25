@@ -502,3 +502,407 @@ fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
     }
     serial::detect_esp_ports()
 }
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::{Action, App, PortSelector, BUFFER_SIZE};
+    use crate::log;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    // --- PortSelector ---
+
+    #[test]
+    fn port_selector_initial_cursor() {
+        let sel = PortSelector::new(vec!["COM1".into(), "COM2".into()]);
+        assert_eq!(sel.cursor(), 0);
+        assert_eq!(sel.selected(), "COM1");
+    }
+
+    #[test]
+    fn port_selector_move_cursor_navigation() {
+        let mut sel =
+            PortSelector::new(vec!["COM1".into(), "COM2".into(), "COM3".into()]);
+        sel.move_cursor(1);
+        assert_eq!(sel.cursor(), 1);
+        assert_eq!(sel.selected(), "COM2");
+        sel.move_cursor(-1);
+        assert_eq!(sel.cursor(), 0);
+    }
+
+    #[test]
+    fn port_selector_move_cursor_clamps() {
+        let mut sel = PortSelector::new(vec!["COM1".into(), "COM2".into()]);
+        sel.move_cursor(-10);
+        assert_eq!(sel.cursor(), 0);
+        sel.move_cursor(100);
+        assert_eq!(sel.cursor(), 1);
+    }
+
+    #[test]
+    fn port_selector_move_cursor_empty_list() {
+        let mut sel = PortSelector::new(vec![]);
+        sel.move_cursor(1);
+        assert_eq!(sel.cursor(), 0);
+    }
+
+    #[test]
+    fn port_selector_selected_empty() {
+        let sel = PortSelector::new(vec![]);
+        assert_eq!(sel.selected(), "");
+    }
+
+    // --- App basic state ---
+
+    #[test]
+    fn app_initial_state() {
+        let app = App::new(Some("COM1".into()));
+        assert!(app.is_running());
+        assert_eq!(app.port_name(), Some("COM1"));
+        assert_eq!(app.scroll(), 0);
+        assert!(app.status_msg().is_none());
+        assert!(app.port_selector().is_none());
+    }
+
+    #[test]
+    fn app_new_no_port() {
+        let app = App::new(None);
+        assert!(app.port_name().is_none());
+    }
+
+    #[test]
+    fn app_quit_stops_running() {
+        let mut app = App::new(None);
+        app.quit();
+        assert!(!app.is_running());
+    }
+
+    #[test]
+    fn app_set_status_and_read() {
+        let mut app = App::new(None);
+        app.set_status("hello".into());
+        assert_eq!(app.status_msg(), Some("hello"));
+    }
+
+    #[test]
+    fn app_set_port_updates_name_and_clears_selector() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into()]);
+        assert!(app.port_selector().is_some());
+        app.set_port("COM1".into());
+        assert_eq!(app.port_name(), Some("COM1"));
+        assert!(app.port_selector().is_none());
+    }
+
+    #[test]
+    fn app_open_port_selector() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
+        let sel = app.port_selector().unwrap();
+        assert_eq!(sel.ports(), &["COM1", "COM2"]);
+    }
+
+    // --- App::push_line ---
+
+    #[test]
+    fn push_line_adds_entry() {
+        let mut app = App::new(None);
+        app.push_line("I (1) wifi: Connected");
+        assert_eq!(app.visible_entries(10).len(), 1);
+    }
+
+    #[test]
+    fn push_line_records_tag() {
+        let mut app = App::new(None);
+        app.push_line("I (1) wifi: Connected");
+        assert!(app.filter().known_tags().contains(&"wifi".to_owned()));
+    }
+
+    #[test]
+    fn push_line_raw_line_does_not_record_tag() {
+        let mut app = App::new(None);
+        app.push_line("some raw output");
+        assert!(app.filter().known_tags().is_empty());
+    }
+
+    #[test]
+    fn push_line_scroll_increments_when_scrolled_up() {
+        let mut app = App::new(None);
+        app.push_line("I (1) tag: first");
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.scroll(), 1);
+        app.push_line("I (1) tag: second");
+        assert_eq!(app.scroll(), 2);
+    }
+
+    #[test]
+    fn push_line_scroll_stays_zero_at_bottom() {
+        let mut app = App::new(None);
+        app.push_line("I (1) tag: first");
+        app.push_line("I (1) tag: second");
+        assert_eq!(app.scroll(), 0);
+    }
+
+    #[test]
+    fn push_line_evicts_oldest_when_buffer_full() {
+        let mut app = App::new(None);
+        for i in 0..=BUFFER_SIZE {
+            app.push_line(&format!("I (1) tag: line {i}"));
+        }
+        let entries = app.visible_entries(BUFFER_SIZE + 1);
+        assert_eq!(entries.len(), BUFFER_SIZE);
+        assert_eq!(entries[0].message(), "line 1");
+        assert_eq!(
+            entries[BUFFER_SIZE - 1].message(),
+            &format!("line {BUFFER_SIZE}")
+        );
+    }
+
+    // --- App::visible_entries ---
+
+    #[test]
+    fn visible_entries_empty_buffer() {
+        let app = App::new(None);
+        assert!(app.visible_entries(10).is_empty());
+    }
+
+    #[test]
+    fn visible_entries_fewer_than_height_returns_all() {
+        let mut app = App::new(None);
+        for i in 0..3 {
+            app.push_line(&format!("I (1) tag: line {i}"));
+        }
+        assert_eq!(app.visible_entries(10).len(), 3);
+    }
+
+    #[test]
+    fn visible_entries_more_than_height_returns_tail() {
+        let mut app = App::new(None);
+        for i in 0..10 {
+            app.push_line(&format!("I (1) tag: line {i}"));
+        }
+        let entries = app.visible_entries(5);
+        assert_eq!(entries.len(), 5);
+        assert_eq!(entries[0].message(), "line 5");
+        assert_eq!(entries[4].message(), "line 9");
+    }
+
+    #[test]
+    fn visible_entries_scroll_shifts_start() {
+        let mut app = App::new(None);
+        for i in 0..10 {
+            app.push_line(&format!("I (1) tag: line {i}"));
+        }
+        app.handle_key(key(KeyCode::Up));
+        app.handle_key(key(KeyCode::Up));
+        let entries = app.visible_entries(5);
+        assert_eq!(entries[0].message(), "line 3");
+    }
+
+    #[test]
+    fn visible_entries_respects_hidden_level() {
+        let mut app = App::new(None);
+        app.push_line("E (1) tag: error line");
+        app.push_line("I (1) tag: info line");
+        app.filter_mut().toggle_at_cursor(); // cursor=0 → hide Error
+        let entries = app.visible_entries(10);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message(), "info line");
+    }
+
+    // --- App::handle_key - main mode ---
+
+    #[test]
+    fn handle_key_ctrl_c_quits() {
+        let mut app = App::new(None);
+        assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
+    }
+
+    #[test]
+    fn handle_key_q_quits() {
+        let mut app = App::new(None);
+        assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::Quit);
+    }
+
+    #[test]
+    fn handle_key_r_resets_device() {
+        let mut app = App::new(None);
+        assert_eq!(app.handle_key(key(KeyCode::Char('r'))), Action::ResetDevice);
+    }
+
+    #[test]
+    fn handle_key_c_scans_ports() {
+        let mut app = App::new(None);
+        assert_eq!(app.handle_key(key(KeyCode::Char('c'))), Action::ScanPorts);
+    }
+
+    #[test]
+    fn handle_key_f_sets_status_and_returns_none() {
+        let mut app = App::new(None);
+        assert_eq!(app.handle_key(key(KeyCode::Char('f'))), Action::None);
+        assert!(app.status_msg().is_some());
+    }
+
+    #[test]
+    fn handle_key_e_sets_status_and_returns_none() {
+        let mut app = App::new(None);
+        assert_eq!(app.handle_key(key(KeyCode::Char('e'))), Action::None);
+        assert!(app.status_msg().is_some());
+    }
+
+    #[test]
+    fn handle_key_tab_toggles_filter_popup() {
+        let mut app = App::new(None);
+        assert!(!app.filter().is_popup_open());
+        app.handle_key(key(KeyCode::Tab));
+        assert!(app.filter().is_popup_open());
+        app.handle_key(key(KeyCode::Tab));
+        assert!(!app.filter().is_popup_open());
+    }
+
+    #[test]
+    fn handle_key_up_and_k_scroll_up() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.scroll(), 1);
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.scroll(), 2);
+    }
+
+    #[test]
+    fn handle_key_down_and_j_scroll_down_clamp() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.scroll(), 0);
+        app.handle_key(key(KeyCode::Up));
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.scroll(), 0);
+    }
+
+    #[test]
+    fn handle_key_page_up_adds_ten() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::PageUp));
+        assert_eq!(app.scroll(), 10);
+    }
+
+    #[test]
+    fn handle_key_page_down_subtracts_ten() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::PageUp));
+        app.handle_key(key(KeyCode::PageDown));
+        assert_eq!(app.scroll(), 0);
+    }
+
+    #[test]
+    fn handle_key_unknown_returns_none() {
+        let mut app = App::new(None);
+        assert_eq!(app.handle_key(key(KeyCode::F(1))), Action::None);
+    }
+
+    // --- App::handle_key - filter popup mode ---
+
+    #[test]
+    fn handle_key_filter_popup_space_toggles_item() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::Tab));
+        assert!(!app.filter().is_level_hidden(log::Level::Error));
+        app.handle_key(key(KeyCode::Char(' ')));
+        assert!(app.filter().is_level_hidden(log::Level::Error));
+    }
+
+    #[test]
+    fn handle_key_filter_popup_ctrl_a_toggles_all() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(ctrl(KeyCode::Char('a')));
+        assert!(app.filter().is_level_hidden(log::Level::Error));
+        assert!(app.filter().is_level_hidden(log::Level::Info));
+    }
+
+    #[test]
+    fn handle_key_filter_popup_q_closes() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Char('q')));
+        assert!(!app.filter().is_popup_open());
+    }
+
+    #[test]
+    fn handle_key_filter_popup_esc_closes() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Esc));
+        assert!(!app.filter().is_popup_open());
+    }
+
+    #[test]
+    fn handle_key_filter_popup_navigation() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.filter().cursor(), 1);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.filter().cursor(), 0);
+    }
+
+    #[test]
+    fn handle_key_ctrl_c_quits_even_with_popup_open() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
+    }
+
+    // --- App::handle_key - port selector mode ---
+
+    #[test]
+    fn handle_key_port_selector_navigation() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.port_selector().unwrap().cursor(), 1);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.port_selector().unwrap().cursor(), 0);
+    }
+
+    #[test]
+    fn handle_key_port_selector_enter_returns_connect_action() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
+        let action = app.handle_key(key(KeyCode::Enter));
+        assert_eq!(action, Action::ConnectPort("COM1".to_owned()));
+        assert!(app.port_selector().is_none());
+    }
+
+    #[test]
+    fn handle_key_port_selector_q_dismisses() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into()]);
+        let action = app.handle_key(key(KeyCode::Char('q')));
+        assert_eq!(action, Action::None);
+        assert!(app.port_selector().is_none());
+    }
+
+    #[test]
+    fn handle_key_port_selector_esc_dismisses() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into()]);
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.port_selector().is_none());
+    }
+
+    #[test]
+    fn handle_key_ctrl_c_quits_even_with_selector_open() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into()]);
+        assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
+    }
+}

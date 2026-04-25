@@ -236,6 +236,43 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(list, popup);
 }
 
+#[cfg(test)]
+mod tests {
+    use ratatui::layout::Rect;
+
+    use super::centered_rect;
+
+    #[test]
+    fn centered_rect_centers_within_area() {
+        let area = Rect::new(0, 0, 100, 50);
+        let r = centered_rect(40, 20, area);
+        assert_eq!(r.x, 30);
+        assert_eq!(r.y, 15);
+        assert_eq!(r.width, 40);
+        assert_eq!(r.height, 20);
+    }
+
+    #[test]
+    fn centered_rect_clamps_to_area_size() {
+        let area = Rect::new(0, 0, 30, 20);
+        let r = centered_rect(40, 30, area);
+        assert_eq!(r.width, 30);
+        assert_eq!(r.height, 20);
+        assert_eq!(r.x, 0);
+        assert_eq!(r.y, 0);
+    }
+
+    #[test]
+    fn centered_rect_with_offset_origin() {
+        let area = Rect::new(10, 5, 80, 40);
+        let r = centered_rect(20, 10, area);
+        assert_eq!(r.x, 40); // 10 + (80-20)/2
+        assert_eq!(r.y, 20); // 5 + (40-10)/2
+        assert_eq!(r.width, 20);
+        assert_eq!(r.height, 10);
+    }
+}
+
 fn render_port_selector(frame: &mut Frame, area: Rect, sel: &PortSelector) {
     let ports = sel.ports();
     let height = (u16::try_from(ports.len())
