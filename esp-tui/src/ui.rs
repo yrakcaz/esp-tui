@@ -26,10 +26,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
             .split(outer[1]);
 
-    render_status_bar(frame, outer[0], app);
+    render_menu_bar(frame, outer[0], app);
     render_monitor(frame, main[0], app);
     render_inspector(frame, main[1]);
-    render_flash_bar(frame, outer[2]);
+    render_status_bar(frame, outer[2], app);
 
     if let Some(sel) = app.port_selector() {
         render_port_selector(frame, frame.area(), sel);
@@ -38,28 +38,23 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
-fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
+fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
     let port_label = app
         .port_name()
         .map_or_else(|| "Port: none".to_owned(), |p| format!("Port: {p}"));
 
-    let status = app.status_msg().unwrap_or("");
-
     let left = Line::from(vec![
-        hint("r", "Reset"),
+        hint("C", "onnect"),
         Span::raw("  "),
-        hint("f", "Flash"),
+        hint("F", "lash"),
         Span::raw("  "),
-        hint("e", "Erase"),
+        hint("R", "eset"),
         Span::raw("  "),
-        hint("c", "Connect"),
+        hint("E", "rase"),
+        Span::raw("  "),
+        hint("Q", "uit"),
         Span::raw("  "),
         hint("Tab", "Filter"),
-        if status.is_empty() {
-            Span::raw("")
-        } else {
-            Span::styled(format!("  {status}"), Style::default().fg(Color::Yellow))
-        },
     ]);
 
     let right =
@@ -139,15 +134,23 @@ fn render_inspector(frame: &mut Frame, area: Rect) {
     );
 }
 
-fn render_flash_bar(frame: &mut Frame, area: Rect) {
+fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
-        .title(" Flash Progress ")
+        .title(" Status ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    let content = app.status_msg().unwrap_or("");
+    let style = if content.is_empty() {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::Yellow)
+    };
     frame.render_widget(
-        Paragraph::new("(Phase 2)").style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(if content.is_empty() { "Ready" } else { content })
+            .style(style),
         inner,
     );
 }
