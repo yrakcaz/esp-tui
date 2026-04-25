@@ -236,6 +236,39 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(list, popup);
 }
 
+fn render_port_selector(frame: &mut Frame, area: Rect, sel: &PortSelector) {
+    let ports = sel.ports();
+    let height = (u16::try_from(ports.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(4))
+    .max(5)
+    .min(area.height);
+    let popup = centered_rect(44, height, area);
+
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" Select Port ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded);
+
+    let items: Vec<ListItem> = ports
+        .iter()
+        .enumerate()
+        .map(|(i, port)| {
+            let style = if i == sel.cursor() {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            ListItem::new(format!("  {port}")).style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(block);
+    frame.render_widget(list, popup);
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::layout::Rect;
@@ -271,37 +304,4 @@ mod tests {
         assert_eq!(r.width, 20);
         assert_eq!(r.height, 10);
     }
-}
-
-fn render_port_selector(frame: &mut Frame, area: Rect, sel: &PortSelector) {
-    let ports = sel.ports();
-    let height = (u16::try_from(ports.len())
-        .unwrap_or(u16::MAX)
-        .saturating_add(4))
-    .max(5)
-    .min(area.height);
-    let popup = centered_rect(44, height, area);
-
-    frame.render_widget(Clear, popup);
-
-    let block = Block::default()
-        .title(" Select Port ")
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded);
-
-    let items: Vec<ListItem> = ports
-        .iter()
-        .enumerate()
-        .map(|(i, port)| {
-            let style = if i == sel.cursor() {
-                Style::default().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::default()
-            };
-            ListItem::new(format!("  {port}")).style(style)
-        })
-        .collect();
-
-    let list = List::new(items).block(block);
-    frame.render_widget(list, popup);
 }

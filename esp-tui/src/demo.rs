@@ -22,23 +22,6 @@ static LINES: &[&str] = &[
 /// interval for UI development without hardware.
 pub struct Generator;
 
-#[cfg(test)]
-mod tests {
-    use super::LINES;
-    use crate::log;
-
-    #[test]
-    fn all_demo_lines_parse_as_structured_entries() {
-        for &line in LINES {
-            let entry = log::parse_line(line);
-            assert!(
-                !entry.tag().is_empty(),
-                "demo line did not parse as structured: {line}"
-            );
-        }
-    }
-}
-
 impl crate::source::Emitter for Generator {
     /// Spawns an async task that cycles through demo log lines every 100ms.
     ///
@@ -75,5 +58,22 @@ impl crate::source::Emitter for Generator {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LINES;
+    use crate::log;
+
+    #[test]
+    fn all_demo_lines_parse_as_structured_entries() {
+        for &line in LINES {
+            let entry = log::parse_line(line);
+            assert!(
+                !entry.tag().is_empty(),
+                "demo line did not parse as structured: {line}"
+            );
+        }
     }
 }
