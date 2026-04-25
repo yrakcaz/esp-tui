@@ -1,0 +1,4 @@
+{
+  "name": "esp-tui",
+  "onCreateCommand": "sudo apt-get update && sudo apt-get install -y libudev-dev"
+}
