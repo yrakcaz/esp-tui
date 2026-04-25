@@ -172,7 +172,8 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
     let height = (2
         + 1
         + u16::try_from(levels.len()).unwrap_or(5)
-        + if tags.is_empty() { 0 } else { 1 + tag_rows })
+        + if tags.is_empty() { 0 } else { 1 + tag_rows }
+        + 1)
     .min(area.height);
     let popup = centered_rect(40, height, area);
 
@@ -225,6 +226,11 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
             items.push(ListItem::new(format!("  {marker} {tag}")).style(style));
         }
     }
+
+    items.push(
+        ListItem::new(" [Space] toggle  [^A] toggle all  [q/Esc] close")
+            .style(Style::default().fg(Color::DarkGray)),
+    );
 
     let list = List::new(items).block(block);
     frame.render_widget(list, popup);

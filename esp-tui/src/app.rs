@@ -154,19 +154,26 @@ impl App {
             return Action::Quit;
         }
 
-        if let Some(sel) = self.port_selector.as_mut() {
-            match key.code {
-                KeyCode::Up => sel.move_cursor(-1),
-                KeyCode::Down => sel.move_cursor(1),
-                KeyCode::Enter => {
-                    let port = sel.selected().to_owned();
-                    self.port_selector = None;
-                    return Action::ConnectPort(port);
+        if self.port_selector.is_some() {
+            if let Some(sel) = self.port_selector.as_mut() {
+                match key.code {
+                    KeyCode::Up => sel.move_cursor(-1),
+                    KeyCode::Down => sel.move_cursor(1),
+                    _ => {}
                 }
-                KeyCode::Char('q') => return Action::Quit,
-                _ => {}
             }
-            return Action::None;
+            return match key.code {
+                KeyCode::Enter => {
+                    self.port_selector.take().map_or(Action::None, |s| {
+                        Action::ConnectPort(s.selected().to_owned())
+                    })
+                }
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    self.port_selector = None;
+                    Action::None
+                }
+                _ => Action::None,
+            };
         }
 
         if self.filter.is_popup_open() {
@@ -175,9 +182,11 @@ impl App {
                 KeyCode::Down => self.filter.move_cursor(1),
                 KeyCode::Char(' ') => self.filter.toggle_at_cursor(),
                 KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
-                    self.filter.clear_hidden();
+                    self.filter.toggle_all();
                 }
-                KeyCode::Tab | KeyCode::Esc => self.filter.toggle_popup(),
+                KeyCode::Tab | KeyCode::Esc | KeyCode::Char('q') => {
+                    self.filter.toggle_popup();
+                }
                 _ => {}
             }
             return Action::None;

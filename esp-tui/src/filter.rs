@@ -93,10 +93,16 @@ impl State {
         self.cursor = self.cursor.saturating_add_signed(delta).min(total - 1);
     }
 
-    /// Clears all hidden levels and tags, making every entry visible.
-    pub fn clear_hidden(&mut self) {
-        self.hidden_levels.clear();
-        self.hidden_tags.clear();
+    /// Toggles all items: hides everything if all are currently visible,
+    /// otherwise makes everything visible.
+    pub fn toggle_all(&mut self) {
+        if self.hidden_levels.is_empty() && self.hidden_tags.is_empty() {
+            self.hidden_levels.extend(LEVELS.iter().copied());
+            self.hidden_tags.extend(self.known_tags.iter().cloned());
+        } else {
+            self.hidden_levels.clear();
+            self.hidden_tags.clear();
+        }
     }
 
     /// Toggles the filter popup open or closed.
@@ -225,13 +231,21 @@ mod tests {
     }
 
     #[test]
-    fn clear_hidden_restores_all() {
+    fn toggle_all_hides_all_when_all_visible() {
+        let mut s = State::new();
+        s.record_tag("wifi");
+        s.toggle_all();
+        assert!(s.is_level_hidden(log::Level::Error));
+        assert!(s.is_level_hidden(log::Level::Info));
+        assert!(s.is_tag_hidden("wifi"));
+    }
+
+    #[test]
+    fn toggle_all_shows_all_when_any_hidden() {
         let mut s = State::new();
         s.record_tag("wifi");
         s.toggle_at_cursor(); // hide Error
-        s.cursor = tag_cursor(0);
-        s.toggle_at_cursor(); // hide wifi
-        s.clear_hidden();
+        s.toggle_all();
         assert!(!s.is_level_hidden(log::Level::Error));
         assert!(!s.is_tag_hidden("wifi"));
     }
