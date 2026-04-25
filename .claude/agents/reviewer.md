@@ -80,6 +80,17 @@ Note if the diff is likely to fail `cargo fmt` (max_width = 85) or `cargo clippy
 
 ---
 
+## Tests
+
+- New functions or behaviors added without any corresponding tests
+- Tests that cover only the happy path and ignore error/edge cases
+- `.unwrap()` in non-test code (acceptable in tests)
+- Test names that don't describe the scenario being verified
+- Tests that reach into private implementation details instead of testing through the public API
+- Integration tests missing for flows that span multiple modules
+
+---
+
 ## Output format
 
 Use a heading per category that has findings. Bullet each issue with file:line where available and a one-line explanation. End with a summary line: "No issues found" or a count per category (e.g. "3 correctness, 1 convention").

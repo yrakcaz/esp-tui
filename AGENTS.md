@@ -122,6 +122,14 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - Run `cargo clippy` and fix all warnings; `clippy::all`, `clippy::cargo`, and `clippy::pedantic` are denied via `[workspace.lints]` in `Cargo.toml`
 - Follow standard Rust naming conventions (`snake_case` for functions/modules, `PascalCase` for types)
 
+### Testing
+- Maximize code coverage: every new function or behavior should have corresponding tests
+- Prefer unit tests (`#[cfg(test)] mod tests` at the bottom of the same file) for pure logic: parsing, filtering, state transitions, formatting
+- Use integration tests (`tests/` directory) for flows that span multiple modules or require a realistic wiring of components
+- `.unwrap()` is acceptable in test code
+- Test both the happy path and representative error/edge cases; do not test only the success branch
+- Do not test private implementation details that are already covered transitively by public-API tests
+
 ### Dependency Management
 - Only add a dependency when the code using it is actively being written
 - Do not add dependencies that duplicate capabilities already provided by existing ones
