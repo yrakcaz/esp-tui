@@ -138,6 +138,6 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 
 - **`TODO.md`**: check off items as they are completed; add new items when scope expands
 - **`README.md`**: update when new features are usable or installation/usage instructions change
-- **`AGENTS.md`**: update when new conventions are established or tech stack decisions are made
+- **`AGENTS.md`**: the canonical conventions file; edit only this file. `CLAUDE.md` and `.github/copilot-instructions.md` are symlinks to it and update automatically
 - **`.github/workflows/ci.yml`** and **`.devcontainer/devcontainer.json`**: both must be updated together when new system-level packages are required to build; a package missing from either will break that environment
 - **`cargo fmt` and `cargo clippy`**: run after every code change and fix all issues before committing; CI denies all clippy warnings
