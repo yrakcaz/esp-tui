@@ -153,11 +153,9 @@ fn reset_via_handle(
     port.write_data_terminal_ready(false)
         .context("failed to set DTR")?;
     port.write_request_to_send(true)
-        .context("failed to set RTS")?;
+        .context("failed to assert RTS/EN")?;
     std::thread::sleep(std::time::Duration::from_millis(100));
-    port.write_data_terminal_ready(true)
-        .context("failed to release DTR")?;
     port.write_request_to_send(false)
-        .context("failed to release RTS")?;
+        .context("failed to release RTS/EN")?;
     Ok(())
 }
