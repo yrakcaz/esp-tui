@@ -1,4 +1,5 @@
 use std::io::BufRead;
+use std::sync::mpsc;
 
 use anyhow::Context;
 use serialport::SerialPortInfo;
@@ -53,6 +54,11 @@ pub fn detect_esp_ports() -> anyhow::Result<Vec<String>> {
     }
 }
 
+/// Commands that can be sent to a running serial port reader task.
+pub enum PortCommand {
+    Reset,
+}
+
 /// A serial port connection that emits log lines.
 pub struct Port {
     name: String,
@@ -70,48 +76,31 @@ impl Port {
     }
 }
 
-/// Sends a hardware reset to the device on the given port by toggling DTR and
-/// RTS lines.
-///
-/// # Arguments
-///
-/// * `port_name` - The system port name to open for the reset sequence.
-///
-/// # Errors
-///
-/// Returns an error if the port cannot be opened or the control lines cannot
-/// be set.
-pub fn reset_device(port_name: &str) -> anyhow::Result<()> {
-    let mut port = serialport::new(port_name, BAUD_RATE)
-        .open()
-        .with_context(|| format!("failed to open {port_name} for reset"))?;
-    port.write_data_terminal_ready(false)
-        .context("failed to set DTR")?;
-    port.write_request_to_send(true)
-        .context("failed to set RTS")?;
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    port.write_data_terminal_ready(true)
-        .context("failed to release DTR")?;
-    port.write_request_to_send(false)
-        .context("failed to release RTS")?;
-    Ok(())
-}
-
-impl crate::source::Emitter for Port {
+impl Port {
     /// Spawns a blocking task that reads lines from the serial port and sends
     /// them as [`crate::event::Message::Serial`] events.
+    ///
+    /// Returns a [`PortCommand`] sender that can be used to send commands
+    /// (e.g. reset) to the running task without opening a second handle.
     ///
     /// # Arguments
     ///
     /// * `tx` - Channel sender for forwarding log line events.
     /// * `shutdown` - Watch receiver; the task exits when the value becomes
     ///   `true`.
-    fn spawn(
+    ///
+    /// # Returns
+    ///
+    /// A tuple of the task [`tokio::task::JoinHandle`] and a
+    /// [`std::sync::mpsc::Sender`] for sending [`PortCommand`]s.
+    #[must_use]
+    pub fn spawn(
         self,
         tx: tokio::sync::mpsc::UnboundedSender<crate::event::Message>,
         shutdown: tokio::sync::watch::Receiver<bool>,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::task::spawn_blocking(move || {
+    ) -> (tokio::task::JoinHandle<()>, mpsc::Sender<PortCommand>) {
+        let (cmd_tx, cmd_rx) = mpsc::channel::<PortCommand>();
+        let handle = tokio::task::spawn_blocking(move || {
             let port = match serialport::new(&self.name, BAUD_RATE)
                 .timeout(std::time::Duration::from_millis(100))
                 .open()
@@ -133,6 +122,13 @@ impl crate::source::Emitter for Port {
                 if *shutdown.borrow() {
                     break;
                 }
+                if let Ok(PortCommand::Reset) = cmd_rx.try_recv() {
+                    if let Err(e) = reset_via_handle(reader.get_mut()) {
+                        let _ = tx.send(crate::event::Message::Serial(format!(
+                            "Reset failed: {e}"
+                        )));
+                    }
+                }
                 match reader.read_line(&mut line) {
                     Ok(0) => break,
                     Ok(_) => {
@@ -146,6 +142,22 @@ impl crate::source::Emitter for Port {
                     Err(_) => break,
                 }
             }
-        })
+        });
+        (handle, cmd_tx)
     }
+}
+
+fn reset_via_handle(
+    port: &mut Box<dyn serialport::SerialPort>,
+) -> anyhow::Result<()> {
+    port.write_data_terminal_ready(false)
+        .context("failed to set DTR")?;
+    port.write_request_to_send(true)
+        .context("failed to set RTS")?;
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    port.write_data_terminal_ready(true)
+        .context("failed to release DTR")?;
+    port.write_request_to_send(false)
+        .context("failed to release RTS")?;
+    Ok(())
 }

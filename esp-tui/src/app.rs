@@ -98,6 +98,7 @@ pub struct App {
     scroll: usize,
     filter: filter::State,
     port_name: Option<String>,
+    port_cmd_tx: Option<std::sync::mpsc::Sender<serial::PortCommand>>,
     status_msg: Option<(String, Instant)>,
     running: bool,
     port_selector: Option<PortSelector>,
@@ -116,6 +117,7 @@ impl App {
             scroll: 0,
             filter: filter::State::new(),
             port_name,
+            port_cmd_tx: None,
             status_msg: None,
             running: true,
             port_selector: None,
@@ -328,6 +330,27 @@ impl App {
     pub fn set_port(&mut self, port: String) {
         self.port_name = Some(port);
         self.port_selector = None;
+        self.port_cmd_tx = None;
+    }
+
+    /// Stores the command sender for the currently connected port reader task.
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - Sender returned by [`serial::Port::spawn`].
+    pub fn set_port_cmd(
+        &mut self,
+        tx: std::sync::mpsc::Sender<serial::PortCommand>,
+    ) {
+        self.port_cmd_tx = Some(tx);
+    }
+
+    /// Returns the command sender for the active port reader, if any.
+    #[must_use]
+    pub fn port_cmd_tx(
+        &self,
+    ) -> Option<&std::sync::mpsc::Sender<serial::PortCommand>> {
+        self.port_cmd_tx.as_ref()
     }
 
     /// Activates the port selector popup with the given candidate ports.
@@ -377,6 +400,9 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
 
     let mut pending_ports: Option<Vec<String>> = None;
 
+    let mut initial_cmd_tx: Option<std::sync::mpsc::Sender<serial::PortCommand>> =
+        None;
+
     let initial_port = if args.demo {
         demo::Generator.spawn(tx.clone(), shutdown_rx.clone());
         None
@@ -386,8 +412,9 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
             0 => None,
             1 => {
                 let port = ports.into_iter().next().unwrap();
-                serial::Port::new(port.clone())
+                let (_, cmd_tx) = serial::Port::new(port.clone())
                     .spawn(tx.clone(), shutdown_rx.clone());
+                initial_cmd_tx = Some(cmd_tx);
                 Some(port)
             }
             _ => {
@@ -398,6 +425,9 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
     };
 
     let mut app = App::new(initial_port);
+    if let Some(cmd_tx) = initial_cmd_tx {
+        app.set_port_cmd(cmd_tx);
+    }
     if let Some(ports) = pending_ports {
         app.open_port_selector(ports);
     }
@@ -435,29 +465,7 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
         match msg {
             event::Message::Key(key) => {
                 let action = app.handle_key(key);
-                match action {
-                    Action::Quit => {
-                        app.quit();
-                    }
-                    Action::ResetDevice => {
-                        if let Some(port) = app.port_name() {
-                            if let Err(e) = serial::reset_device(port) {
-                                app.set_status(format!("Reset failed: {e}"));
-                            } else {
-                                app.set_status("Reset sent.".into());
-                            }
-                        } else {
-                            app.set_status("No port connected.".into());
-                        }
-                    }
-                    Action::ScanPorts => {
-                        apply_scan(&mut app, &tx, &shutdown_rx);
-                    }
-                    Action::ConnectPort(port) => {
-                        connect_port(&mut app, port, &tx, &shutdown_rx);
-                    }
-                    Action::None => {}
-                }
+                handle_action(&mut app, action, &tx, &shutdown_rx);
             }
             event::Message::Serial(line) => app.push_line(&line),
             event::Message::Tick => app.tick(),
@@ -472,14 +480,41 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn handle_action(
+    app: &mut App,
+    action: Action,
+    tx: &mpsc::UnboundedSender<event::Message>,
+    shutdown_rx: &watch::Receiver<bool>,
+) {
+    match action {
+        Action::Quit => app.quit(),
+        Action::ResetDevice => {
+            if let Some(cmd_tx) = app.port_cmd_tx() {
+                if cmd_tx.send(serial::PortCommand::Reset).is_err() {
+                    app.set_status("Reset failed: port disconnected.".into());
+                } else {
+                    app.set_status("Reset sent.".into());
+                }
+            } else {
+                app.set_status("No port connected.".into());
+            }
+        }
+        Action::ScanPorts => apply_scan(app, tx, shutdown_rx),
+        Action::ConnectPort(port) => connect_port(app, port, tx, shutdown_rx),
+        Action::None => {}
+    }
+}
+
 fn connect_port(
     app: &mut App,
     port: String,
     tx: &mpsc::UnboundedSender<event::Message>,
     shutdown_rx: &watch::Receiver<bool>,
 ) {
-    app.set_port(port.clone());
-    serial::Port::new(port).spawn(tx.clone(), shutdown_rx.clone());
+    let (_, cmd_tx) =
+        serial::Port::new(port.clone()).spawn(tx.clone(), shutdown_rx.clone());
+    app.set_port(port);
+    app.set_port_cmd(cmd_tx);
 }
 
 fn apply_scan(
