@@ -39,6 +39,9 @@
 - [ ] Agent detection / graceful absence ("agent not detected" prompt)
 - [ ] In-TUI agent install flow (`[A]` keybinding)
 - [ ] `esp-tui agent install` CLI subcommand
+- [ ] Pane focus: introduce a `FocusedPane` enum so scroll and resize operations target the active pane; review and reassign conflicting keybindings (e.g. `Tab` currently opens the filter popup) at that time
+- [ ] Per-pane independent scrolling once Inspector has scrollable content
+- [ ] Per-pane independent resizing (adjust split ratio with keybindings)
 
 ## Release
 
