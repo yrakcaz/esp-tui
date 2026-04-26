@@ -6,6 +6,9 @@ use regex::Regex;
 static RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([EWIDV]) \((\d+)\) ([^:]+): (.+)$").unwrap());
 
+static ANSI_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").unwrap());
+
 /// Severity level of an ESP-IDF log entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Level {
@@ -80,12 +83,12 @@ impl Entry {
         }
     }
 
-    fn from_raw_line(line: &str) -> Self {
+    fn from_raw_line(message: &str, raw: &str) -> Self {
         Self {
             level: Level::Verbose,
             tag: String::new(),
-            message: line.to_owned(),
-            raw: line.to_owned(),
+            message: message.to_owned(),
+            raw: raw.to_owned(),
         }
     }
 
@@ -130,12 +133,13 @@ impl Entry {
 /// raw entries.
 #[must_use]
 pub fn parse_line(line: &str) -> Entry {
-    RE.captures(line).map_or_else(
-        || Entry::from_raw_line(line),
+    let clean = ANSI_RE.replace_all(line, "");
+    RE.captures(clean.as_ref()).map_or_else(
+        || Entry::from_raw_line(clean.as_ref(), line),
         |caps| {
             let level_char = caps[1].chars().next().unwrap_or('V');
             Level::try_from(level_char).map_or_else(
-                |_| Entry::from_raw_line(line),
+                |_| Entry::from_raw_line(clean.as_ref(), line),
                 |level| Entry::parsed(level, &caps[3], &caps[4], line),
             )
         },
@@ -234,5 +238,27 @@ mod tests {
     fn tag_is_trimmed() {
         let e = parse_line("I (1) wifi : msg");
         assert_eq!(e.tag(), "wifi");
+    }
+
+    #[test]
+    fn ansi_codes_stripped_before_parsing() {
+        let e = parse_line("\x1b[0;32mI (1234) wifi: Connected\x1b[0m");
+        assert_eq!(e.level(), &Level::Info);
+        assert_eq!(e.tag(), "wifi");
+        assert_eq!(e.message(), "Connected");
+    }
+
+    #[test]
+    fn ansi_codes_stripped_from_raw_lines() {
+        let e = parse_line("\x1b[0;31msome colored output\x1b[0m");
+        assert_eq!(e.tag(), "");
+        assert_eq!(e.message(), "some colored output");
+    }
+
+    #[test]
+    fn raw_preserves_original_with_ansi() {
+        let line = "\x1b[0;32mI (1234) wifi: Connected\x1b[0m";
+        let e = parse_line(line);
+        assert_eq!(e.raw(), line);
     }
 }
