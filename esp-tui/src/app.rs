@@ -37,6 +37,7 @@ pub enum Action {
     None,
     Quit,
     ResetDevice,
+    Disconnect,
     ScanPorts,
     /// Connect to the given port name (emitted by the port selector popup).
     ConnectPort(String),
@@ -202,6 +203,7 @@ impl App {
                 Action::None
             }
             KeyCode::Char('q') => Action::Quit,
+            KeyCode::Char('d') => Action::Disconnect,
             KeyCode::Char('r') => Action::ResetDevice,
             KeyCode::Char('f') => {
                 self.set_status("Flash: not implemented (Phase 2)".into());
@@ -389,6 +391,13 @@ impl App {
     pub fn quit(&mut self) {
         self.running = false;
     }
+
+    /// Tears down the active port connection and clears port state.
+    pub fn disconnect(&mut self) {
+        self.shutdown_source();
+        self.port_name = None;
+        self.port_cmd_tx = None;
+    }
 }
 
 /// Runs the application: parses CLI arguments, initialises the terminal, and
@@ -481,6 +490,10 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
                 handle_action(&mut app, action, &tx);
             }
             event::Message::Serial(line) => app.push_line(&line),
+            event::Message::Disconnected => {
+                app.disconnect();
+                app.set_status("Disconnected.".into());
+            }
             event::Message::Tick => app.tick(),
         }
 
@@ -501,6 +514,14 @@ fn handle_action(
 ) {
     match action {
         Action::Quit => app.quit(),
+        Action::Disconnect => {
+            if app.port_name().is_some() {
+                app.disconnect();
+                app.set_status("Disconnected.".into());
+            } else {
+                app.set_status("Not connected.".into());
+            }
+        }
         Action::ResetDevice => match app.port_cmd_tx() {
             Some(cmd_tx) => {
                 if cmd_tx.send(serial::PortCommand::Reset).is_err() {
@@ -797,6 +818,20 @@ mod tests {
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::None);
         assert_eq!(app.scroll(), 0);
+    }
+
+    #[test]
+    fn handle_key_d_disconnects() {
+        let mut app = App::new(None);
+        assert_eq!(app.handle_key(key(KeyCode::Char('d'))), Action::Disconnect);
+    }
+
+    #[test]
+    fn disconnect_clears_port_state() {
+        let mut app = App::new(Some("COM1".into()));
+        app.disconnect();
+        assert!(app.port_name().is_none());
+        assert!(app.port_cmd_tx().is_none());
     }
 
     #[test]

@@ -130,7 +130,10 @@ impl Port {
                     }
                 }
                 match reader.read_line(&mut line) {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        let _ = tx.send(crate::event::Message::Disconnected);
+                        break;
+                    }
                     Ok(_) => {
                         let trimmed = line.trim_end().to_owned();
                         line.clear();
@@ -139,7 +142,10 @@ impl Port {
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
-                    Err(_) => break,
+                    Err(_) => {
+                        let _ = tx.send(crate::event::Message::Disconnected);
+                        break;
+                    }
                 }
             }
         });

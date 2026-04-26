@@ -46,6 +46,8 @@ fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
     let left = Line::from(vec![
         hint("C", "onnect"),
         Span::raw("  "),
+        hint("D", "isconnect"),
+        Span::raw("  "),
         hint("F", "lash"),
         Span::raw("  "),
         hint("R", "eset"),
@@ -57,11 +59,12 @@ fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
         hint("Tab", "Filter"),
     ]);
 
+    let right_len = u16::try_from(port_label.len()).unwrap_or(u16::MAX);
     let right =
         Line::from(Span::styled(port_label, Style::default().fg(Color::Cyan)));
-
     let [left_area, right_area] =
-        Layout::horizontal([Constraint::Min(0), Constraint::Length(30)]).areas(area);
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(right_len)])
+            .areas(area);
 
     frame.render_widget(Paragraph::new(left), left_area);
     frame.render_widget(

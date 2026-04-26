@@ -7,4 +7,6 @@ pub enum Message {
     Serial(String),
     /// 250ms heartbeat for status-message expiry.
     Tick,
+    /// The serial port was lost (I/O error or physical unplug).
+    Disconnected,
 }
