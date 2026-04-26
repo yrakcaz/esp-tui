@@ -111,6 +111,7 @@ impl Port {
                         "failed to open {}: {e}",
                         self.name
                     )));
+                    let _ = tx.send(crate::event::Message::Disconnected);
                     return;
                 }
             };

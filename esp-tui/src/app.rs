@@ -91,6 +91,17 @@ impl PortSelector {
     pub fn selected(&self) -> &str {
         self.ports.get(self.cursor).map_or("", String::as_str)
     }
+
+    /// Replaces the candidate port list and clamps the cursor to the new
+    /// bounds.
+    ///
+    /// # Arguments
+    ///
+    /// * `ports` - Updated list of available ports.
+    pub fn update_ports(&mut self, ports: Vec<String>) {
+        self.cursor = self.cursor.min(ports.len().saturating_sub(1));
+        self.ports = ports;
+    }
 }
 
 /// Central application state.
@@ -387,6 +398,22 @@ impl App {
         self.port_selector = Some(PortSelector::new(ports));
     }
 
+    /// Updates the open port selector with a refreshed port list.
+    ///
+    /// Closes the selector when `ports` is empty; otherwise replaces the
+    /// list and clamps the cursor.
+    ///
+    /// # Arguments
+    ///
+    /// * `ports` - Updated list of available ports.
+    pub fn refresh_port_selector(&mut self, ports: Vec<String>) {
+        if ports.is_empty() {
+            self.port_selector = None;
+        } else if let Some(sel) = self.port_selector.as_mut() {
+            sel.update_ports(ports);
+        }
+    }
+
     /// Signals the event loop to stop.
     pub fn quit(&mut self) {
         self.running = false;
@@ -607,11 +634,18 @@ fn handle_ports_detected(
     ports: Vec<String>,
     tx: &mpsc::UnboundedSender<event::Message>,
 ) {
-    if app.port_name().is_none() && app.port_selector().is_none() {
-        match ports.len() {
-            0 => {}
-            1 => connect_port(app, ports.into_iter().next().unwrap(), tx),
-            _ => app.open_port_selector(ports),
+    if app.port_name().is_none() {
+        if app.port_selector().is_some() {
+            app.refresh_port_selector(ports);
+            if app.port_selector().is_none() {
+                app.set_status("No devices detected.".into());
+            }
+        } else {
+            match ports.len() {
+                0 => {}
+                1 => connect_port(app, ports.into_iter().next().unwrap(), tx),
+                _ => app.open_port_selector(ports),
+            }
         }
     } else if let Some(current) = app.port_name() {
         if ports.iter().any(|p| p.as_str() != current) {
@@ -677,6 +711,24 @@ mod tests {
         assert_eq!(sel.selected(), "");
     }
 
+    #[test]
+    fn port_selector_update_ports_replaces_list_and_clamps_cursor() {
+        let mut sel =
+            PortSelector::new(vec!["COM1".into(), "COM2".into(), "COM3".into()]);
+        sel.move_cursor(2);
+        sel.update_ports(vec!["COM4".into()]);
+        assert_eq!(sel.ports(), &["COM4"]);
+        assert_eq!(sel.cursor(), 0);
+    }
+
+    #[test]
+    fn port_selector_update_ports_empty_resets_cursor() {
+        let mut sel = PortSelector::new(vec!["COM1".into()]);
+        sel.update_ports(vec![]);
+        assert_eq!(sel.cursor(), 0);
+        assert!(sel.ports().is_empty());
+    }
+
     // --- App basic state ---
 
     #[test]
@@ -725,6 +777,32 @@ mod tests {
         app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
         let sel = app.port_selector().unwrap();
         assert_eq!(sel.ports(), &["COM1", "COM2"]);
+    }
+
+    #[test]
+    fn refresh_port_selector_closes_on_empty() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into()]);
+        app.refresh_port_selector(vec![]);
+        assert!(app.port_selector().is_none());
+    }
+
+    #[test]
+    fn refresh_port_selector_updates_list_and_clamps_cursor() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
+        app.port_selector_mut().unwrap().move_cursor(1);
+        app.refresh_port_selector(vec!["COM3".into()]);
+        let sel = app.port_selector().unwrap();
+        assert_eq!(sel.ports(), &["COM3"]);
+        assert_eq!(sel.cursor(), 0);
+    }
+
+    #[test]
+    fn refresh_port_selector_no_op_when_closed() {
+        let mut app = App::new(None);
+        app.refresh_port_selector(vec!["COM1".into()]);
+        assert!(app.port_selector().is_none());
     }
 
     // --- App::push_line ---
@@ -1025,6 +1103,15 @@ mod tests {
         app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
         let action = app.handle_key(key(KeyCode::Enter));
         assert_eq!(action, Action::ConnectPort("COM1".to_owned()));
+        assert!(app.port_selector().is_none());
+    }
+
+    #[test]
+    fn handle_key_port_selector_c_dismisses() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into()]);
+        let action = app.handle_key(key(KeyCode::Char('c')));
+        assert_eq!(action, Action::None);
         assert!(app.port_selector().is_none());
     }
 
