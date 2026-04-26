@@ -173,7 +173,7 @@ impl App {
                         Action::ConnectPort(s.selected().to_owned())
                     })
                 }
-                KeyCode::Char('q') | KeyCode::Esc => {
+                KeyCode::Char('q' | 'c') | KeyCode::Esc => {
                     self.port_selector = None;
                     Action::None
                 }
@@ -437,19 +437,12 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
         demo::Generator.spawn(tx.clone(), src_rx);
         app.set_port("demo".into());
         app.set_source_shutdown(src_tx);
+        app.set_status("Connected to demo.".into());
     } else {
         let ports = resolve_ports(args.port)?;
         match ports.len() {
             0 => {}
-            1 => {
-                let port = ports.into_iter().next().unwrap();
-                let (src_tx, src_rx) = watch::channel(false);
-                let (_, cmd_tx) =
-                    serial::Port::new(port.clone()).spawn(tx.clone(), src_rx);
-                app.set_port(port);
-                app.set_port_cmd(cmd_tx);
-                app.set_source_shutdown(src_tx);
-            }
+            1 => connect_port(&mut app, ports.into_iter().next().unwrap(), &tx),
             _ => app.open_port_selector(ports),
         }
     }
@@ -553,9 +546,11 @@ fn connect_port(
 ) {
     let (src_tx, src_rx) = watch::channel(false);
     let (_, cmd_tx) = serial::Port::new(port.clone()).spawn(tx.clone(), src_rx);
+    let status = format!("Connected to {port}.");
     app.set_port(port);
     app.set_port_cmd(cmd_tx);
     app.set_source_shutdown(src_tx);
+    app.set_status(status);
 }
 
 fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {

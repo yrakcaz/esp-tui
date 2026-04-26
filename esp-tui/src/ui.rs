@@ -272,8 +272,8 @@ fn render_port_selector(frame: &mut Frame, area: Rect, sel: &PortSelector) {
     let ports = sel.ports();
     let height = (u16::try_from(ports.len())
         .unwrap_or(u16::MAX)
-        .saturating_add(4))
-    .max(5)
+        .saturating_add(3))
+    .max(4)
     .min(area.height);
     let width =
         (u16::try_from(HINT.chars().count()).unwrap_or(50) + 4).min(area.width);
