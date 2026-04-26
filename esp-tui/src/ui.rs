@@ -193,11 +193,11 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 
 fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
     use crate::filter;
+    const HINT: &str = " [Space] toggle  [^A] toggle all  [q/Esc] close";
 
     let filter = app.filter();
     let tags = filter.known_tags();
     let levels = filter::State::levels();
-
     let tag_rows = u16::try_from(tags.len()).unwrap_or(u16::MAX);
     let height = (2
         + 1
@@ -205,7 +205,8 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
         + if tags.is_empty() { 0 } else { 1 + tag_rows }
         + 1)
     .min(area.height);
-    let popup = centered_rect(40, height, area);
+    let width = (u16::try_from(HINT.len()).unwrap_or(60) + 2).min(area.width);
+    let popup = centered_rect(width, height, area);
 
     frame.render_widget(Clear, popup);
 
