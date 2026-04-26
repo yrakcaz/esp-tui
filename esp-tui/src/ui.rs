@@ -205,7 +205,7 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
         + if tags.is_empty() { 0 } else { 1 + tag_rows }
         + 1)
     .min(area.height);
-    let width = (u16::try_from(HINT.len()).unwrap_or(60) + 2).min(area.width);
+    let width = (u16::try_from(HINT.len()).unwrap_or(60) + 3).min(area.width);
     let popup = centered_rect(width, height, area);
 
     frame.render_widget(Clear, popup);
