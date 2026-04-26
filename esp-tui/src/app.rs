@@ -212,11 +212,11 @@ impl App {
                 self.filter.toggle_popup();
                 Action::None
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 self.scroll = self.scroll.saturating_add(1);
                 Action::None
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 self.scroll = self.scroll.saturating_sub(1);
                 Action::None
             }
@@ -790,21 +790,19 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_up_and_k_scroll_up() {
+    fn handle_key_up_scrolls_up() {
         let mut app = App::new(None);
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.scroll(), 1);
-        app.handle_key(key(KeyCode::Char('k')));
-        assert_eq!(app.scroll(), 2);
     }
 
     #[test]
-    fn handle_key_down_and_j_scroll_down_clamp() {
+    fn handle_key_down_scrolls_down_and_clamps() {
         let mut app = App::new(None);
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.scroll(), 0);
         app.handle_key(key(KeyCode::Up));
-        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Down));
         assert_eq!(app.scroll(), 0);
     }
 

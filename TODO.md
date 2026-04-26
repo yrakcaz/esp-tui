@@ -61,5 +61,6 @@
 - [ ] Defmt binary log format support
 - [ ] Multi-device tab switching
 - [ ] `esp-tui.toml` config file (port, baud, ELF path, buffer size, agent options)
+- [ ] Configurable keybindings, potentially with preset modes (e.g. vim, emacs); keybindings like j/k were intentionally left out for now pending this
 - [ ] `--project` flag to auto-detect ELF from Cargo project
 - [ ] Mouse support for scrolling log pane
