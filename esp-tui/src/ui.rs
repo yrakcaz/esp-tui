@@ -105,7 +105,7 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 Line::from(vec![
                     Span::styled(
-                        format!("[{}]", e.level().label()),
+                        format!("{:<7}", format!("[{}]", e.level().label())),
                         Style::default()
                             .fg(e.level().color())
                             .add_modifier(Modifier::BOLD),
@@ -232,8 +232,7 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(level.color())
         };
         items.push(
-            ListItem::new(format!("  {marker} {}", level.label().trim()))
-                .style(style),
+            ListItem::new(format!("  {marker} {}", level.label())).style(style),
         );
     }
 

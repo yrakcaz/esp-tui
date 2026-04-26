@@ -37,8 +37,8 @@ impl Level {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Error => "ERROR",
-            Self::Warn => "WARN ",
-            Self::Info => "INFO ",
+            Self::Warn => "WARN",
+            Self::Info => "INFO",
             Self::Debug => "DEBUG",
             Self::Verbose => "VERBOSE",
         }
@@ -219,8 +219,8 @@ mod tests {
     #[test]
     fn level_labels() {
         assert_eq!(Level::Error.label(), "ERROR");
-        assert_eq!(Level::Warn.label(), "WARN ");
-        assert_eq!(Level::Info.label(), "INFO ");
+        assert_eq!(Level::Warn.label(), "WARN");
+        assert_eq!(Level::Info.label(), "INFO");
         assert_eq!(Level::Debug.label(), "DEBUG");
         assert_eq!(Level::Verbose.label(), "VERBOSE");
     }
