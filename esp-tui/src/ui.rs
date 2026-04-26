@@ -267,13 +267,17 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_port_selector(frame: &mut Frame, area: Rect, sel: &PortSelector) {
+    const HINT: &str = " [↑/↓] navigate  [Enter] connect  [q/Esc] close";
+
     let ports = sel.ports();
     let height = (u16::try_from(ports.len())
         .unwrap_or(u16::MAX)
         .saturating_add(4))
     .max(5)
     .min(area.height);
-    let popup = centered_rect(44, height, area);
+    let width =
+        (u16::try_from(HINT.chars().count()).unwrap_or(50) + 4).min(area.width);
+    let popup = centered_rect(width, height, area);
 
     frame.render_widget(Clear, popup);
 
@@ -282,7 +286,7 @@ fn render_port_selector(frame: &mut Frame, area: Rect, sel: &PortSelector) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
 
-    let items: Vec<ListItem> = ports
+    let mut items: Vec<ListItem> = ports
         .iter()
         .enumerate()
         .map(|(i, port)| {
@@ -294,6 +298,8 @@ fn render_port_selector(frame: &mut Frame, area: Rect, sel: &PortSelector) {
             ListItem::new(format!("  {port}")).style(style)
         })
         .collect();
+
+    items.push(ListItem::new(HINT).style(Style::default().fg(Color::DarkGray)));
 
     let list = List::new(items).block(block);
     frame.render_widget(list, popup);
