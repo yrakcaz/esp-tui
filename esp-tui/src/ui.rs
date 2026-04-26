@@ -105,7 +105,7 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 Line::from(vec![
                     Span::styled(
-                        format!("{:<7}", format!("[{}]", e.level().label())),
+                        format!("[{}]", e.level().label()),
                         Style::default()
                             .fg(e.level().color())
                             .add_modifier(Modifier::BOLD),
