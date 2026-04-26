@@ -43,16 +43,6 @@
 - [ ] Per-pane independent scrolling once Inspector has scrollable content
 - [ ] Per-pane independent resizing (adjust split ratio with keybindings)
 
-## Release
-
-- [ ] Make the repo public
-- [ ] Add CI and license badges to README
-- [ ] Publish `esp-tui` to crates.io
-- [ ] Add crates.io version badge to README
-- [ ] Pre-built binaries via GitHub Releases (Linux x86_64, macOS x86_64/ARM64)
-- [ ] Homebrew tap
-- [ ] Install script (`curl -fsSL https://esp-tui.dev/install.sh | sh`)
-
 ## Phase 4: Polish
 
 - [ ] Panic/backtrace decoder: addr2line + ELF symbol resolution
@@ -66,3 +56,13 @@
 - [ ] Mouse support for scrolling log pane
 - [ ] Log search: `/` opens an inline search bar at the bottom of the monitor pane (like tmux/less); `n`/`N` to jump between matches with highlighting
 - [ ] Log regex filter: live filter mode that hides non-matching lines, stacking on top of the existing level/tag filter; consider reusing the `/` entry point with a toggle between highlight and filter modes
+
+## Release
+
+- [ ] Make the repo public
+- [ ] Add CI and license badges to README
+- [ ] Publish `esp-tui` to crates.io
+- [ ] Add crates.io version badge to README
+- [ ] Pre-built binaries via GitHub Releases (Linux x86_64, macOS x86_64/ARM64)
+- [ ] Homebrew tap
+- [ ] Install script (`curl -fsSL https://esp-tui.dev/install.sh | sh`)
