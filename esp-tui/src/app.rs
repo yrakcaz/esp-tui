@@ -453,6 +453,8 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
             _ => app.open_port_selector(ports),
         }
     }
+    spawn_port_poller(tx.clone(), shutdown_rx.clone());
+
     let mut tick = interval(Duration::from_millis(250));
 
     let key_tx = tx.clone();
@@ -495,6 +497,9 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
                 app.set_status("Disconnected.".into());
             }
             event::Message::Tick => app.tick(),
+            event::Message::PortsDetected(ports) => {
+                handle_ports_detected(&mut app, ports, &tx);
+            }
         }
 
         if !app.is_running() {
@@ -572,6 +577,52 @@ fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
         return Ok(vec![p]);
     }
     serial::detect_esp_ports()
+}
+
+fn spawn_port_poller(
+    tx: mpsc::UnboundedSender<event::Message>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    tokio::spawn(async move {
+        let mut last_ports: Vec<String> = Vec::new();
+        let mut poll = interval(Duration::from_secs(1));
+        loop {
+            tokio::select! {
+                _ = poll.tick() => {
+                    let ports = tokio::task::spawn_blocking(serial::detect_esp_ports)
+                        .await
+                        .ok()
+                        .and_then(std::result::Result::ok)
+                        .unwrap_or_default();
+                    if ports != last_ports {
+                        last_ports.clone_from(&ports);
+                        if tx.send(event::Message::PortsDetected(ports)).is_err() {
+                            break;
+                        }
+                    }
+                }
+                _ = shutdown.changed() => break,
+            }
+        }
+    });
+}
+
+fn handle_ports_detected(
+    app: &mut App,
+    ports: Vec<String>,
+    tx: &mpsc::UnboundedSender<event::Message>,
+) {
+    if app.port_name().is_none() && app.port_selector().is_none() {
+        match ports.len() {
+            0 => {}
+            1 => connect_port(app, ports.into_iter().next().unwrap(), tx),
+            _ => app.open_port_selector(ports),
+        }
+    } else if let Some(current) = app.port_name() {
+        if ports.iter().any(|p| p.as_str() != current) {
+            app.set_status("New device detected. Press [c] to connect.".into());
+        }
+    }
 }
 
 #[cfg(test)]

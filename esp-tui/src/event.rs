@@ -9,4 +9,6 @@ pub enum Message {
     Tick,
     /// The serial port was lost (I/O error or physical unplug).
     Disconnected,
+    /// Background port scan; carries the current set of detected ports.
+    PortsDetected(Vec<String>),
 }
