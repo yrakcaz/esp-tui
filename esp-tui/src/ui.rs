@@ -88,7 +88,10 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let height = inner.height as usize;
+    let [content_area, footer_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
+
+    let height = content_area.height as usize;
     let entries = app.visible_entries(height);
 
     let lines: Vec<Line> = entries
@@ -118,7 +121,31 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        content_area,
+    );
+
+    let footer = if app.scroll() > 0 {
+        Line::from(vec![
+            Span::styled(
+                " SCROLL ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            ),
+            Span::styled(
+                "  q/Esc to follow live",
+                Style::default().fg(Color::Yellow),
+            ),
+        ])
+    } else {
+        Line::from(Span::styled(
+            "[↑/k  ↓/j  PgUp/PgDn] scroll",
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+    frame.render_widget(Paragraph::new(footer), footer_area);
 }
 
 fn render_inspector(frame: &mut Frame, area: Rect) {

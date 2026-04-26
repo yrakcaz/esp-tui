@@ -193,6 +193,10 @@ impl App {
         }
 
         match key.code {
+            KeyCode::Char('q') | KeyCode::Esc if self.scroll > 0 => {
+                self.scroll = 0;
+                Action::None
+            }
             KeyCode::Char('q') => Action::Quit,
             KeyCode::Char('r') => Action::ResetDevice,
             KeyCode::Char('f') => {
@@ -730,6 +734,23 @@ mod tests {
     fn handle_key_q_quits() {
         let mut app = App::new(None);
         assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::Quit);
+    }
+
+    #[test]
+    fn handle_key_q_exits_scroll_mode_when_scrolled() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.scroll(), 1);
+        assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::None);
+        assert_eq!(app.scroll(), 0);
+    }
+
+    #[test]
+    fn handle_key_esc_exits_scroll_mode_when_scrolled() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::None);
+        assert_eq!(app.scroll(), 0);
     }
 
     #[test]
