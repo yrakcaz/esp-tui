@@ -18,47 +18,42 @@ static LINES: &[&str] = &[
     "I (8000) wifi: Disconnected, reconnecting...",
 ];
 
-/// A synthetic log source that emits pre-defined ESP-IDF log lines on a fixed
-/// interval for UI development without hardware.
-pub(crate) struct Generator;
-
-impl Generator {
-    /// Spawns an async task that cycles through demo log lines every 100ms.
-    ///
-    /// # Arguments
-    ///
-    /// * `tx` - Sender for forwarding demo lines as
-    ///   [`crate::event::Message::Serial`] events.
-    /// * `shutdown` - Watch receiver; the task exits when the value becomes
-    ///   `true`.
-    ///
-    /// # Returns
-    ///
-    /// A [`tokio::task::JoinHandle`] for the spawned task.
-    #[must_use]
-    pub(crate) fn spawn(
-        tx: tokio::sync::mpsc::UnboundedSender<crate::event::Message>,
-        mut shutdown: tokio::sync::watch::Receiver<bool>,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            let mut ticker = interval(Duration::from_millis(100));
-            let mut idx = 0usize;
-            loop {
-                tokio::select! {
-                    _ = ticker.tick() => {
-                        let line = LINES[idx % LINES.len()].to_owned();
-                        idx += 1;
-                        if tx.send(crate::event::Message::Serial(line)).is_err() {
-                            break;
-                        }
-                    }
-                    _ = shutdown.changed() => {
-                        if *shutdown.borrow() { break; }
+/// Spawns an async task that cycles through pre-defined ESP-IDF log lines
+/// every 100ms, for UI development without hardware.
+///
+/// # Arguments
+///
+/// * `tx` - Sender for forwarding demo lines as
+///   [`crate::event::Message::Serial`] events.
+/// * `shutdown` - Watch receiver; the task exits when the value becomes
+///   `true`.
+///
+/// # Returns
+///
+/// A [`tokio::task::JoinHandle`] for the spawned task.
+#[must_use]
+pub(crate) fn spawn(
+    tx: tokio::sync::mpsc::UnboundedSender<crate::event::Message>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_millis(100));
+        let mut idx = 0usize;
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    let line = LINES[idx % LINES.len()].to_owned();
+                    idx += 1;
+                    if tx.send(crate::event::Message::Serial(line)).is_err() {
+                        break;
                     }
                 }
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() { break; }
+                }
             }
-        })
-    }
+        }
+    })
 }
 
 #[cfg(test)]

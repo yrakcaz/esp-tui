@@ -56,6 +56,7 @@ pub(crate) fn detect_esp_ports() -> anyhow::Result<Vec<String>> {
 
 /// Commands that can be sent to a running serial port reader task.
 pub(crate) enum PortCommand {
+    /// Pulse RTS/EN low to trigger a hardware reset on the ESP32.
     Reset,
 }
 
@@ -104,11 +105,10 @@ impl Port {
                 .open()
             {
                 Err(e) => {
-                    let _ = tx.send(crate::event::Message::Serial(format!(
+                    let _ = tx.send(crate::event::Message::ConnectError(format!(
                         "failed to open {}: {e}",
                         self.name
                     )));
-                    let _ = tx.send(crate::event::Message::Disconnected);
                 }
                 Ok(port) => {
                     let mut reader = std::io::BufReader::new(port);

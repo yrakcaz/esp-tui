@@ -1,7 +1,8 @@
 use crossterm::event::KeyEvent;
 
-/// A message passed through the main select! loop.
+/// Inter-task messages driven through the main `select!` event loop.
 pub(crate) enum Message {
+    /// A keyboard event forwarded from the blocking input reader.
     Key(KeyEvent),
     /// One decoded UTF-8 line from the serial stream (lossy).
     Serial(String),
@@ -9,6 +10,8 @@ pub(crate) enum Message {
     Tick,
     /// The serial port was lost (I/O error or physical unplug).
     Disconnected,
+    /// The serial port failed to open; carries a human-readable error.
+    ConnectError(String),
     /// Background port scan; carries the current set of detected ports.
     PortsDetected(Vec<String>),
 }

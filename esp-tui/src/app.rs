@@ -33,10 +33,15 @@ struct Args {
 /// Outcome of a keypress that requires I/O, returned to the event loop to act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Action {
+    /// No I/O required; state was updated in place or key was ignored.
     None,
+    /// Shut down the application.
     Quit,
+    /// Send a hardware reset pulse to the connected ESP32.
     ResetDevice,
+    /// Close the active serial connection.
     Disconnect,
+    /// Scan for available serial ports and connect or open the selector.
     ScanPorts,
     /// Connect to the given port name (emitted by the port selector popup).
     ConnectPort(String),
@@ -182,14 +187,14 @@ impl App {
         } else if self.port_selector.is_some() {
             match key.code {
                 KeyCode::Up => {
-                    if let Some(sel) = self.port_selector.as_mut() {
-                        sel.move_cursor(-1);
+                    if let Some(s) = self.port_selector.as_mut() {
+                        s.move_cursor(-1);
                     }
                     Action::None
                 }
                 KeyCode::Down => {
-                    if let Some(sel) = self.port_selector.as_mut() {
-                        sel.move_cursor(1);
+                    if let Some(s) = self.port_selector.as_mut() {
+                        s.move_cursor(1);
                     }
                     Action::None
                 }
@@ -336,15 +341,19 @@ impl App {
     /// A `Vec` of references to visible entries, oldest first.
     #[must_use]
     pub(crate) fn visible_entries(&self, height: usize) -> Vec<&log::Entry> {
-        let visible: Vec<&log::Entry> = self
+        let total = self
             .log_buffer
             .iter()
             .filter(|e| self.filter.is_visible(e))
-            .collect();
-        let total = visible.len();
+            .count();
         let skip = self.scroll.min(total.saturating_sub(height));
         let start = total.saturating_sub(height).saturating_sub(skip);
-        visible.into_iter().skip(start).take(height).collect()
+        self.log_buffer
+            .iter()
+            .filter(|e| self.filter.is_visible(e))
+            .skip(start)
+            .take(height)
+            .collect()
     }
 
     /// Returns a shared reference to the port selector, if active.
@@ -504,7 +513,7 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
 
     if args.demo {
         let (src_tx, src_rx) = watch::channel(false);
-        drop(demo::Generator::spawn(tx.clone(), src_rx));
+        drop(demo::spawn(tx.clone(), src_rx));
         app.set_port("demo".into());
         app.set_source_shutdown(src_tx);
         app.set_status("Connected to demo.".into());
@@ -558,6 +567,10 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
             event::Message::Disconnected => {
                 app.disconnect();
                 app.set_status("Disconnected.".into());
+            }
+            event::Message::ConnectError(msg) => {
+                app.disconnect();
+                app.set_status(msg);
             }
             event::Message::Tick => app.tick(),
             event::Message::PortsDetected(ports) => {
@@ -1326,9 +1339,17 @@ mod tests {
     }
 
     #[test]
-    fn handle_action_scan_ports_does_not_panic() {
+    fn handle_action_scan_ports_leaves_app_in_consistent_state() {
         let mut app = App::new(None);
         handle_action(&mut app, Action::ScanPorts, &make_tx());
-        // Outcome depends on available ports; verifies no panic.
+        // After a scan, exactly one of these must be true: a status message
+        // was set (no ports or error), a port was connected, or the selector
+        // is open (multiple ports found).
+        assert!(
+            app.status_msg().is_some()
+                || app.port_name().is_some()
+                || app.port_selector().is_some(),
+            "scan_ports must produce an observable state change"
+        );
     }
 }

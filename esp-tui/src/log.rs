@@ -131,8 +131,10 @@ pub(crate) fn parse_line(line: &str) -> Entry {
     RE.captures(clean.as_ref()).map_or_else(
         || Entry::from_raw_line(clean.as_ref()),
         |caps| {
-            // The regex guarantees [EWIDV] in group 1, so None is unreachable.
-            let level_char = caps[1].chars().next().unwrap_or('V');
+            let level_char = caps[1]
+                .chars()
+                .next()
+                .expect("regex guarantees group 1 is non-empty");
             Level::try_from(level_char).map_or_else(
                 |_| Entry::from_raw_line(clean.as_ref()),
                 |level| Entry::parsed(level, &caps[3], &caps[4]),
