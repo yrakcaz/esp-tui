@@ -1,6 +1,13 @@
 use std::collections::HashSet;
+use std::hash::Hash;
 
 use crate::log;
+
+fn toggle_in_set<T: Eq + Hash>(set: &mut HashSet<T>, value: T) {
+    if !set.remove(&value) {
+        set.insert(value);
+    }
+}
 
 const LEVELS: [log::Level; 5] = [
     log::Level::Error,
@@ -67,20 +74,11 @@ impl State {
     /// address severity levels; indices 5 and above address known tags.
     pub fn toggle_at_cursor(&mut self) {
         if self.cursor < LEVELS.len() {
-            let level = LEVELS[self.cursor];
-            if self.hidden_levels.contains(&level) {
-                self.hidden_levels.remove(&level);
-            } else {
-                self.hidden_levels.insert(level);
-            }
+            toggle_in_set(&mut self.hidden_levels, LEVELS[self.cursor]);
         } else if let Some(tag) =
             self.known_tags.get(self.cursor - LEVELS.len()).cloned()
         {
-            if self.hidden_tags.contains(&tag) {
-                self.hidden_tags.remove(&tag);
-            } else {
-                self.hidden_tags.insert(tag);
-            }
+            toggle_in_set(&mut self.hidden_tags, tag);
         }
     }
 
@@ -107,6 +105,10 @@ impl State {
     }
 
     /// Toggles the filter popup open or closed.
+    ///
+    /// # Returns
+    ///
+    /// The new open state is accessible via [`Self::is_popup_open`].
     pub fn toggle_popup(&mut self) {
         self.popup_open = !self.popup_open;
     }
@@ -203,7 +205,7 @@ mod tests {
     fn toggle_hides_and_shows_level() {
         let mut s = State::new();
         assert!(!s.is_level_hidden(log::Level::Error));
-        s.toggle_at_cursor(); // cursor=0 → Error
+        s.toggle_at_cursor();
         assert!(s.is_level_hidden(log::Level::Error));
         s.toggle_at_cursor();
         assert!(!s.is_level_hidden(log::Level::Error));
@@ -224,7 +226,7 @@ mod tests {
     #[test]
     fn is_visible_respects_hidden_level() {
         let mut s = State::new();
-        s.toggle_at_cursor(); // cursor=0 → hide Error
+        s.toggle_at_cursor();
         let error = log::parse_line("E (1) app: boom");
         assert!(!s.is_visible(&error));
         let info = log::parse_line("I (1) app: ok");
@@ -245,7 +247,7 @@ mod tests {
     fn toggle_all_shows_all_when_any_hidden() {
         let mut s = State::new();
         s.record_tag("wifi");
-        s.toggle_at_cursor(); // hide Error
+        s.toggle_at_cursor();
         s.toggle_all();
         assert!(!s.is_level_hidden(log::Level::Error));
         assert!(!s.is_tag_hidden("wifi"));

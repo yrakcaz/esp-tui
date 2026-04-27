@@ -97,7 +97,7 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App) {
     let height = content_area.height as usize;
     let entries = app.visible_entries(height);
 
-    let lines: Vec<Line<'_>> = entries
+    let text: ratatui::text::Text = entries
         .iter()
         .map(|e| {
             if e.tag().is_empty() {
@@ -125,7 +125,7 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
 
     frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        Paragraph::new(text).wrap(Wrap { trim: false }),
         content_area,
     );
 
@@ -219,48 +219,45 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
         .fg(Color::DarkGray)
         .add_modifier(Modifier::BOLD);
 
-    let mut items: Vec<ListItem> = Vec::new();
-
-    items.push(ListItem::new(" Severity").style(section_style));
-    for (i, &level) in levels.iter().enumerate() {
-        let marker = if filter.is_level_hidden(level) {
-            "[ ]"
-        } else {
-            "[x]"
-        };
-        let style = if filter.cursor() == i {
-            Style::default()
-                .fg(level.color())
-                .add_modifier(Modifier::REVERSED)
-        } else {
-            Style::default().fg(level.color())
-        };
-        items.push(
-            ListItem::new(format!("  {marker} {}", level.label())).style(style),
-        );
-    }
-
-    if !tags.is_empty() {
-        items.push(ListItem::new(" Tags").style(section_style));
-        for (i, tag) in tags.iter().enumerate() {
-            let marker = if filter.is_tag_hidden(tag) {
-                "[ ]"
-            } else {
-                "[x]"
-            };
-            let style = if filter.cursor() == levels.len() + i {
-                Style::default().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::default()
-            };
-            items.push(ListItem::new(format!("  {marker} {tag}")).style(style));
-        }
-    }
-
-    items.push(
-        ListItem::new(" [Space] toggle  [^A] toggle all  [q/Esc] close")
-            .style(Style::default().fg(Color::DarkGray)),
-    );
+    let items: Vec<ListItem> =
+        std::iter::once(ListItem::new(" Severity").style(section_style))
+            .chain(levels.iter().enumerate().map(|(i, &level)| {
+                let marker = if filter.is_level_hidden(level) {
+                    "[ ]"
+                } else {
+                    "[x]"
+                };
+                let style = if filter.cursor() == i {
+                    Style::default()
+                        .fg(level.color())
+                        .add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default().fg(level.color())
+                };
+                ListItem::new(format!("  {marker} {}", level.label())).style(style)
+            }))
+            .chain(
+                (!tags.is_empty())
+                    .then_some(ListItem::new(" Tags").style(section_style)),
+            )
+            .chain(tags.iter().enumerate().map(|(i, tag)| {
+                let marker = if filter.is_tag_hidden(tag) {
+                    "[ ]"
+                } else {
+                    "[x]"
+                };
+                let style = if filter.cursor() == levels.len() + i {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(format!("  {marker} {tag}")).style(style)
+            }))
+            .chain(std::iter::once(
+                ListItem::new(" [Space] toggle  [^A] toggle all  [q/Esc] close")
+                    .style(Style::default().fg(Color::DarkGray)),
+            ))
+            .collect();
 
     let list = List::new(items).block(block);
     frame.render_widget(list, popup);
@@ -286,7 +283,7 @@ fn render_port_selector(frame: &mut Frame, area: Rect, sel: &PortSelector) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
 
-    let mut items: Vec<ListItem> = ports
+    let items: Vec<ListItem> = ports
         .iter()
         .enumerate()
         .map(|(i, port)| {
@@ -297,9 +294,10 @@ fn render_port_selector(frame: &mut Frame, area: Rect, sel: &PortSelector) {
             };
             ListItem::new(format!("  {port}")).style(style)
         })
+        .chain(std::iter::once(
+            ListItem::new(HINT).style(Style::default().fg(Color::DarkGray)),
+        ))
         .collect();
-
-    items.push(ListItem::new(HINT).style(Style::default().fg(Color::DarkGray)));
 
     let list = List::new(items).block(block);
     frame.render_widget(list, popup);
@@ -307,9 +305,47 @@ fn render_port_selector(frame: &mut Frame, area: Rect, sel: &PortSelector) {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
+    use ratatui::Terminal;
 
     use super::centered_rect;
+    use crate::app::App;
+
+    fn render(app: &App) {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| super::draw(f, app)).unwrap();
+    }
+
+    #[test]
+    fn draw_empty_app_does_not_panic() {
+        render(&App::new(None));
+    }
+
+    #[test]
+    fn draw_with_log_entries_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.push_line("I (1) wifi: Connected");
+        app.push_line("E (1) i2c: Timeout");
+        app.push_line("some raw line");
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_filter_popup_open_does_not_panic() {
+        let mut app = App::new(None);
+        app.push_line("I (1) wifi: msg");
+        app.filter_mut().toggle_popup();
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_port_selector_open_does_not_panic() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
+        render(&app);
+    }
 
     #[test]
     fn centered_rect_centers_within_area() {
@@ -335,8 +371,8 @@ mod tests {
     fn centered_rect_with_offset_origin() {
         let area = Rect::new(10, 5, 80, 40);
         let r = centered_rect(20, 10, area);
-        assert_eq!(r.x, 40); // 10 + (80-20)/2
-        assert_eq!(r.y, 20); // 5 + (40-10)/2
+        assert_eq!(r.x, 40);
+        assert_eq!(r.y, 20);
         assert_eq!(r.width, 20);
         assert_eq!(r.height, 10);
     }

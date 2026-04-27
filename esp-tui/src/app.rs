@@ -13,7 +13,6 @@ use ratatui::Terminal;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{interval, Duration};
 
-use crate::source::Emitter;
 use crate::{demo, event, filter, log, serial, ui};
 
 const BUFFER_SIZE: usize = 10_000;
@@ -62,12 +61,20 @@ impl PortSelector {
     }
 
     /// Returns all candidate port names.
+    ///
+    /// # Returns
+    ///
+    /// A slice of port name strings in selection order.
     #[must_use]
     pub fn ports(&self) -> &[String] {
         &self.ports
     }
 
     /// Returns the current cursor index.
+    ///
+    /// # Returns
+    ///
+    /// Zero-based index into the port list.
     #[must_use]
     pub fn cursor(&self) -> usize {
         self.cursor
@@ -86,6 +93,11 @@ impl PortSelector {
     }
 
     /// Returns the currently selected port name.
+    ///
+    /// # Returns
+    ///
+    /// The port name at the current cursor, or an empty string if the list is
+    /// empty.
     #[must_use]
     pub fn selected(&self) -> &str {
         self.ports.get(self.cursor).map_or("", String::as_str)
@@ -168,14 +180,19 @@ impl App {
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
             Action::Quit
         } else if self.port_selector.is_some() {
-            if let Some(sel) = self.port_selector.as_mut() {
-                match key.code {
-                    KeyCode::Up => sel.move_cursor(-1),
-                    KeyCode::Down => sel.move_cursor(1),
-                    _ => {}
-                }
-            }
             match key.code {
+                KeyCode::Up => {
+                    if let Some(sel) = self.port_selector.as_mut() {
+                        sel.move_cursor(-1);
+                    }
+                    Action::None
+                }
+                KeyCode::Down => {
+                    if let Some(sel) = self.port_selector.as_mut() {
+                        sel.move_cursor(1);
+                    }
+                    Action::None
+                }
                 KeyCode::Enter => {
                     self.port_selector.take().map_or(Action::None, |s| {
                         Action::ConnectPort(s.selected().to_owned())
@@ -207,7 +224,7 @@ impl App {
                     self.scroll = 0;
                     Action::None
                 }
-                KeyCode::Char('q') => Action::Quit,
+                KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
                 KeyCode::Char('d') => Action::Disconnect,
                 KeyCode::Char('r') => Action::ResetDevice,
                 KeyCode::Char('f') => {
@@ -291,6 +308,10 @@ impl App {
     }
 
     /// Returns a mutable reference to the filter state.
+    ///
+    /// # Returns
+    ///
+    /// A mutable reference to the current [`filter::State`].
     pub fn filter_mut(&mut self) -> &mut filter::State {
         &mut self.filter
     }
@@ -314,28 +335,34 @@ impl App {
     /// A `Vec` of references to visible entries, oldest first.
     #[must_use]
     pub fn visible_entries(&self, height: usize) -> Vec<&log::Entry> {
-        let total = self
+        let visible: Vec<&log::Entry> = self
             .log_buffer
             .iter()
             .filter(|e| self.filter.is_visible(e))
-            .count();
+            .collect();
+        let total = visible.len();
         let skip = self.scroll.min(total.saturating_sub(height));
         let start = total.saturating_sub(height).saturating_sub(skip);
-        self.log_buffer
-            .iter()
-            .filter(|e| self.filter.is_visible(e))
-            .skip(start)
-            .take(height)
-            .collect()
+        visible.into_iter().skip(start).take(height).collect()
     }
 
     /// Returns a shared reference to the port selector, if active.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with a reference to the active [`PortSelector`], or `None` if no
+    /// selector is open.
     #[must_use]
     pub fn port_selector(&self) -> Option<&PortSelector> {
         self.port_selector.as_ref()
     }
 
     /// Returns a mutable reference to the port selector, if active.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with a mutable reference to the active [`PortSelector`], or
+    /// `None` if no selector is open.
     pub fn port_selector_mut(&mut self) -> Option<&mut PortSelector> {
         self.port_selector.as_mut()
     }
@@ -364,6 +391,11 @@ impl App {
     }
 
     /// Returns the command sender for the active port reader, if any.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with a reference to the sender, or `None` if no port is
+    /// connected.
     #[must_use]
     pub fn port_cmd_tx(
         &self,
@@ -582,7 +614,7 @@ fn connect_port(
 ) {
     let (src_tx, src_rx) = watch::channel(false);
     let status = format!("Connected to {port}.");
-    let (_, cmd_tx) = serial::Port::new(port.as_str()).spawn(tx.clone(), src_rx);
+    let (_, cmd_tx) = serial::Port::new(&port).spawn(tx.clone(), src_rx);
     app.set_port(port);
     app.set_port_cmd(cmd_tx);
     app.set_source_shutdown(src_tx);
@@ -616,10 +648,8 @@ fn spawn_port_poller(
         loop {
             tokio::select! {
                 _ = poll.tick() => {
-                    if let Some(ports) = tokio::task::spawn_blocking(serial::detect_esp_ports)
-                        .await
-                        .ok()
-                        .and_then(std::result::Result::ok)
+                    if let Ok(Ok(ports)) =
+                        tokio::task::spawn_blocking(serial::detect_esp_ports).await
                     {
                         if ports != last_ports {
                             last_ports.clone_from(&ports);
@@ -655,8 +685,7 @@ fn handle_ports_detected(
         }
     } else if let Some(current) = app.port_name() {
         let current_present = ports.iter().any(|p| p.as_str() == current);
-        let new_present = ports.iter().any(|p| p.as_str() != current);
-        if current_present && new_present {
+        if ports.len() > 1 && current_present {
             app.set_status("New device detected. Press [c] to connect.".into());
         }
     }
@@ -829,7 +858,7 @@ mod tests {
     fn push_line_records_tag() {
         let mut app = App::new(None);
         app.push_line("I (1) wifi: Connected");
-        assert!(app.filter().known_tags().contains(&"wifi".to_owned()));
+        assert!(app.filter().known_tags().iter().any(|t| t == "wifi"));
     }
 
     #[test]
@@ -910,6 +939,7 @@ mod tests {
         let entries = app.visible_entries(5);
         assert_eq!(entries.len(), 5);
         assert_eq!(entries[0].message(), "line 3");
+        assert_eq!(entries[4].message(), "line 7");
     }
 
     #[test]
@@ -917,7 +947,7 @@ mod tests {
         let mut app = App::new(None);
         app.push_line("E (1) tag: error line");
         app.push_line("I (1) tag: info line");
-        app.filter_mut().toggle_at_cursor(); // cursor=0 → hide Error
+        app.filter_mut().toggle_at_cursor();
         let entries = app.visible_entries(10);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].message(), "info line");
@@ -950,6 +980,12 @@ mod tests {
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::None);
         assert_eq!(app.scroll(), 0);
+    }
+
+    #[test]
+    fn handle_key_esc_quits_when_not_scrolled() {
+        let mut app = App::new(None);
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::Quit);
     }
 
     #[test]
@@ -1285,5 +1321,12 @@ mod tests {
         handle_action(&mut app, Action::None, &make_tx());
         assert!(app.status_msg().is_none());
         assert!(app.is_running());
+    }
+
+    #[test]
+    fn handle_action_scan_ports_does_not_panic() {
+        let mut app = App::new(None);
+        handle_action(&mut app, Action::ScanPorts, &make_tx());
+        // Outcome depends on available ports; verifies no panic.
     }
 }

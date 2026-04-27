@@ -22,7 +22,7 @@ static LINES: &[&str] = &[
 /// interval for UI development without hardware.
 pub struct Generator;
 
-impl crate::source::Emitter for Generator {
+impl Generator {
     /// Spawns an async task that cycles through demo log lines every 100ms.
     ///
     /// # Arguments
@@ -35,7 +35,8 @@ impl crate::source::Emitter for Generator {
     /// # Returns
     ///
     /// A [`tokio::task::JoinHandle`] for the spawned task.
-    fn spawn(
+    #[must_use]
+    pub fn spawn(
         self,
         tx: tokio::sync::mpsc::UnboundedSender<crate::event::Message>,
         mut shutdown: tokio::sync::watch::Receiver<bool>,

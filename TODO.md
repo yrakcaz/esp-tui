@@ -34,6 +34,7 @@
 - [ ] `postcard` serialization of `TelemetryFrame`
 - [ ] C ABI: `esp_tui_agent_start()` via `#[no_mangle] extern "C"`
 - [ ] Pre-compiled `.a` variants for all chip targets, bundled via `include_bytes!`
+- [ ] Define a `Source` trait to unify `serial::Port` and the agent telemetry stream behind a common interface
 - [ ] Host-side COBS demuxer (splits agent frames from plain log lines)
 - [ ] System Inspector pane: heap gauges, per-core CPU bars, task list
 - [ ] Agent detection / graceful absence ("agent not detected" prompt)
