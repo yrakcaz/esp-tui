@@ -144,7 +144,7 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App) {
         ])
     } else {
         Line::from(Span::styled(
-            "[↑/↓  PgUp/PgDn] scroll",
+            "[↑/↓  PgUp/PgDn] scroll  [^L] clear",
             Style::default().fg(Color::DarkGray),
         ))
     };

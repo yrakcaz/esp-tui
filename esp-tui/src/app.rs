@@ -223,6 +223,10 @@ impl App {
                     self.filter.toggle_popup();
                     Action::None
                 }
+                KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
+                    self.clear_log();
+                    Action::None
+                }
                 KeyCode::Up => {
                     self.scroll = self.scroll.saturating_add(1);
                     Action::None
@@ -416,6 +420,12 @@ impl App {
     /// Signals the event loop to stop.
     pub fn quit(&mut self) {
         self.running = false;
+    }
+
+    /// Clears the log buffer and resets the scroll offset to zero.
+    pub fn clear_log(&mut self) {
+        self.log_buffer.clear();
+        self.scroll = 0;
     }
 
     /// Tears down the active port connection and clears port state.
@@ -1145,6 +1155,29 @@ mod tests {
         assert_eq!(app.scroll(), 1);
         app.push_line("E (1) tag: error visible");
         assert_eq!(app.scroll(), 2);
+    }
+
+    #[test]
+    fn clear_log_empties_buffer_and_resets_scroll() {
+        let mut app = App::new(None);
+        for i in 0..5 {
+            app.push_line(&format!("I (1) tag: line {i}"));
+        }
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.scroll(), 1);
+        app.clear_log();
+        assert!(app.visible_entries(10).is_empty());
+        assert_eq!(app.scroll(), 0);
+    }
+
+    #[test]
+    fn handle_key_ctrl_l_clears_log() {
+        let mut app = App::new(None);
+        app.push_line("I (1) tag: line");
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.handle_key(ctrl(KeyCode::Char('l'))), Action::None);
+        assert!(app.visible_entries(10).is_empty());
+        assert_eq!(app.scroll(), 0);
     }
 
     #[test]
