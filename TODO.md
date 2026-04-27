@@ -60,8 +60,8 @@
 
 ## Release
 
-- [ ] Make the repo public
-- [ ] Add CI and license badges to README
+- [x] Make the repo public
+- [x] Add CI and license badges to README
 - [ ] Publish `esp-tui` to crates.io
 - [ ] Add crates.io version badge to README
 - [ ] Pre-built binaries via GitHub Releases (Linux x86_64, macOS x86_64/ARM64)
