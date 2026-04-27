@@ -69,6 +69,10 @@ Flag comments that restate what the code does (`// initialize`, `// return resul
 ### No em-dashes
 Flag any em-dash (`—`) in doc comments, README, or commit messages. Use a colon, comma, or rewrite the sentence.
 
+### Documentation and tracking
+- Flag new user-visible features or keybindings not reflected in `README.md`.
+- Flag completed work that is not checked off in `TODO.md`, and new scope that is not added to `TODO.md`.
+
 ### Dependencies
 Flag new `Cargo.toml` entries that duplicate existing dependencies or are added without corresponding usage in the change.
 
