@@ -14,7 +14,7 @@ static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Severity level of an ESP-IDF log entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Level {
+pub(crate) enum Level {
     Error,
     Warn,
     Info,
@@ -25,7 +25,7 @@ pub enum Level {
 impl Level {
     /// Returns the terminal color associated with this level.
     #[must_use]
-    pub fn color(&self) -> Color {
+    pub(crate) fn color(self) -> Color {
         match self {
             Self::Error => Color::Red,
             Self::Warn => Color::Yellow,
@@ -37,7 +37,7 @@ impl Level {
 
     /// Returns the display label for this level.
     #[must_use]
-    pub fn label(&self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Error => "ERROR",
             Self::Warn => "WARN",
@@ -69,54 +69,45 @@ impl TryFrom<char> for Level {
 
 /// A single parsed or raw line from the serial stream.
 #[derive(Debug, Clone)]
-pub struct Entry {
+pub(crate) struct Entry {
     level: Level,
     tag: String,
     message: String,
-    raw: String,
 }
 
 impl Entry {
-    fn parsed(level: Level, tag: &str, message: &str, raw: &str) -> Self {
+    fn parsed(level: Level, tag: &str, message: &str) -> Self {
         Self {
             level,
             tag: tag.trim().to_owned(),
             message: message.to_owned(),
-            raw: raw.to_owned(),
         }
     }
 
-    fn from_raw_line(message: &str, raw: &str) -> Self {
+    fn from_raw_line(message: &str) -> Self {
         Self {
             level: Level::Verbose,
             tag: String::new(),
             message: message.to_owned(),
-            raw: raw.to_owned(),
         }
     }
 
     /// Returns the severity level of this entry.
     #[must_use]
-    pub fn level(&self) -> Level {
+    pub(crate) fn level(&self) -> Level {
         self.level
     }
 
     /// Returns the ESP-IDF tag, or an empty string for raw (unparsed) lines.
     #[must_use]
-    pub fn tag(&self) -> &str {
+    pub(crate) fn tag(&self) -> &str {
         &self.tag
     }
 
     /// Returns the log message body.
     #[must_use]
-    pub fn message(&self) -> &str {
+    pub(crate) fn message(&self) -> &str {
         &self.message
-    }
-
-    /// Returns the original unmodified line as received from the serial stream.
-    #[must_use]
-    pub fn raw(&self) -> &str {
-        &self.raw
     }
 }
 
@@ -135,16 +126,16 @@ impl Entry {
 /// A parsed [`Entry`]. This function is infallible; unrecognised lines become
 /// raw entries.
 #[must_use]
-pub fn parse_line(line: &str) -> Entry {
+pub(crate) fn parse_line(line: &str) -> Entry {
     let clean = ANSI_RE.replace_all(line, "");
     RE.captures(clean.as_ref()).map_or_else(
-        || Entry::from_raw_line(clean.as_ref(), line),
+        || Entry::from_raw_line(clean.as_ref()),
         |caps| {
             // The regex guarantees [EWIDV] in group 1, so None is unreachable.
             let level_char = caps[1].chars().next().unwrap_or('V');
             Level::try_from(level_char).map_or_else(
-                |_| Entry::from_raw_line(clean.as_ref(), line),
-                |level| Entry::parsed(level, &caps[3], &caps[4], line),
+                |_| Entry::from_raw_line(clean.as_ref()),
+                |level| Entry::parsed(level, &caps[3], &caps[4]),
             )
         },
     )
@@ -176,7 +167,6 @@ mod tests {
         assert_eq!(e.level(), Level::Verbose);
         assert_eq!(e.tag(), "");
         assert_eq!(e.message(), "some raw output");
-        assert_eq!(e.raw(), "some raw output");
     }
 
     #[test]
@@ -211,13 +201,6 @@ mod tests {
         assert_eq!(e.level(), Level::Verbose);
         assert_eq!(e.tag(), "spi");
         assert_eq!(e.message(), "Transfer done");
-    }
-
-    #[test]
-    fn parsed_entry_preserves_raw() {
-        let line = "I (1234) wifi: Connected";
-        let e = parse_line(line);
-        assert_eq!(e.raw(), line);
     }
 
     #[test]
@@ -257,12 +240,5 @@ mod tests {
         let e = parse_line("\x1b[0;31msome colored output\x1b[0m");
         assert_eq!(e.tag(), "");
         assert_eq!(e.message(), "some colored output");
-    }
-
-    #[test]
-    fn raw_preserves_original_with_ansi() {
-        let line = "\x1b[0;32mI (1234) wifi: Connected\x1b[0m";
-        let e = parse_line(line);
-        assert_eq!(e.raw(), line);
     }
 }

@@ -64,7 +64,13 @@ Flag `return expr;` in non-guard positions. Expression-based returns are require
 Flag `for` loops that mutate an accumulator; prefer `map`, `filter`, `fold`, `collect`. Flag manual `Option`/`Result` matches that could use combinator methods.
 
 ### Comments
-Flag comments that restate what the code does (`// initialize`, `// return result`, etc.). Comments are only acceptable for non-obvious algorithms, intentional workarounds, or external constraints. Public items in library crates require doc comments with `# Arguments`, `# Returns`, and `# Errors` sections.
+Flag comments that restate what the code does (`// initialize`, `// return result`, etc.). Comments are only acceptable for non-obvious algorithms, intentional workarounds, or external constraints.
+
+### Documentation
+Flag any `pub(crate)` function/method missing a doc comment. Flag any `pub(crate)` function/method that is missing `# Arguments`, `# Returns`, or `# Errors` sections where applicable. Fully private helpers (no visibility modifier) do not require structured doc sections.
+
+### Visibility
+Flag any bare `pub` on items that are not consumed outside the crate. Cross-module items must use `pub(crate)`; single-module helpers must be fully private (no modifier). Module declarations in `main.rs` must be bare `mod`, not `pub mod`.
 
 ### No em-dashes
 Flag any em-dash (`—`) in doc comments, README, or commit messages. Use a colon, comma, or rewrite the sentence.

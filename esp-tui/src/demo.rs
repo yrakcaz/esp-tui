@@ -20,7 +20,7 @@ static LINES: &[&str] = &[
 
 /// A synthetic log source that emits pre-defined ESP-IDF log lines on a fixed
 /// interval for UI development without hardware.
-pub struct Generator;
+pub(crate) struct Generator;
 
 impl Generator {
     /// Spawns an async task that cycles through demo log lines every 100ms.
@@ -36,8 +36,7 @@ impl Generator {
     ///
     /// A [`tokio::task::JoinHandle`] for the spawned task.
     #[must_use]
-    pub fn spawn(
-        self,
+    pub(crate) fn spawn(
         tx: tokio::sync::mpsc::UnboundedSender<crate::event::Message>,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> tokio::task::JoinHandle<()> {

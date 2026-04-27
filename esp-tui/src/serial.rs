@@ -31,7 +31,7 @@ fn is_esp_port(info: &SerialPortInfo) -> bool {
 /// # Errors
 ///
 /// Returns an error if the system port enumeration fails.
-pub fn detect_esp_ports() -> anyhow::Result<Vec<String>> {
+pub(crate) fn detect_esp_ports() -> anyhow::Result<Vec<String>> {
     let all =
         serialport::available_ports().context("failed to enumerate serial ports")?;
 
@@ -55,12 +55,12 @@ pub fn detect_esp_ports() -> anyhow::Result<Vec<String>> {
 }
 
 /// Commands that can be sent to a running serial port reader task.
-pub enum PortCommand {
+pub(crate) enum PortCommand {
     Reset,
 }
 
 /// A serial port connection that emits log lines.
-pub struct Port {
+pub(crate) struct Port {
     name: String,
 }
 
@@ -71,7 +71,7 @@ impl Port {
     ///
     /// * `name` - The system port name (e.g. `/dev/ttyUSB0`).
     #[must_use]
-    pub fn new(name: impl Into<String>) -> Self {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
         Self { name: name.into() }
     }
 
@@ -92,7 +92,7 @@ impl Port {
     /// A tuple of the task [`tokio::task::JoinHandle`] and a
     /// [`std::sync::mpsc::Sender`] for sending [`PortCommand`]s.
     #[must_use]
-    pub fn spawn(
+    pub(crate) fn spawn(
         self,
         tx: tokio::sync::mpsc::UnboundedSender<crate::event::Message>,
         shutdown: tokio::sync::watch::Receiver<bool>,

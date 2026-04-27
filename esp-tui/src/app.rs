@@ -32,7 +32,7 @@ struct Args {
 
 /// Outcome of a keypress that requires I/O, returned to the event loop to act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Action {
+pub(crate) enum Action {
     None,
     Quit,
     ResetDevice,
@@ -44,7 +44,7 @@ pub enum Action {
 
 /// State for the port selection popup shown at startup when multiple ports are
 /// detected.
-pub struct PortSelector {
+pub(crate) struct PortSelector {
     ports: Vec<String>,
     cursor: usize,
 }
@@ -56,7 +56,7 @@ impl PortSelector {
     ///
     /// * `ports` - Non-empty list of port names to select from.
     #[must_use]
-    pub fn new(ports: Vec<String>) -> Self {
+    pub(crate) fn new(ports: Vec<String>) -> Self {
         Self { ports, cursor: 0 }
     }
 
@@ -66,7 +66,7 @@ impl PortSelector {
     ///
     /// A slice of port name strings in selection order.
     #[must_use]
-    pub fn ports(&self) -> &[String] {
+    pub(crate) fn ports(&self) -> &[String] {
         &self.ports
     }
 
@@ -76,7 +76,7 @@ impl PortSelector {
     ///
     /// Zero-based index into the port list.
     #[must_use]
-    pub fn cursor(&self) -> usize {
+    pub(crate) fn cursor(&self) -> usize {
         self.cursor
     }
 
@@ -85,7 +85,7 @@ impl PortSelector {
     /// # Arguments
     ///
     /// * `delta` - Positive to move down, negative to move up.
-    pub fn move_cursor(&mut self, delta: isize) {
+    pub(crate) fn move_cursor(&mut self, delta: isize) {
         let len = self.ports.len();
         if len > 0 {
             self.cursor = self.cursor.saturating_add_signed(delta).min(len - 1);
@@ -99,7 +99,7 @@ impl PortSelector {
     /// The port name at the current cursor, or an empty string if the list is
     /// empty.
     #[must_use]
-    pub fn selected(&self) -> &str {
+    pub(crate) fn selected(&self) -> &str {
         self.ports.get(self.cursor).map_or("", String::as_str)
     }
 
@@ -109,14 +109,14 @@ impl PortSelector {
     /// # Arguments
     ///
     /// * `ports` - Updated list of available ports.
-    pub fn update_ports(&mut self, ports: Vec<String>) {
+    pub(crate) fn update_ports(&mut self, ports: Vec<String>) {
         self.cursor = self.cursor.min(ports.len().saturating_sub(1));
         self.ports = ports;
     }
 }
 
 /// Central application state.
-pub struct App {
+pub(crate) struct App {
     log_buffer: VecDeque<log::Entry>,
     scroll: usize,
     filter: filter::State,
@@ -135,7 +135,7 @@ impl App {
     ///
     /// * `port_name` - The connected serial port name, if already known.
     #[must_use]
-    pub fn new(port_name: Option<String>) -> Self {
+    pub(crate) fn new(port_name: Option<String>) -> Self {
         Self {
             log_buffer: VecDeque::new(),
             scroll: 0,
@@ -155,7 +155,7 @@ impl App {
     /// # Arguments
     ///
     /// * `line` - A single line of serial output.
-    pub fn push_line(&mut self, line: &str) {
+    pub(crate) fn push_line(&mut self, line: &str) {
         let entry = log::parse_line(line);
         self.filter.record_tag(entry.tag());
         if self.log_buffer.len() >= BUFFER_SIZE {
@@ -176,7 +176,7 @@ impl App {
     /// # Returns
     ///
     /// An [`Action`] indicating what I/O the event loop should perform.
-    pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+    pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Action {
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
             Action::Quit
         } else if self.port_selector.is_some() {
@@ -270,12 +270,12 @@ impl App {
     /// # Arguments
     ///
     /// * `msg` - The message to display in the status bar.
-    pub fn set_status(&mut self, msg: String) {
+    pub(crate) fn set_status(&mut self, msg: String) {
         self.status_msg = Some((msg, Instant::now()));
     }
 
     /// Expires the status message if its TTL has elapsed. Called on each tick.
-    pub fn tick(&mut self) {
+    pub(crate) fn tick(&mut self) {
         if let Some((_, ts)) = &self.status_msg {
             if ts.elapsed().as_secs() >= STATUS_TTL_SECS {
                 self.status_msg = None;
@@ -285,25 +285,25 @@ impl App {
 
     /// Returns whether the application event loop should keep running.
     #[must_use]
-    pub fn is_running(&self) -> bool {
+    pub(crate) fn is_running(&self) -> bool {
         self.running
     }
 
     /// Returns the connected serial port name, if any.
     #[must_use]
-    pub fn port_name(&self) -> Option<&str> {
+    pub(crate) fn port_name(&self) -> Option<&str> {
         self.port_name.as_deref()
     }
 
     /// Returns the current status message text, if any.
     #[must_use]
-    pub fn status_msg(&self) -> Option<&str> {
+    pub(crate) fn status_msg(&self) -> Option<&str> {
         self.status_msg.as_ref().map(|(msg, _)| msg.as_str())
     }
 
     /// Returns a shared reference to the filter state.
     #[must_use]
-    pub fn filter(&self) -> &filter::State {
+    pub(crate) fn filter(&self) -> &filter::State {
         &self.filter
     }
 
@@ -312,14 +312,15 @@ impl App {
     /// # Returns
     ///
     /// A mutable reference to the current [`filter::State`].
-    pub fn filter_mut(&mut self) -> &mut filter::State {
+    #[cfg(test)]
+    pub(crate) fn filter_mut(&mut self) -> &mut filter::State {
         &mut self.filter
     }
 
     /// Returns how many lines from the bottom are scrolled out of view.
     /// Zero means auto-scroll (pinned to the latest line).
     #[must_use]
-    pub fn scroll(&self) -> usize {
+    pub(crate) fn scroll(&self) -> usize {
         self.scroll
     }
 
@@ -334,7 +335,7 @@ impl App {
     ///
     /// A `Vec` of references to visible entries, oldest first.
     #[must_use]
-    pub fn visible_entries(&self, height: usize) -> Vec<&log::Entry> {
+    pub(crate) fn visible_entries(&self, height: usize) -> Vec<&log::Entry> {
         let visible: Vec<&log::Entry> = self
             .log_buffer
             .iter()
@@ -353,7 +354,7 @@ impl App {
     /// `Some` with a reference to the active [`PortSelector`], or `None` if no
     /// selector is open.
     #[must_use]
-    pub fn port_selector(&self) -> Option<&PortSelector> {
+    pub(crate) fn port_selector(&self) -> Option<&PortSelector> {
         self.port_selector.as_ref()
     }
 
@@ -363,7 +364,8 @@ impl App {
     ///
     /// `Some` with a mutable reference to the active [`PortSelector`], or
     /// `None` if no selector is open.
-    pub fn port_selector_mut(&mut self) -> Option<&mut PortSelector> {
+    #[cfg(test)]
+    pub(crate) fn port_selector_mut(&mut self) -> Option<&mut PortSelector> {
         self.port_selector.as_mut()
     }
 
@@ -372,7 +374,7 @@ impl App {
     /// # Arguments
     ///
     /// * `port` - The port name to use going forward.
-    pub fn set_port(&mut self, port: String) {
+    pub(crate) fn set_port(&mut self, port: String) {
         self.port_name = Some(port);
         self.port_selector = None;
         self.port_cmd_tx = None;
@@ -383,7 +385,7 @@ impl App {
     /// # Arguments
     ///
     /// * `tx` - Sender returned by [`serial::Port::spawn`].
-    pub fn set_port_cmd(
+    pub(crate) fn set_port_cmd(
         &mut self,
         tx: std::sync::mpsc::Sender<serial::PortCommand>,
     ) {
@@ -397,7 +399,7 @@ impl App {
     /// `Some` with a reference to the sender, or `None` if no port is
     /// connected.
     #[must_use]
-    pub fn port_cmd_tx(
+    pub(crate) fn port_cmd_tx(
         &self,
     ) -> Option<&std::sync::mpsc::Sender<serial::PortCommand>> {
         self.port_cmd_tx.as_ref()
@@ -411,14 +413,14 @@ impl App {
     /// # Arguments
     ///
     /// * `tx` - Watch sender for the new source's shutdown channel.
-    pub fn set_source_shutdown(&mut self, tx: watch::Sender<bool>) {
+    pub(crate) fn set_source_shutdown(&mut self, tx: watch::Sender<bool>) {
         if let Some(old) = self.source_shutdown_tx.replace(tx) {
             let _ = old.send(true);
         }
     }
 
     /// Stops the active data source, if any.
-    pub fn shutdown_source(&mut self) {
+    pub(crate) fn shutdown_source(&mut self) {
         if let Some(tx) = self.source_shutdown_tx.take() {
             let _ = tx.send(true);
         }
@@ -429,7 +431,7 @@ impl App {
     /// # Arguments
     ///
     /// * `ports` - Non-empty list of port names to present for selection.
-    pub fn open_port_selector(&mut self, ports: Vec<String>) {
+    pub(crate) fn open_port_selector(&mut self, ports: Vec<String>) {
         self.port_selector = Some(PortSelector::new(ports));
     }
 
@@ -441,7 +443,7 @@ impl App {
     /// # Arguments
     ///
     /// * `ports` - Updated list of available ports.
-    pub fn refresh_port_selector(&mut self, ports: Vec<String>) {
+    pub(crate) fn refresh_port_selector(&mut self, ports: Vec<String>) {
         if ports.is_empty() {
             self.port_selector = None;
         } else if let Some(sel) = self.port_selector.as_mut() {
@@ -450,18 +452,18 @@ impl App {
     }
 
     /// Signals the event loop to stop.
-    pub fn quit(&mut self) {
+    pub(crate) fn quit(&mut self) {
         self.running = false;
     }
 
     /// Clears the log buffer and resets the scroll offset to zero.
-    pub fn clear_log(&mut self) {
+    pub(crate) fn clear_log(&mut self) {
         self.log_buffer.clear();
         self.scroll = 0;
     }
 
     /// Tears down the active port connection and clears port state.
-    pub fn disconnect(&mut self) {
+    pub(crate) fn disconnect(&mut self) {
         self.shutdown_source();
         self.port_name = None;
         self.port_cmd_tx = None;
@@ -474,7 +476,7 @@ impl App {
 /// # Errors
 ///
 /// Returns an error if terminal initialisation or any I/O operation fails.
-pub async fn run() -> anyhow::Result<()> {
+pub(crate) async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
 
     enable_raw_mode().context("failed to enable raw mode")?;
@@ -502,7 +504,7 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
 
     if args.demo {
         let (src_tx, src_rx) = watch::channel(false);
-        drop(demo::Generator.spawn(tx.clone(), src_rx));
+        drop(demo::Generator::spawn(tx.clone(), src_rx));
         app.set_port("demo".into());
         app.set_source_shutdown(src_tx);
         app.set_status("Connected to demo.".into());

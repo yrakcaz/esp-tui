@@ -91,10 +91,16 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - Only add a comment when there is a specific reason to believe the logic will not be self-evident to a reader (e.g. a non-obvious algorithm, an intentional workaround, or an external constraint)
 - Never add boilerplate or redundant comments such as `// initialize`, `// return result`, or anything that merely restates the code
 
-### Library Documentation (library crates only)
-- Public functions/methods must document `# Arguments`, `# Returns`, and `# Errors` sections
-- Public structs/enums must have a doc comment describing their purpose
-- Public fields must have inline doc comments explaining their role
+### Documentation
+- All items visible outside their defining module (`pub(crate)`) must have a doc comment describing their purpose
+- Functions/methods visible outside their defining module must document `# Arguments`, `# Returns`, and `# Errors` sections
+- Structs/enums visible outside their defining module must have a doc comment describing their purpose
+- Fully private helpers (no visibility modifier) do not require structured doc sections
+
+### Visibility
+- `esp-tui` is a binary crate; `main.rs` is the crate root with bare `mod` declarations
+- Items used across modules use `pub(crate)`; single-module helpers are fully private (no modifier)
+- Bare `pub` is not used: nothing in this crate is consumed by external code
 
 ### Generated Text
 - Do not use em-dashes in any generated text (README, doc comments, commit messages, etc.); use a colon, comma, or rewrite the sentence instead
