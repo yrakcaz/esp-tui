@@ -14,6 +14,7 @@ const LEVELS: [log::Level; 5] = [
 /// the filter popup state.
 pub struct State {
     known_tags: Vec<String>,
+    known_tags_set: HashSet<String>,
     hidden_tags: HashSet<String>,
     hidden_levels: HashSet<log::Level>,
     popup_open: bool,
@@ -27,6 +28,7 @@ impl State {
     pub fn new() -> Self {
         Self {
             known_tags: Vec::new(),
+            known_tags_set: HashSet::new(),
             hidden_tags: HashSet::new(),
             hidden_levels: HashSet::new(),
             popup_open: false,
@@ -40,7 +42,8 @@ impl State {
     ///
     /// * `tag` - The ESP-IDF tag string to record.
     pub fn record_tag(&mut self, tag: &str) {
-        if !tag.is_empty() && !self.known_tags.iter().any(|t| t == tag) {
+        if !tag.is_empty() && !self.known_tags_set.contains(tag) {
+            self.known_tags_set.insert(tag.to_owned());
             self.known_tags.push(tag.to_owned());
         }
     }
@@ -56,7 +59,7 @@ impl State {
     /// `true` if neither the entry's level nor its tag is hidden.
     #[must_use]
     pub fn is_visible(&self, entry: &log::Entry) -> bool {
-        !self.hidden_levels.contains(entry.level())
+        !self.hidden_levels.contains(&entry.level())
             && !self.hidden_tags.contains(entry.tag())
     }
 
@@ -70,11 +73,9 @@ impl State {
             } else {
                 self.hidden_levels.insert(level);
             }
-        } else {
-            let Some(tag) = self.known_tags.get(self.cursor - LEVELS.len()).cloned()
-            else {
-                return;
-            };
+        } else if let Some(tag) =
+            self.known_tags.get(self.cursor - LEVELS.len()).cloned()
+        {
             if self.hidden_tags.contains(&tag) {
                 self.hidden_tags.remove(&tag);
             } else {
@@ -190,7 +191,7 @@ mod tests {
     fn toggle_hides_and_shows_tag() {
         let mut s = State::new();
         s.record_tag("wifi");
-        s.cursor = tag_cursor(0);
+        s.move_cursor(tag_cursor(0) as isize);
         assert!(!s.is_tag_hidden("wifi"));
         s.toggle_at_cursor();
         assert!(s.is_tag_hidden("wifi"));
@@ -212,7 +213,7 @@ mod tests {
     fn is_visible_respects_hidden_tag() {
         let mut s = State::new();
         s.record_tag("wifi");
-        s.cursor = tag_cursor(0);
+        s.move_cursor(tag_cursor(0) as isize);
         s.toggle_at_cursor();
         let entry = log::parse_line("I (1) wifi: msg");
         assert!(!s.is_visible(&entry));

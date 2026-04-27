@@ -80,10 +80,9 @@ impl PortSelector {
     /// * `delta` - Positive to move down, negative to move up.
     pub fn move_cursor(&mut self, delta: isize) {
         let len = self.ports.len();
-        if len == 0 {
-            return;
+        if len > 0 {
+            self.cursor = self.cursor.saturating_add_signed(delta).min(len - 1);
         }
-        self.cursor = self.cursor.saturating_add_signed(delta).min(len - 1);
     }
 
     /// Returns the currently selected port name.
@@ -150,7 +149,7 @@ impl App {
         if self.log_buffer.len() >= BUFFER_SIZE {
             self.log_buffer.pop_front();
         }
-        if self.scroll > 0 {
+        if self.scroll > 0 && self.filter.is_visible(&entry) {
             self.scroll = self.scroll.saturating_add(1);
         }
         self.log_buffer.push_back(entry);
@@ -167,10 +166,8 @@ impl App {
     /// An [`Action`] indicating what I/O the event loop should perform.
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
-            return Action::Quit;
-        }
-
-        if self.port_selector.is_some() {
+            Action::Quit
+        } else if self.port_selector.is_some() {
             if let Some(sel) = self.port_selector.as_mut() {
                 match key.code {
                     KeyCode::Up => sel.move_cursor(-1),
@@ -178,7 +175,7 @@ impl App {
                     _ => {}
                 }
             }
-            return match key.code {
+            match key.code {
                 KeyCode::Enter => {
                     self.port_selector.take().map_or(Action::None, |s| {
                         Action::ConnectPort(s.selected().to_owned())
@@ -189,10 +186,8 @@ impl App {
                     Action::None
                 }
                 _ => Action::None,
-            };
-        }
-
-        if self.filter.is_popup_open() {
+            }
+        } else if self.filter.is_popup_open() {
             match key.code {
                 KeyCode::Up => self.filter.move_cursor(-1),
                 KeyCode::Down => self.filter.move_cursor(1),
@@ -205,47 +200,47 @@ impl App {
                 }
                 _ => {}
             }
-            return Action::None;
-        }
-
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc if self.scroll > 0 => {
-                self.scroll = 0;
-                Action::None
+            Action::None
+        } else {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc if self.scroll > 0 => {
+                    self.scroll = 0;
+                    Action::None
+                }
+                KeyCode::Char('q') => Action::Quit,
+                KeyCode::Char('d') => Action::Disconnect,
+                KeyCode::Char('r') => Action::ResetDevice,
+                KeyCode::Char('f') => {
+                    self.set_status("Flash: not implemented (Phase 2)".into());
+                    Action::None
+                }
+                KeyCode::Char('e') => {
+                    self.set_status("Erase: not implemented (Phase 2)".into());
+                    Action::None
+                }
+                KeyCode::Char('c') => Action::ScanPorts,
+                KeyCode::Tab => {
+                    self.filter.toggle_popup();
+                    Action::None
+                }
+                KeyCode::Up => {
+                    self.scroll = self.scroll.saturating_add(1);
+                    Action::None
+                }
+                KeyCode::Down => {
+                    self.scroll = self.scroll.saturating_sub(1);
+                    Action::None
+                }
+                KeyCode::PageUp => {
+                    self.scroll = self.scroll.saturating_add(10);
+                    Action::None
+                }
+                KeyCode::PageDown => {
+                    self.scroll = self.scroll.saturating_sub(10);
+                    Action::None
+                }
+                _ => Action::None,
             }
-            KeyCode::Char('q') => Action::Quit,
-            KeyCode::Char('d') => Action::Disconnect,
-            KeyCode::Char('r') => Action::ResetDevice,
-            KeyCode::Char('f') => {
-                self.set_status("Flash: not implemented (Phase 2)".into());
-                Action::None
-            }
-            KeyCode::Char('e') => {
-                self.set_status("Erase: not implemented (Phase 2)".into());
-                Action::None
-            }
-            KeyCode::Char('c') => Action::ScanPorts,
-            KeyCode::Tab => {
-                self.filter.toggle_popup();
-                Action::None
-            }
-            KeyCode::Up => {
-                self.scroll = self.scroll.saturating_add(1);
-                Action::None
-            }
-            KeyCode::Down => {
-                self.scroll = self.scroll.saturating_sub(1);
-                Action::None
-            }
-            KeyCode::PageUp => {
-                self.scroll = self.scroll.saturating_add(10);
-                Action::None
-            }
-            KeyCode::PageDown => {
-                self.scroll = self.scroll.saturating_sub(10);
-                Action::None
-            }
-            _ => Action::None,
         }
     }
 
@@ -315,15 +310,19 @@ impl App {
     /// A `Vec` of references to visible entries, oldest first.
     #[must_use]
     pub fn visible_entries(&self, height: usize) -> Vec<&log::Entry> {
-        let filtered: Vec<&log::Entry> = self
+        let total = self
             .log_buffer
             .iter()
             .filter(|e| self.filter.is_visible(e))
-            .collect();
-        let total = filtered.len();
-        let skip = self.scroll.min(total.saturating_sub(height)).min(total);
+            .count();
+        let skip = self.scroll.min(total.saturating_sub(height));
         let start = total.saturating_sub(height).saturating_sub(skip);
-        filtered.get(start..).unwrap_or_default().to_vec()
+        self.log_buffer
+            .iter()
+            .filter(|e| self.filter.is_visible(e))
+            .skip(start)
+            .take(height)
+            .collect()
     }
 
     /// Returns a shared reference to the port selector, if active.
@@ -466,10 +465,10 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
         app.set_source_shutdown(src_tx);
         app.set_status("Connected to demo.".into());
     } else {
-        let ports = resolve_ports(args.port)?;
+        let mut ports = resolve_ports(args.port)?;
         match ports.len() {
             0 => {}
-            1 => connect_port(&mut app, ports.into_iter().next().unwrap(), &tx),
+            1 => connect_port(&mut app, ports.remove(0), &tx),
             _ => app.open_port_selector(ports),
         }
     }
@@ -572,8 +571,8 @@ fn connect_port(
     tx: &mpsc::UnboundedSender<event::Message>,
 ) {
     let (src_tx, src_rx) = watch::channel(false);
-    let (_, cmd_tx) = serial::Port::new(port.clone()).spawn(tx.clone(), src_rx);
     let status = format!("Connected to {port}.");
+    let (_, cmd_tx) = serial::Port::new(port.as_str()).spawn(tx.clone(), src_rx);
     app.set_port(port);
     app.set_port_cmd(cmd_tx);
     app.set_source_shutdown(src_tx);
@@ -586,19 +585,15 @@ fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
         Ok(ports) if ports.is_empty() => {
             app.set_status("No devices detected.".into());
         }
-        Ok(ports) if ports.len() == 1 => {
-            let port = ports.into_iter().next().unwrap();
-            connect_port(app, port, tx);
+        Ok(mut ports) if ports.len() == 1 => {
+            connect_port(app, ports.remove(0), tx);
         }
         Ok(ports) => app.open_port_selector(ports),
     }
 }
 
 fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
-    if let Some(p) = port_arg {
-        return Ok(vec![p]);
-    }
-    serial::detect_esp_ports()
+    port_arg.map_or_else(serial::detect_esp_ports, |p| Ok(vec![p]))
 }
 
 fn spawn_port_poller(
@@ -611,15 +606,16 @@ fn spawn_port_poller(
         loop {
             tokio::select! {
                 _ = poll.tick() => {
-                    let ports = tokio::task::spawn_blocking(serial::detect_esp_ports)
+                    if let Some(ports) = tokio::task::spawn_blocking(serial::detect_esp_ports)
                         .await
                         .ok()
                         .and_then(std::result::Result::ok)
-                        .unwrap_or_default();
-                    if ports != last_ports {
-                        last_ports.clone_from(&ports);
-                        if tx.send(event::Message::PortsDetected(ports)).is_err() {
-                            break;
+                    {
+                        if ports != last_ports {
+                            last_ports.clone_from(&ports);
+                            if tx.send(event::Message::PortsDetected(ports)).is_err() {
+                                break;
+                            }
                         }
                     }
                 }
@@ -631,7 +627,7 @@ fn spawn_port_poller(
 
 fn handle_ports_detected(
     app: &mut App,
-    ports: Vec<String>,
+    mut ports: Vec<String>,
     tx: &mpsc::UnboundedSender<event::Message>,
 ) {
     if app.port_name().is_none() {
@@ -643,12 +639,14 @@ fn handle_ports_detected(
         } else {
             match ports.len() {
                 0 => {}
-                1 => connect_port(app, ports.into_iter().next().unwrap(), tx),
+                1 => connect_port(app, ports.remove(0), tx),
                 _ => app.open_port_selector(ports),
             }
         }
     } else if let Some(current) = app.port_name() {
-        if ports.iter().any(|p| p.as_str() != current) {
+        let current_present = ports.iter().any(|p| p.as_str() == current);
+        let new_present = ports.iter().any(|p| p.as_str() != current);
+        if current_present && new_present {
             app.set_status("New device detected. Press [c] to connect.".into());
         }
     }
@@ -658,8 +656,17 @@ fn handle_ports_detected(
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::{Action, App, PortSelector, BUFFER_SIZE};
+    use tokio::sync::mpsc;
+
+    use super::{
+        handle_action, handle_ports_detected, Action, App, PortSelector, BUFFER_SIZE,
+    };
     use crate::log;
+
+    fn make_tx() -> mpsc::UnboundedSender<crate::event::Message> {
+        let (tx, _) = mpsc::unbounded_channel();
+        tx
+    }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
@@ -668,8 +675,6 @@ mod tests {
     fn ctrl(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::CONTROL)
     }
-
-    // --- PortSelector ---
 
     #[test]
     fn port_selector_initial_cursor() {
@@ -728,8 +733,6 @@ mod tests {
         assert_eq!(sel.cursor(), 0);
         assert!(sel.ports().is_empty());
     }
-
-    // --- App basic state ---
 
     #[test]
     fn app_initial_state() {
@@ -805,8 +808,6 @@ mod tests {
         assert!(app.port_selector().is_none());
     }
 
-    // --- App::push_line ---
-
     #[test]
     fn push_line_adds_entry() {
         let mut app = App::new(None);
@@ -861,8 +862,6 @@ mod tests {
         );
     }
 
-    // --- App::visible_entries ---
-
     #[test]
     fn visible_entries_empty_buffer() {
         let app = App::new(None);
@@ -899,6 +898,7 @@ mod tests {
         app.handle_key(key(KeyCode::Up));
         app.handle_key(key(KeyCode::Up));
         let entries = app.visible_entries(5);
+        assert_eq!(entries.len(), 5);
         assert_eq!(entries[0].message(), "line 3");
     }
 
@@ -912,8 +912,6 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].message(), "info line");
     }
-
-    // --- App::handle_key - main mode ---
 
     #[test]
     fn handle_key_ctrl_c_quits() {
@@ -1032,8 +1030,6 @@ mod tests {
         assert_eq!(app.handle_key(key(KeyCode::F(1))), Action::None);
     }
 
-    // --- App::handle_key - filter popup mode ---
-
     #[test]
     fn handle_key_filter_popup_space_toggles_item() {
         let mut app = App::new(None);
@@ -1085,8 +1081,6 @@ mod tests {
         assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
     }
 
-    // --- App::handle_key - port selector mode ---
-
     #[test]
     fn handle_key_port_selector_navigation() {
         let mut app = App::new(None);
@@ -1137,5 +1131,126 @@ mod tests {
         let mut app = App::new(None);
         app.open_port_selector(vec!["COM1".into()]);
         assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
+    }
+
+    #[test]
+    fn push_line_scroll_no_drift_when_entry_filtered() {
+        let mut app = App::new(None);
+        app.push_line("E (1) tag: error");
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.scroll(), 1);
+        app.filter_mut().move_cursor(2); // Info is at index 2
+        app.filter_mut().toggle_at_cursor();
+        app.push_line("I (1) tag: info filtered");
+        assert_eq!(app.scroll(), 1);
+        app.push_line("E (1) tag: error visible");
+        assert_eq!(app.scroll(), 2);
+    }
+
+    #[test]
+    fn handle_ports_detected_no_op_when_empty_and_disconnected() {
+        let mut app = App::new(None);
+        handle_ports_detected(&mut app, vec![], &make_tx());
+        assert!(app.port_name().is_none());
+        assert!(app.port_selector().is_none());
+        assert!(app.status_msg().is_none());
+    }
+
+    #[test]
+    fn handle_ports_detected_opens_selector_for_multiple_ports() {
+        let mut app = App::new(None);
+        handle_ports_detected(
+            &mut app,
+            vec!["COM1".into(), "COM2".into()],
+            &make_tx(),
+        );
+        assert!(app.port_selector().is_some());
+    }
+
+    #[test]
+    fn handle_ports_detected_refreshes_open_selector() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
+        handle_ports_detected(
+            &mut app,
+            vec!["COM3".into(), "COM4".into()],
+            &make_tx(),
+        );
+        let sel = app.port_selector().unwrap();
+        assert_eq!(sel.ports(), &["COM3", "COM4"]);
+    }
+
+    #[test]
+    fn handle_ports_detected_closes_selector_on_empty() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into()]);
+        handle_ports_detected(&mut app, vec![], &make_tx());
+        assert!(app.port_selector().is_none());
+        assert_eq!(app.status_msg(), Some("No devices detected."));
+    }
+
+    #[test]
+    fn handle_ports_detected_connected_new_device_sets_status() {
+        let mut app = App::new(None);
+        app.set_port("COM1".into());
+        handle_ports_detected(
+            &mut app,
+            vec!["COM1".into(), "COM2".into()],
+            &make_tx(),
+        );
+        assert!(app.status_msg().is_some());
+    }
+
+    #[test]
+    fn handle_ports_detected_connected_same_ports_no_status() {
+        let mut app = App::new(None);
+        app.set_port("COM1".into());
+        handle_ports_detected(&mut app, vec!["COM1".into()], &make_tx());
+        assert!(app.status_msg().is_none());
+    }
+
+    #[test]
+    fn handle_ports_detected_connected_current_gone_no_new_device_status() {
+        let mut app = App::new(None);
+        app.set_port("COM1".into());
+        handle_ports_detected(&mut app, vec!["COM2".into()], &make_tx());
+        assert!(app.status_msg().is_none());
+    }
+
+    #[test]
+    fn handle_action_quit() {
+        let mut app = App::new(None);
+        handle_action(&mut app, Action::Quit, &make_tx());
+        assert!(!app.is_running());
+    }
+
+    #[test]
+    fn handle_action_disconnect_when_connected() {
+        let mut app = App::new(Some("COM1".into()));
+        handle_action(&mut app, Action::Disconnect, &make_tx());
+        assert!(app.port_name().is_none());
+        assert_eq!(app.status_msg(), Some("Disconnected."));
+    }
+
+    #[test]
+    fn handle_action_disconnect_when_not_connected() {
+        let mut app = App::new(None);
+        handle_action(&mut app, Action::Disconnect, &make_tx());
+        assert_eq!(app.status_msg(), Some("Not connected."));
+    }
+
+    #[test]
+    fn handle_action_reset_no_port() {
+        let mut app = App::new(None);
+        handle_action(&mut app, Action::ResetDevice, &make_tx());
+        assert_eq!(app.status_msg(), Some("No port connected."));
+    }
+
+    #[test]
+    fn handle_action_none_is_noop() {
+        let mut app = App::new(None);
+        handle_action(&mut app, Action::None, &make_tx());
+        assert!(app.status_msg().is_none());
+        assert!(app.is_running());
     }
 }

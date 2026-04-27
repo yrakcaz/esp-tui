@@ -71,8 +71,8 @@ impl Port {
     ///
     /// * `name` - The system port name (e.g. `/dev/ttyUSB0`).
     #[must_use]
-    pub fn new(name: String) -> Self {
-        Self { name }
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
     }
 }
 
@@ -101,51 +101,53 @@ impl Port {
     ) -> (tokio::task::JoinHandle<()>, mpsc::Sender<PortCommand>) {
         let (cmd_tx, cmd_rx) = mpsc::channel::<PortCommand>();
         let handle = tokio::task::spawn_blocking(move || {
-            let port = match serialport::new(&self.name, BAUD_RATE)
+            let port = serialport::new(&self.name, BAUD_RATE)
                 .timeout(std::time::Duration::from_millis(100))
                 .open()
-            {
-                Ok(p) => p,
-                Err(e) => {
+                .map_err(|e| {
                     let _ = tx.send(crate::event::Message::Serial(format!(
                         "failed to open {}: {e}",
                         self.name
                     )));
                     let _ = tx.send(crate::event::Message::Disconnected);
-                    return;
-                }
-            };
+                })
+                .ok();
 
-            let mut reader = std::io::BufReader::new(port);
-            let mut line = String::new();
+            if let Some(port) = port {
+                let mut reader = std::io::BufReader::new(port);
+                let mut line = String::new();
 
-            loop {
-                if *shutdown.borrow() {
-                    break;
-                }
-                if let Ok(PortCommand::Reset) = cmd_rx.try_recv() {
-                    if let Err(e) = reset_via_handle(reader.get_mut()) {
-                        let _ = tx.send(crate::event::Message::Serial(format!(
-                            "Reset failed: {e}"
-                        )));
-                    }
-                }
-                match reader.read_line(&mut line) {
-                    Ok(0) => {
-                        let _ = tx.send(crate::event::Message::Disconnected);
+                loop {
+                    if *shutdown.borrow() {
                         break;
                     }
-                    Ok(_) => {
-                        let trimmed = line.trim_end().to_owned();
-                        line.clear();
-                        if tx.send(crate::event::Message::Serial(trimmed)).is_err() {
-                            break;
+                    if let Ok(PortCommand::Reset) = cmd_rx.try_recv() {
+                        if let Err(e) = reset_via_handle(reader.get_mut()) {
+                            let _ = tx.send(crate::event::Message::Serial(format!(
+                                "Reset failed: {e}"
+                            )));
                         }
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
-                    Err(_) => {
-                        let _ = tx.send(crate::event::Message::Disconnected);
-                        break;
+                    match reader.read_line(&mut line) {
+                        Ok(0) => {
+                            let _ = tx.send(crate::event::Message::Disconnected);
+                            break;
+                        }
+                        Ok(_) => {
+                            let trimmed = line.trim_end().to_owned();
+                            line.clear();
+                            if tx
+                                .send(crate::event::Message::Serial(trimmed))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                        Err(_) => {
+                            let _ = tx.send(crate::event::Message::Disconnected);
+                            break;
+                        }
                     }
                 }
             }

@@ -3,11 +3,14 @@ use std::sync::LazyLock;
 use ratatui::style::Color;
 use regex::Regex;
 
-static RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^([EWIDV]) \((\d+)\) ([^:]+): (.+)$").unwrap());
+static RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^([EWIDV]) \((\d+)\) ([^:]+): (.+)$")
+        .expect("valid ESP-IDF log regex")
+});
 
-static ANSI_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").unwrap());
+static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ANSI escape regex")
+});
 
 /// Severity level of an ESP-IDF log entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -94,8 +97,8 @@ impl Entry {
 
     /// Returns the severity level of this entry.
     #[must_use]
-    pub fn level(&self) -> &Level {
-        &self.level
+    pub fn level(&self) -> Level {
+        self.level
     }
 
     /// Returns the ESP-IDF tag, or an empty string for raw (unparsed) lines.
@@ -153,7 +156,7 @@ mod tests {
     #[test]
     fn parses_info_line() {
         let e = parse_line("I (1234) wifi: Connected to AP");
-        assert_eq!(e.level(), &Level::Info);
+        assert_eq!(e.level(), Level::Info);
         assert_eq!(e.tag(), "wifi");
         assert_eq!(e.message(), "Connected to AP");
     }
@@ -161,7 +164,7 @@ mod tests {
     #[test]
     fn parses_error_line() {
         let e = parse_line("E (9999) i2c: Timeout on addr 0x3C");
-        assert_eq!(e.level(), &Level::Error);
+        assert_eq!(e.level(), Level::Error);
         assert_eq!(e.tag(), "i2c");
         assert_eq!(e.message(), "Timeout on addr 0x3C");
     }
@@ -169,7 +172,7 @@ mod tests {
     #[test]
     fn raw_line_on_no_match() {
         let e = parse_line("some raw output");
-        assert_eq!(e.level(), &Level::Verbose);
+        assert_eq!(e.level(), Level::Verbose);
         assert_eq!(e.tag(), "");
         assert_eq!(e.message(), "some raw output");
         assert_eq!(e.raw(), "some raw output");
@@ -188,7 +191,7 @@ mod tests {
     #[test]
     fn parses_warn_line() {
         let e = parse_line("W (2000) heap: Stack near limit");
-        assert_eq!(e.level(), &Level::Warn);
+        assert_eq!(e.level(), Level::Warn);
         assert_eq!(e.tag(), "heap");
         assert_eq!(e.message(), "Stack near limit");
     }
@@ -196,7 +199,7 @@ mod tests {
     #[test]
     fn parses_debug_line() {
         let e = parse_line("D (3000) gpio: Pin 2 HIGH");
-        assert_eq!(e.level(), &Level::Debug);
+        assert_eq!(e.level(), Level::Debug);
         assert_eq!(e.tag(), "gpio");
         assert_eq!(e.message(), "Pin 2 HIGH");
     }
@@ -204,7 +207,7 @@ mod tests {
     #[test]
     fn parses_verbose_line() {
         let e = parse_line("V (4500) spi: Transfer done");
-        assert_eq!(e.level(), &Level::Verbose);
+        assert_eq!(e.level(), Level::Verbose);
         assert_eq!(e.tag(), "spi");
         assert_eq!(e.message(), "Transfer done");
     }
@@ -243,7 +246,7 @@ mod tests {
     #[test]
     fn ansi_codes_stripped_before_parsing() {
         let e = parse_line("\x1b[0;32mI (1234) wifi: Connected\x1b[0m");
-        assert_eq!(e.level(), &Level::Info);
+        assert_eq!(e.level(), Level::Info);
         assert_eq!(e.tag(), "wifi");
         assert_eq!(e.message(), "Connected");
     }

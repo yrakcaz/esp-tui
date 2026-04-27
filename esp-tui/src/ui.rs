@@ -39,9 +39,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let port_label = app
+    let port_label: std::borrow::Cow<str> = app
         .port_name()
-        .map_or_else(|| "Port: none".to_owned(), |p| format!("Port: {p}"));
+        .map_or("Port: none".into(), |p| format!("Port: {p}").into());
 
     let left = Line::from(vec![
         hint("C", "onnect"),
@@ -97,12 +97,12 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App) {
     let height = content_area.height as usize;
     let entries = app.visible_entries(height);
 
-    let lines: Vec<Line> = entries
+    let lines: Vec<Line<'_>> = entries
         .iter()
         .map(|e| {
             if e.tag().is_empty() {
                 Line::from(Span::styled(
-                    e.message().to_owned(),
+                    e.message(),
                     Style::default().fg(Color::DarkGray),
                 ))
             } else {
@@ -118,7 +118,7 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App) {
                         format!("{}: ", e.tag()),
                         Style::default().fg(Color::DarkGray),
                     ),
-                    Span::raw(e.message().to_owned()),
+                    Span::raw(e.message()),
                 ])
             }
         })
