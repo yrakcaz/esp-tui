@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn demo_lines_cycle_without_panic() {
         assert!(!LINES.is_empty());
-        for i in 0..LINES.len() * 2 + 1 {
+        for i in 0..=(LINES.len() * 2) {
             let _ = LINES[i % LINES.len()];
         }
     }

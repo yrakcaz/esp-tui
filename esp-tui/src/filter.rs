@@ -191,7 +191,7 @@ mod tests {
     fn toggle_hides_and_shows_tag() {
         let mut s = State::new();
         s.record_tag("wifi");
-        s.move_cursor(tag_cursor(0) as isize);
+        s.move_cursor(tag_cursor(0).cast_signed());
         assert!(!s.is_tag_hidden("wifi"));
         s.toggle_at_cursor();
         assert!(s.is_tag_hidden("wifi"));
@@ -213,7 +213,7 @@ mod tests {
     fn is_visible_respects_hidden_tag() {
         let mut s = State::new();
         s.record_tag("wifi");
-        s.move_cursor(tag_cursor(0) as isize);
+        s.move_cursor(tag_cursor(0).cast_signed());
         s.toggle_at_cursor();
         let entry = log::parse_line("I (1) wifi: msg");
         assert!(!s.is_visible(&entry));
