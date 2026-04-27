@@ -502,7 +502,7 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
 
     if args.demo {
         let (src_tx, src_rx) = watch::channel(false);
-        demo::Generator.spawn(tx.clone(), src_rx);
+        let _ = demo::Generator.spawn(tx.clone(), src_rx);
         app.set_port("demo".into());
         app.set_source_shutdown(src_tx);
         app.set_status("Connected to demo.".into());
