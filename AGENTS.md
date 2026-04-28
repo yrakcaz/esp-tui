@@ -54,7 +54,7 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - UART stream rendering
 - ESP-IDF log level color coding (ERROR/WARN/INFO/DEBUG/VERBOSE)
 - Tag-based filtering
-- `Ctrl-R` reset, `Ctrl-F` flash (espflash)
+- `r` reset (DTR/RTS), `f` flash stub (Phase 2), `e` erase stub (Phase 2), `c` connect/scan
 - Port auto-detection
 - `--demo` flag: synthetic log output for UI dev without hardware
 
