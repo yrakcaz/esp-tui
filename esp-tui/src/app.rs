@@ -161,6 +161,9 @@ impl App {
     ///
     /// * `line` - A single line of serial output.
     pub(crate) fn push_line(&mut self, line: &str) {
+        if line.trim().is_empty() {
+            return;
+        }
         let entry = log::parse_line(line);
         self.filter.record_tag(entry.tag());
         if self.log_buffer.len() >= BUFFER_SIZE {
@@ -874,6 +877,14 @@ mod tests {
         let mut app = App::new(None);
         app.push_line("I (1) wifi: Connected");
         assert!(app.filter().known_tags().iter().any(|t| t == "wifi"));
+    }
+
+    #[test]
+    fn push_line_blank_line_is_ignored() {
+        let mut app = App::new(None);
+        app.push_line("");
+        app.push_line("   ");
+        assert!(app.visible_entries(10).is_empty());
     }
 
     #[test]
