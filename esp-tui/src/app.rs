@@ -653,8 +653,8 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
             1 => connect_port(&mut app, ports.remove(0), &tx),
             _ => app.open_port_selector(ports),
         }
-        spawn_port_poller(tx.clone(), shutdown_rx.clone());
     }
+    spawn_port_poller(tx.clone(), shutdown_rx.clone());
 
     let mut tick = interval(Duration::from_millis(250));
 
