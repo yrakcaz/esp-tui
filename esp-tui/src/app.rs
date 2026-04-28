@@ -515,25 +515,27 @@ fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
 
 fn handle_ports_detected(
     app: &mut App,
-    mut ports: Vec<String>,
+    mut current: Vec<String>,
+    previous: &[String],
     tx: &mpsc::UnboundedSender<event::Message>,
 ) {
     if app.port_name().is_none() {
         if app.port_selector().is_some() {
-            app.refresh_port_selector(ports);
+            app.refresh_port_selector(current);
             if app.port_selector().is_none() {
                 app.set_status("No devices detected.".into());
             }
         } else {
-            match ports.len() {
+            match current.len() {
                 0 => {}
-                1 => connect_port(app, ports.remove(0), tx),
-                _ => app.open_port_selector(ports),
+                1 => connect_port(app, current.remove(0), tx),
+                _ => app.open_port_selector(current),
             }
         }
-    } else if let Some(current) = app.port_name() {
-        let current_present = ports.iter().any(|p| p.as_str() == current);
-        if ports.len() > 1 && current_present {
+    } else if let Some(connected) = app.port_name() {
+        let connected_present = current.iter().any(|p| p.as_str() == connected);
+        let has_new_port = current.iter().any(|p| !previous.contains(p));
+        if has_new_port && connected_present {
             app.set_status("New device detected. Press [c] to connect.".into());
         }
     }
@@ -553,8 +555,14 @@ fn spawn_port_poller(
                         tokio::task::spawn_blocking(serial::detect_esp_ports).await
                     {
                         if ports != last_ports {
-                            last_ports.clone_from(&ports);
-                            if tx.send(event::Message::PortsDetected(ports)).is_err() {
+                            let previous = std::mem::replace(&mut last_ports, ports.clone());
+                            if tx
+                                .send(event::Message::PortsDetected {
+                                    current: ports,
+                                    previous,
+                                })
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -672,8 +680,8 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
                 app.set_status(msg);
             }
             event::Message::Tick => app.tick(),
-            event::Message::PortsDetected(ports) => {
-                handle_ports_detected(&mut app, ports, &tx);
+            event::Message::PortsDetected { current, previous } => {
+                handle_ports_detected(&mut app, current, &previous, &tx);
             }
         }
 
@@ -1245,7 +1253,7 @@ mod tests {
     #[test]
     fn handle_ports_detected_no_op_when_empty_and_disconnected() {
         let mut app = App::new(None);
-        handle_ports_detected(&mut app, vec![], &make_tx());
+        handle_ports_detected(&mut app, vec![], &[], &make_tx());
         assert!(app.port_name().is_none());
         assert!(app.port_selector().is_none());
         assert!(app.status_msg().is_none());
@@ -1257,6 +1265,7 @@ mod tests {
         handle_ports_detected(
             &mut app,
             vec!["COM1".into(), "COM2".into()],
+            &[],
             &make_tx(),
         );
         assert!(app.port_selector().is_some());
@@ -1269,6 +1278,7 @@ mod tests {
         handle_ports_detected(
             &mut app,
             vec!["COM3".into(), "COM4".into()],
+            &["COM1".to_owned(), "COM2".to_owned()],
             &make_tx(),
         );
         let sel = app.port_selector().unwrap();
@@ -1279,7 +1289,7 @@ mod tests {
     fn handle_ports_detected_closes_selector_on_empty() {
         let mut app = App::new(None);
         app.open_port_selector(vec!["COM1".into()]);
-        handle_ports_detected(&mut app, vec![], &make_tx());
+        handle_ports_detected(&mut app, vec![], &["COM1".to_owned()], &make_tx());
         assert!(app.port_selector().is_none());
         assert_eq!(app.status_msg(), Some("No devices detected."));
     }
@@ -1291,6 +1301,7 @@ mod tests {
         handle_ports_detected(
             &mut app,
             vec!["COM1".into(), "COM2".into()],
+            &["COM1".to_owned()],
             &make_tx(),
         );
         assert!(app.status_msg().is_some());
@@ -1300,7 +1311,12 @@ mod tests {
     fn handle_ports_detected_connected_same_ports_no_status() {
         let mut app = App::new(None);
         app.set_port("COM1".into());
-        handle_ports_detected(&mut app, vec!["COM1".into()], &make_tx());
+        handle_ports_detected(
+            &mut app,
+            vec!["COM1".into()],
+            &["COM1".to_owned()],
+            &make_tx(),
+        );
         assert!(app.status_msg().is_none());
     }
 
@@ -1308,7 +1324,25 @@ mod tests {
     fn handle_ports_detected_connected_current_gone_no_new_device_status() {
         let mut app = App::new(None);
         app.set_port("COM1".into());
-        handle_ports_detected(&mut app, vec!["COM2".into()], &make_tx());
+        handle_ports_detected(
+            &mut app,
+            vec!["COM2".into()],
+            &["COM1".to_owned(), "COM2".to_owned()],
+            &make_tx(),
+        );
+        assert!(app.status_msg().is_none());
+    }
+
+    #[test]
+    fn handle_ports_detected_connected_no_status_on_disconnect() {
+        let mut app = App::new(None);
+        app.set_port("COM1".into());
+        handle_ports_detected(
+            &mut app,
+            vec!["COM1".into()],
+            &["COM1".to_owned(), "COM2".to_owned()],
+            &make_tx(),
+        );
         assert!(app.status_msg().is_none());
     }
 

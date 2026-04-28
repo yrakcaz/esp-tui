@@ -12,6 +12,9 @@ pub(crate) enum Message {
     Disconnected,
     /// The serial port failed to open; carries a human-readable error.
     ConnectError(String),
-    /// Background port scan; carries the current set of detected ports.
-    PortsDetected(Vec<String>),
+    /// Background port scan; carries the current and previous detected port sets.
+    PortsDetected {
+        current: Vec<String>,
+        previous: Vec<String>,
+    },
 }
