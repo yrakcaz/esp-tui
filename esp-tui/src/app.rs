@@ -279,15 +279,6 @@ impl App {
         self.status_msg = Some((msg, Instant::now()));
     }
 
-    /// Expires the status message if its TTL has elapsed. Called on each tick.
-    pub(crate) fn tick(&mut self) {
-        if let Some((_, ts)) = &self.status_msg {
-            if ts.elapsed().as_secs() >= STATUS_TTL_SECS {
-                self.status_msg = None;
-            }
-        }
-    }
-
     /// Returns whether the application event loop should keep running.
     #[must_use]
     pub(crate) fn is_running(&self) -> bool {
@@ -471,6 +462,15 @@ impl App {
         self.scroll = 0;
     }
 
+    /// Expires the status message if its TTL has elapsed. Called on each tick.
+    pub(crate) fn tick(&mut self) {
+        if let Some((_, ts)) = &self.status_msg {
+            if ts.elapsed().as_secs() >= STATUS_TTL_SECS {
+                self.status_msg = None;
+            }
+        }
+    }
+
     /// Tears down the active port connection and clears port state.
     pub(crate) fn disconnect(&mut self) {
         self.shutdown_source();
@@ -479,26 +479,122 @@ impl App {
     }
 }
 
-/// Runs the application: parses CLI arguments, initialises the terminal, and
-/// drives the event loop until the user quits.
-///
-/// # Errors
-///
-/// Returns an error if terminal initialisation or any I/O operation fails.
-pub(crate) async fn run() -> anyhow::Result<()> {
-    let args = Args::parse();
+fn connect_port(
+    app: &mut App,
+    port: String,
+    tx: &mpsc::UnboundedSender<event::Message>,
+) {
+    let (src_tx, src_rx) = watch::channel(false);
+    let status = format!("Connected to {port}.");
+    let (_, cmd_tx) = serial::Port::new(&port).spawn(tx.clone(), src_rx);
+    app.set_port(port);
+    app.set_port_cmd(cmd_tx);
+    app.set_source_shutdown(src_tx);
+    app.set_status(status);
+}
 
-    enable_raw_mode().context("failed to enable raw mode")?;
-    std::io::stdout()
-        .execute(EnterAlternateScreen)
-        .context("failed to enter alternate screen")?;
+fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
+    port_arg.map_or_else(serial::detect_esp_ports, |p| Ok(vec![p]))
+}
 
-    let result = run_inner(args).await;
+fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
+    match serial::detect_esp_ports() {
+        Err(e) => app.set_status(format!("Port scan failed: {e}")),
+        Ok(ports) if ports.is_empty() => {
+            app.set_status("No devices detected.".into());
+        }
+        Ok(mut ports) if ports.len() == 1 => {
+            connect_port(app, ports.remove(0), tx);
+        }
+        Ok(ports) => app.open_port_selector(ports),
+    }
+}
 
-    let _ = disable_raw_mode();
-    let _ = std::io::stdout().execute(LeaveAlternateScreen);
+fn handle_ports_detected(
+    app: &mut App,
+    mut ports: Vec<String>,
+    tx: &mpsc::UnboundedSender<event::Message>,
+) {
+    if app.port_name().is_none() {
+        if app.port_selector().is_some() {
+            app.refresh_port_selector(ports);
+            if app.port_selector().is_none() {
+                app.set_status("No devices detected.".into());
+            }
+        } else {
+            match ports.len() {
+                0 => {}
+                1 => connect_port(app, ports.remove(0), tx),
+                _ => app.open_port_selector(ports),
+            }
+        }
+    } else if let Some(current) = app.port_name() {
+        let current_present = ports.iter().any(|p| p.as_str() == current);
+        if ports.len() > 1 && current_present {
+            app.set_status("New device detected. Press [c] to connect.".into());
+        }
+    }
+}
 
-    result
+fn spawn_port_poller(
+    tx: mpsc::UnboundedSender<event::Message>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    tokio::spawn(async move {
+        let mut last_ports: Vec<String> = Vec::new();
+        let mut poll = interval(Duration::from_secs(1));
+        loop {
+            tokio::select! {
+                _ = poll.tick() => {
+                    if let Ok(Ok(ports)) =
+                        tokio::task::spawn_blocking(serial::detect_esp_ports).await
+                    {
+                        if ports != last_ports {
+                            last_ports.clone_from(&ports);
+                            if tx.send(event::Message::PortsDetected(ports)).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                _ = shutdown.changed() => break,
+            }
+        }
+    });
+}
+
+fn handle_action(
+    app: &mut App,
+    action: Action,
+    tx: &mpsc::UnboundedSender<event::Message>,
+) {
+    match action {
+        Action::Quit => app.quit(),
+        Action::Disconnect => {
+            if app.port_name().is_some() {
+                app.disconnect();
+                app.set_status("Disconnected.".into());
+            } else {
+                app.set_status("Not connected.".into());
+            }
+        }
+        Action::ResetDevice => match app.port_cmd_tx() {
+            Some(cmd_tx) => {
+                if cmd_tx.send(serial::PortCommand::Reset).is_err() {
+                    app.set_status("Reset failed: port disconnected.".into());
+                } else {
+                    app.set_status("Reset sent.".into());
+                }
+            }
+            None if app.port_name().is_some() => {
+                app.set_status("Reset not supported.".into());
+            }
+            None => app.set_status("No port connected.".into()),
+        },
+        Action::ScanPorts => apply_scan(app, tx),
+        Action::ConnectPort(port) => connect_port(app, port, tx),
+        Action::None => {}
+    }
 }
 
 async fn run_inner(args: Args) -> anyhow::Result<()> {
@@ -588,122 +684,26 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle_action(
-    app: &mut App,
-    action: Action,
-    tx: &mpsc::UnboundedSender<event::Message>,
-) {
-    match action {
-        Action::Quit => app.quit(),
-        Action::Disconnect => {
-            if app.port_name().is_some() {
-                app.disconnect();
-                app.set_status("Disconnected.".into());
-            } else {
-                app.set_status("Not connected.".into());
-            }
-        }
-        Action::ResetDevice => match app.port_cmd_tx() {
-            Some(cmd_tx) => {
-                if cmd_tx.send(serial::PortCommand::Reset).is_err() {
-                    app.set_status("Reset failed: port disconnected.".into());
-                } else {
-                    app.set_status("Reset sent.".into());
-                }
-            }
-            None if app.port_name().is_some() => {
-                app.set_status("Reset not supported.".into());
-            }
-            None => app.set_status("No port connected.".into()),
-        },
-        Action::ScanPorts => apply_scan(app, tx),
-        Action::ConnectPort(port) => connect_port(app, port, tx),
-        Action::None => {}
-    }
-}
+/// Runs the application: parses CLI arguments, initialises the terminal, and
+/// drives the event loop until the user quits.
+///
+/// # Errors
+///
+/// Returns an error if terminal initialisation or any I/O operation fails.
+pub(crate) async fn run() -> anyhow::Result<()> {
+    let args = Args::parse();
 
-fn connect_port(
-    app: &mut App,
-    port: String,
-    tx: &mpsc::UnboundedSender<event::Message>,
-) {
-    let (src_tx, src_rx) = watch::channel(false);
-    let status = format!("Connected to {port}.");
-    let (_, cmd_tx) = serial::Port::new(&port).spawn(tx.clone(), src_rx);
-    app.set_port(port);
-    app.set_port_cmd(cmd_tx);
-    app.set_source_shutdown(src_tx);
-    app.set_status(status);
-}
+    enable_raw_mode().context("failed to enable raw mode")?;
+    std::io::stdout()
+        .execute(EnterAlternateScreen)
+        .context("failed to enter alternate screen")?;
 
-fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
-    match serial::detect_esp_ports() {
-        Err(e) => app.set_status(format!("Port scan failed: {e}")),
-        Ok(ports) if ports.is_empty() => {
-            app.set_status("No devices detected.".into());
-        }
-        Ok(mut ports) if ports.len() == 1 => {
-            connect_port(app, ports.remove(0), tx);
-        }
-        Ok(ports) => app.open_port_selector(ports),
-    }
-}
+    let result = run_inner(args).await;
 
-fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
-    port_arg.map_or_else(serial::detect_esp_ports, |p| Ok(vec![p]))
-}
+    let _ = disable_raw_mode();
+    let _ = std::io::stdout().execute(LeaveAlternateScreen);
 
-fn spawn_port_poller(
-    tx: mpsc::UnboundedSender<event::Message>,
-    mut shutdown: watch::Receiver<bool>,
-) {
-    tokio::spawn(async move {
-        let mut last_ports: Vec<String> = Vec::new();
-        let mut poll = interval(Duration::from_secs(1));
-        loop {
-            tokio::select! {
-                _ = poll.tick() => {
-                    if let Ok(Ok(ports)) =
-                        tokio::task::spawn_blocking(serial::detect_esp_ports).await
-                    {
-                        if ports != last_ports {
-                            last_ports.clone_from(&ports);
-                            if tx.send(event::Message::PortsDetected(ports)).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-                _ = shutdown.changed() => break,
-            }
-        }
-    });
-}
-
-fn handle_ports_detected(
-    app: &mut App,
-    mut ports: Vec<String>,
-    tx: &mpsc::UnboundedSender<event::Message>,
-) {
-    if app.port_name().is_none() {
-        if app.port_selector().is_some() {
-            app.refresh_port_selector(ports);
-            if app.port_selector().is_none() {
-                app.set_status("No devices detected.".into());
-            }
-        } else {
-            match ports.len() {
-                0 => {}
-                1 => connect_port(app, ports.remove(0), tx),
-                _ => app.open_port_selector(ports),
-            }
-        }
-    } else if let Some(current) = app.port_name() {
-        let current_present = ports.iter().any(|p| p.as_str() == current);
-        if ports.len() > 1 && current_present {
-            app.set_status("New device detected. Press [c] to connect.".into());
-        }
-    }
+    result
 }
 
 #[cfg(test)]
