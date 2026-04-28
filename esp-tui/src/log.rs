@@ -4,8 +4,12 @@ use ratatui::style::Color;
 use regex::Regex;
 
 static RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^([EWIDV]) \((\d+)\) ([^:]+): (.+)$")
+    Regex::new(r"^([EWIDV]) \((\d+)\) ([^:]+): ?(.+)$")
         .expect("valid ESP-IDF log regex")
+});
+
+static RE_BRACKET: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\[([A-Z]+)\] ([^:]+): ?(.+)$").expect("valid bracket log regex")
 });
 
 static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -67,6 +71,25 @@ impl TryFrom<char> for Level {
     }
 }
 
+impl TryFrom<&str> for Level {
+    type Error = anyhow::Error;
+
+    /// # Errors
+    ///
+    /// Returns an error if `s` is not a recognised ESP-IDF log level word
+    /// (`ERROR`, `WARN`, `INFO`, `DEBUG`, or `VERBOSE`).
+    fn try_from(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "ERROR" => Ok(Self::Error),
+            "WARN" => Ok(Self::Warn),
+            "INFO" => Ok(Self::Info),
+            "DEBUG" => Ok(Self::Debug),
+            "VERBOSE" => Ok(Self::Verbose),
+            _ => Err(anyhow::anyhow!("unknown log level: {s}")),
+        }
+    }
+}
+
 /// A single parsed or raw line from the serial stream.
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
@@ -113,9 +136,10 @@ impl Entry {
 
 /// Parses a single line from the serial stream into a log [`Entry`].
 ///
-/// Lines matching the ESP-IDF format `L (timestamp) TAG: message` are fully
-/// parsed. All other lines are returned as [`Level::Verbose`] raw entries with
-/// the original text as the message.
+/// Lines matching the ESP-IDF format `L (timestamp) TAG: message` or the
+/// bracket format `[LEVEL] TAG: message` are fully parsed. All other lines
+/// are returned as [`Level::Verbose`] raw entries with the original text as
+/// the message.
 ///
 /// # Arguments
 ///
@@ -128,19 +152,23 @@ impl Entry {
 #[must_use]
 pub(crate) fn parse_line(line: &str) -> Entry {
     let clean = ANSI_RE.replace_all(line, "");
-    RE.captures(clean.as_ref()).map_or_else(
-        || Entry::from_raw_line(clean.as_ref()),
-        |caps| {
-            let level_char = caps[1]
-                .chars()
-                .next()
-                .expect("regex guarantees group 1 is non-empty");
-            Level::try_from(level_char).map_or_else(
-                |_| Entry::from_raw_line(clean.as_ref()),
-                |level| Entry::parsed(level, &caps[3], &caps[4]),
-            )
-        },
-    )
+    let s = clean.as_ref();
+    RE.captures(s)
+        .and_then(|caps| {
+            let level_char =
+                caps[1].chars().next().expect("regex guarantees non-empty");
+            Level::try_from(level_char)
+                .ok()
+                .map(|level| Entry::parsed(level, &caps[3], &caps[4]))
+        })
+        .or_else(|| {
+            RE_BRACKET.captures(s).and_then(|caps| {
+                Level::try_from(&caps[1])
+                    .ok()
+                    .map(|level| Entry::parsed(level, &caps[2], &caps[3]))
+            })
+        })
+        .unwrap_or_else(|| Entry::from_raw_line(s))
 }
 
 #[cfg(test)]
@@ -242,5 +270,56 @@ mod tests {
         let e = parse_line("\x1b[0;31msome colored output\x1b[0m");
         assert_eq!(e.tag(), "");
         assert_eq!(e.message(), "some colored output");
+    }
+
+    #[test]
+    fn parses_wifi_driver_no_space_after_colon() {
+        let e = parse_line("I (6253) wifi:new:<1,1>, old:<1,0>, ap:<255,255>");
+        assert_eq!(e.level(), Level::Info);
+        assert_eq!(e.tag(), "wifi");
+        assert_eq!(e.message(), "new:<1,1>, old:<1,0>, ap:<255,255>");
+    }
+
+    #[test]
+    fn parses_wifi_driver_state_line() {
+        let e = parse_line("I (6263) wifi:state: init -> auth (b0)");
+        assert_eq!(e.level(), Level::Info);
+        assert_eq!(e.tag(), "wifi");
+        assert_eq!(e.message(), "state: init -> auth (b0)");
+    }
+
+    #[test]
+    fn parses_bracket_format_info() {
+        let e = parse_line(
+            "[INFO] esp_netif_handlers: sta ip: 192.168.1.152, mask: 255.255.255.0",
+        );
+        assert_eq!(e.level(), Level::Info);
+        assert_eq!(e.tag(), "esp_netif_handlers");
+        assert_eq!(e.message(), "sta ip: 192.168.1.152, mask: 255.255.255.0");
+    }
+
+    #[test]
+    fn parses_bracket_format_error() {
+        let e = parse_line("[ERROR] my_component: something went wrong");
+        assert_eq!(e.level(), Level::Error);
+        assert_eq!(e.tag(), "my_component");
+        assert_eq!(e.message(), "something went wrong");
+    }
+
+    #[test]
+    fn level_try_from_str_all_levels() {
+        assert_eq!(Level::try_from("ERROR").unwrap(), Level::Error);
+        assert_eq!(Level::try_from("WARN").unwrap(), Level::Warn);
+        assert_eq!(Level::try_from("INFO").unwrap(), Level::Info);
+        assert_eq!(Level::try_from("DEBUG").unwrap(), Level::Debug);
+        assert_eq!(Level::try_from("VERBOSE").unwrap(), Level::Verbose);
+        assert!(Level::try_from("UNKNOWN").is_err());
+    }
+
+    #[test]
+    fn bracket_format_unknown_level_falls_through_to_raw() {
+        let e = parse_line("[TRACE] some_tag: some message");
+        assert_eq!(e.tag(), "");
+        assert_eq!(e.message(), "[TRACE] some_tag: some message");
     }
 }
