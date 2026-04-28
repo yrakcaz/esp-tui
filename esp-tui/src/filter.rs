@@ -31,6 +31,10 @@ pub(crate) struct State {
 impl State {
     /// Creates a new empty filter state with all levels visible, no tags, and
     /// the popup closed.
+    ///
+    /// # Returns
+    ///
+    /// A [`State`] with no hidden levels, no known tags, and the popup closed.
     #[must_use]
     pub(crate) fn new() -> Self {
         Self {
@@ -105,27 +109,35 @@ impl State {
     }
 
     /// Toggles the filter popup open or closed.
-    ///
-    /// # Returns
-    ///
-    /// The new open state is accessible via [`Self::is_popup_open`].
     pub(crate) fn toggle_popup(&mut self) {
         self.popup_open = !self.popup_open;
     }
 
     /// Returns whether the filter popup is currently open.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the popup is visible, `false` if it is hidden.
     #[must_use]
     pub(crate) fn is_popup_open(&self) -> bool {
         self.popup_open
     }
 
     /// Returns all tags seen so far, in insertion order.
+    ///
+    /// # Returns
+    ///
+    /// A slice of tag strings in the order they were first recorded.
     #[must_use]
     pub(crate) fn known_tags(&self) -> &[String] {
         &self.known_tags
     }
 
     /// Returns the fixed ordered list of all severity levels.
+    ///
+    /// # Returns
+    ///
+    /// A static slice of all [`log::Level`] variants from most to least severe.
     #[must_use]
     pub(crate) fn levels() -> &'static [log::Level] {
         &LEVELS
@@ -136,6 +148,10 @@ impl State {
     /// # Arguments
     ///
     /// * `tag` - The tag name to check.
+    ///
+    /// # Returns
+    ///
+    /// `true` if entries with this tag are filtered out.
     #[must_use]
     pub(crate) fn is_tag_hidden(&self, tag: &str) -> bool {
         self.hidden_tags.contains(tag)
@@ -146,12 +162,21 @@ impl State {
     /// # Arguments
     ///
     /// * `level` - The level to check.
+    ///
+    /// # Returns
+    ///
+    /// `true` if entries at this level are filtered out.
     #[must_use]
     pub(crate) fn is_level_hidden(&self, level: log::Level) -> bool {
         self.hidden_levels.contains(&level)
     }
 
     /// Returns the current cursor index within the combined level + tag list.
+    ///
+    /// # Returns
+    ///
+    /// Zero-based index; values below [`LEVELS`] length address severity levels,
+    /// values at or above address known tags.
     #[must_use]
     pub(crate) fn cursor(&self) -> usize {
         self.cursor

@@ -48,9 +48,7 @@ pub(crate) fn spawn(
                         break;
                     }
                 }
-                _ = shutdown.changed() => {
-                    if *shutdown.borrow() { break; }
-                }
+                _ = shutdown.changed() => break,
             }
         }
     })

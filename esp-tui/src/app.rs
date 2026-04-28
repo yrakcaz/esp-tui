@@ -139,6 +139,11 @@ impl App {
     /// # Arguments
     ///
     /// * `port_name` - The connected serial port name, if already known.
+    ///
+    /// # Returns
+    ///
+    /// An [`App`] with an empty log buffer, all filters visible, and the event
+    /// loop running.
     #[must_use]
     pub(crate) fn new(port_name: Option<String>) -> Self {
         Self {
@@ -161,18 +166,17 @@ impl App {
     ///
     /// * `line` - A single line of serial output.
     pub(crate) fn push_line(&mut self, line: &str) {
-        if line.trim().is_empty() {
-            return;
+        if !line.trim().is_empty() {
+            let entry = log::parse_line(line);
+            self.filter.record_tag(entry.tag());
+            if self.log_buffer.len() >= BUFFER_SIZE {
+                self.log_buffer.pop_front();
+            }
+            if self.scroll > 0 && self.filter.is_visible(&entry) {
+                self.scroll = self.scroll.saturating_add(1);
+            }
+            self.log_buffer.push_back(entry);
         }
-        let entry = log::parse_line(line);
-        self.filter.record_tag(entry.tag());
-        if self.log_buffer.len() >= BUFFER_SIZE {
-            self.log_buffer.pop_front();
-        }
-        if self.scroll > 0 && self.filter.is_visible(&entry) {
-            self.scroll = self.scroll.saturating_add(1);
-        }
-        self.log_buffer.push_back(entry);
     }
 
     /// Handles a keypress and returns the action the event loop should perform.
@@ -283,24 +287,40 @@ impl App {
     }
 
     /// Returns whether the application event loop should keep running.
+    ///
+    /// # Returns
+    ///
+    /// `true` until [`Self::quit`] is called.
     #[must_use]
     pub(crate) fn is_running(&self) -> bool {
         self.running
     }
 
     /// Returns the connected serial port name, if any.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with the port name string, or `None` if no port is connected.
     #[must_use]
     pub(crate) fn port_name(&self) -> Option<&str> {
         self.port_name.as_deref()
     }
 
     /// Returns the current status message text, if any.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with the message string, or `None` if no message is active.
     #[must_use]
     pub(crate) fn status_msg(&self) -> Option<&str> {
         self.status_msg.as_ref().map(|(msg, _)| msg.as_str())
     }
 
     /// Returns a shared reference to the filter state.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the current [`filter::State`].
     #[must_use]
     pub(crate) fn filter(&self) -> &filter::State {
         &self.filter
@@ -318,6 +338,10 @@ impl App {
 
     /// Returns how many lines from the bottom are scrolled out of view.
     /// Zero means auto-scroll (pinned to the latest line).
+    ///
+    /// # Returns
+    ///
+    /// Number of visible lines currently scrolled above the bottom of the pane.
     #[must_use]
     pub(crate) fn scroll(&self) -> usize {
         self.scroll
@@ -335,19 +359,15 @@ impl App {
     /// A `Vec` of references to visible entries, oldest first.
     #[must_use]
     pub(crate) fn visible_entries(&self, height: usize) -> Vec<&log::Entry> {
-        let total = self
+        let visible: Vec<&log::Entry> = self
             .log_buffer
             .iter()
             .filter(|e| self.filter.is_visible(e))
-            .count();
+            .collect();
+        let total = visible.len();
         let skip = self.scroll.min(total.saturating_sub(height));
         let start = total.saturating_sub(height).saturating_sub(skip);
-        self.log_buffer
-            .iter()
-            .filter(|e| self.filter.is_visible(e))
-            .skip(start)
-            .take(height)
-            .collect()
+        visible[start..total.min(start + height)].to_vec()
     }
 
     /// Returns a shared reference to the port selector, if active.
@@ -532,8 +552,10 @@ fn handle_ports_detected(
                 _ => app.open_port_selector(current),
             }
         }
-    } else if let Some(connected) = app.port_name() {
-        let connected_present = current.iter().any(|p| p.as_str() == connected);
+    } else {
+        let connected_present = app
+            .port_name()
+            .is_some_and(|n| current.iter().any(|p| p.as_str() == n));
         let has_new_port = current.iter().any(|p| !previous.contains(p));
         if has_new_port && connected_present {
             app.set_status("New device detected. Press [c] to connect.".into());
@@ -826,6 +848,21 @@ mod tests {
     fn app_set_status_and_read() {
         let mut app = App::new(None);
         app.set_status("hello".into());
+        assert_eq!(app.status_msg(), Some("hello"));
+    }
+
+    #[test]
+    fn tick_no_status_is_noop() {
+        let mut app = App::new(None);
+        app.tick();
+        assert!(app.status_msg().is_none());
+    }
+
+    #[test]
+    fn tick_recent_status_is_preserved() {
+        let mut app = App::new(None);
+        app.set_status("hello".into());
+        app.tick();
         assert_eq!(app.status_msg(), Some("hello"));
     }
 
@@ -1334,13 +1371,26 @@ mod tests {
     }
 
     #[test]
-    fn handle_ports_detected_connected_no_status_on_disconnect() {
+    fn handle_ports_detected_other_port_disappeared_no_status() {
         let mut app = App::new(None);
         app.set_port("COM1".into());
         handle_ports_detected(
             &mut app,
             vec!["COM1".into()],
             &["COM1".to_owned(), "COM2".to_owned()],
+            &make_tx(),
+        );
+        assert!(app.status_msg().is_none());
+    }
+
+    #[test]
+    fn handle_ports_detected_new_device_but_connected_port_gone_no_status() {
+        let mut app = App::new(None);
+        app.set_port("COM1".into());
+        handle_ports_detected(
+            &mut app,
+            vec!["COM2".into(), "COM3".into()],
+            &["COM1".to_owned()],
             &make_tx(),
         );
         assert!(app.status_msg().is_none());

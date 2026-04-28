@@ -7,6 +7,7 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::app::{App, PortSelector};
+use crate::filter;
 
 /// Renders the full TUI to the given frame.
 ///
@@ -44,19 +45,19 @@ fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
         .map_or("Port: none".into(), |p| format!("Port: {p}").into());
 
     let left = Line::from(vec![
-        hint("C", "onnect"),
+        hint("[C]onnect"),
         Span::raw("  "),
-        hint("D", "isconnect"),
+        hint("[D]isconnect"),
         Span::raw("  "),
-        hint("F", "lash"),
+        hint("[F]lash"),
         Span::raw("  "),
-        hint("R", "eset"),
+        hint("[R]eset"),
         Span::raw("  "),
-        hint("E", "rase"),
+        hint("[E]rase"),
         Span::raw("  "),
-        hint("Q", "uit"),
+        hint("[Q]uit"),
         Span::raw("  "),
-        hint("Tab", "Filter"),
+        hint("[Tab]Filter"),
     ]);
 
     let right_len = u16::try_from(port_label.len()).unwrap_or(u16::MAX);
@@ -73,9 +74,9 @@ fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn hint<'a>(key: &'a str, label: &'a str) -> Span<'a> {
+fn hint(text: &'static str) -> Span<'static> {
     Span::styled(
-        format!("[{key}]{label}"),
+        text,
         Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::BOLD),
@@ -192,7 +193,6 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
-    use crate::filter;
     const HINT: &str = " [Space] toggle  [^A] toggle all  [q/Esc] close";
 
     let filter = app.filter();
@@ -254,8 +254,7 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
                 ListItem::new(format!("  {marker} {tag}")).style(style)
             }))
             .chain(std::iter::once(
-                ListItem::new(" [Space] toggle  [^A] toggle all  [q/Esc] close")
-                    .style(Style::default().fg(Color::DarkGray)),
+                ListItem::new(HINT).style(Style::default().fg(Color::DarkGray)),
             ))
             .collect();
 
