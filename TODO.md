@@ -46,6 +46,7 @@
 
 ## Phase 4: Polish
 
+- [ ] On macOS, filter `cu.*` entries from port detection: only `tty.*` devices should appear in the selector and auto-connect logic, since `cu.*` is not the correct interface for ESP32 serial communication
 - [ ] Panic/backtrace decoder: addr2line + ELF symbol resolution
 - [ ] Historical sparklines for heap and CPU over last N seconds
 - [ ] WiFi stats in inspector (RSSI, channel, TX/RX counts)

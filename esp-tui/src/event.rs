@@ -10,6 +10,14 @@ pub(crate) enum Message {
     Tick,
     /// The serial port was lost (I/O error or physical unplug).
     Disconnected,
+    /// The serial port opened successfully; carries the port name, command
+    /// sender, and source shutdown handle so the event loop can commit the
+    /// new connection atomically.
+    ConnectSuccess {
+        port: String,
+        cmd_tx: std::sync::mpsc::Sender<crate::serial::PortCommand>,
+        src_tx: tokio::sync::watch::Sender<bool>,
+    },
     /// The serial port failed to open; carries a human-readable error.
     ConnectError(String),
     /// Background port scan; carries the current and previous detected port sets.

@@ -470,10 +470,15 @@ impl App {
     /// * `ports` - Updated list of available ports.
     pub(crate) fn refresh_port_selector(&mut self, ports: Vec<String>) {
         if ports.is_empty() {
-            self.port_selector = None;
+            self.close_port_selector();
         } else if let Some(sel) = self.port_selector.as_mut() {
             sel.update_ports(ports);
         }
+    }
+
+    /// Closes the port selector popup, if open.
+    pub(crate) fn close_port_selector(&mut self) {
+        self.port_selector = None;
     }
 
     /// Signals the event loop to stop.
@@ -519,18 +524,9 @@ impl App {
     }
 }
 
-fn connect_port(
-    app: &mut App,
-    port: String,
-    tx: &mpsc::UnboundedSender<event::Message>,
-) {
+fn begin_connect(port: &str, tx: &mpsc::UnboundedSender<event::Message>) {
     let (src_tx, src_rx) = watch::channel(false);
-    let status = format!("Connected to {port}.");
-    let (_, cmd_tx) = serial::Port::new(&port).spawn(tx.clone(), src_rx);
-    app.set_port(port);
-    app.set_port_cmd(cmd_tx);
-    app.set_source_shutdown(src_tx);
-    app.set_status(status);
+    serial::Port::new(port).spawn(tx.clone(), src_rx, src_tx);
 }
 
 fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
@@ -544,7 +540,7 @@ fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
             app.set_status("No devices detected.".into());
         }
         Ok(mut ports) if ports.len() == 1 => {
-            connect_port(app, ports.remove(0), tx);
+            begin_connect(&ports.remove(0), tx);
         }
         Ok(ports) => app.open_port_selector(ports),
     }
@@ -559,14 +555,21 @@ fn handle_ports_detected(
     if !app.is_demo() {
         if app.port_name().is_none() {
             if app.port_selector().is_some() {
-                app.refresh_port_selector(current);
-                if app.port_selector().is_none() {
-                    app.set_status("No devices detected.".into());
+                match current.len() {
+                    0 => {
+                        app.close_port_selector();
+                        app.set_status("No devices detected.".into());
+                    }
+                    1 => {
+                        app.close_port_selector();
+                        begin_connect(&current[0], tx);
+                    }
+                    _ => app.refresh_port_selector(current),
                 }
             } else {
                 match current.len() {
                     0 => {}
-                    1 => connect_port(app, current.remove(0), tx),
+                    1 => begin_connect(&current.remove(0), tx),
                     _ => app.open_port_selector(current),
                 }
             }
@@ -650,7 +653,7 @@ fn handle_action(
             None => app.set_status("No port connected.".into()),
         },
         Action::ScanPorts => apply_scan(app, tx),
-        Action::ConnectPort(port) => connect_port(app, port, tx),
+        Action::ConnectPort(port) => begin_connect(&port, tx),
     }
 }
 
@@ -675,7 +678,7 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
         let mut ports = resolve_ports(args.port)?;
         match ports.len() {
             0 => {}
-            1 => connect_port(&mut app, ports.remove(0), &tx),
+            1 => begin_connect(&ports.remove(0), &tx),
             _ => app.open_port_selector(ports),
         }
         spawn_port_poller(tx.clone(), shutdown_rx.clone());
@@ -722,8 +725,18 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
                 app.disconnect();
                 app.set_status("Disconnected.".into());
             }
+            event::Message::ConnectSuccess {
+                port,
+                cmd_tx,
+                src_tx,
+            } => {
+                let status = format!("Connected to {port}.");
+                app.set_port(port);
+                app.set_port_cmd(cmd_tx);
+                app.set_source_shutdown(src_tx);
+                app.set_status(status);
+            }
             event::Message::ConnectError(msg) => {
-                app.disconnect();
                 app.set_status(msg);
             }
             event::Message::Tick => app.tick(),
@@ -1357,6 +1370,22 @@ mod tests {
         assert_eq!(app.status_msg(), Some("No devices detected."));
     }
 
+    #[tokio::test]
+    async fn handle_ports_detected_auto_connects_when_selector_reaches_one_port() {
+        let mut app = App::new(None);
+        app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
+        handle_ports_detected(
+            &mut app,
+            vec!["COM1".into()],
+            &["COM1".to_owned(), "COM2".to_owned()],
+            &make_tx(),
+        );
+        assert!(
+            app.port_selector().is_none(),
+            "selector must close when reduced to one port"
+        );
+    }
+
     #[test]
     fn handle_ports_detected_connected_new_device_sets_status() {
         let mut app = App::new(None);
@@ -1481,6 +1510,39 @@ mod tests {
         handle_action(&mut app, Action::None, &make_tx());
         assert!(app.status_msg().is_none());
         assert!(app.is_running());
+    }
+
+    #[test]
+    fn connect_success_commits_new_port_and_kills_old_source() {
+        let (old_src_tx, _old_src_rx) = tokio::sync::watch::channel(false);
+        let (new_src_tx, _new_src_rx) = tokio::sync::watch::channel(false);
+        let (cmd_tx, _cmd_rx) = std::sync::mpsc::channel();
+
+        let mut app = App::new(Some("COM1".into()));
+        app.set_source_shutdown(old_src_tx);
+
+        let status = "Connected to COM2.".to_owned();
+        app.set_port("COM2".into());
+        app.set_port_cmd(cmd_tx);
+        app.set_source_shutdown(new_src_tx);
+        app.set_status(status);
+
+        assert_eq!(app.port_name(), Some("COM2"));
+        assert_eq!(app.status_msg(), Some("Connected to COM2."));
+    }
+
+    #[test]
+    fn connect_error_preserves_existing_connection() {
+        let mut app = App::new(Some("COM1".into()));
+        let error_msg = "failed to open COM2: resource busy".to_owned();
+        app.set_status(error_msg.clone());
+
+        assert_eq!(
+            app.port_name(),
+            Some("COM1"),
+            "existing port must survive a ConnectError"
+        );
+        assert_eq!(app.status_msg(), Some(error_msg.as_str()));
     }
 
     #[test]

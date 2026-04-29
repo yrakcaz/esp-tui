@@ -76,41 +76,52 @@ impl Port {
         Self { name: name.into() }
     }
 
-    /// Spawns a blocking task that reads lines from the serial port and sends
-    /// them as [`crate::event::Message::Serial`] events.
+    /// Spawns a blocking task that opens the serial port and reads lines,
+    /// forwarding them as [`crate::event::Message::Serial`] events.
     ///
-    /// Returns a [`PortCommand`] sender that can be used to send commands
-    /// (e.g. reset) to the running task without opening a second handle.
+    /// On a successful open the task sends
+    /// [`crate::event::Message::ConnectSuccess`] (carrying the command sender
+    /// and source shutdown handle) before entering the read loop, so the
+    /// caller's existing connection is only replaced once the new one is
+    /// confirmed live. On failure it sends
+    /// [`crate::event::Message::ConnectError`] and exits.
     ///
     /// # Arguments
     ///
-    /// * `tx` - Channel sender for forwarding log line events.
+    /// * `tx` - Channel sender for forwarding events to the main loop.
     /// * `shutdown` - Watch receiver; the task exits when the value becomes
     ///   `true`.
-    ///
-    /// # Returns
-    ///
-    /// A tuple of the task [`tokio::task::JoinHandle`] and a
-    /// [`std::sync::mpsc::Sender`] for sending [`PortCommand`]s.
-    #[must_use]
+    /// * `src_tx` - Shutdown sender for this source; passed back to the event
+    ///   loop via [`crate::event::Message::ConnectSuccess`] so the loop can
+    ///   store it and kill this task later.
     pub(crate) fn spawn(
         self,
         tx: tokio::sync::mpsc::UnboundedSender<crate::event::Message>,
         shutdown: tokio::sync::watch::Receiver<bool>,
-    ) -> (tokio::task::JoinHandle<()>, mpsc::Sender<PortCommand>) {
+        src_tx: tokio::sync::watch::Sender<bool>,
+    ) {
         let (cmd_tx, cmd_rx) = mpsc::channel::<PortCommand>();
-        let handle = tokio::task::spawn_blocking(move || {
-            match serialport::new(&self.name, BAUD_RATE)
-                .timeout(std::time::Duration::from_millis(100))
-                .open()
-            {
-                Err(e) => {
-                    let _ = tx.send(crate::event::Message::ConnectError(format!(
-                        "failed to open {}: {e}",
-                        self.name
-                    )));
-                }
-                Ok(port) => {
+        drop(tokio::task::spawn_blocking(move || match serialport::new(
+            &self.name, BAUD_RATE,
+        )
+        .timeout(std::time::Duration::from_millis(100))
+        .open()
+        {
+            Err(e) => {
+                let _ = tx.send(crate::event::Message::ConnectError(format!(
+                    "failed to open {}: {e}",
+                    self.name
+                )));
+            }
+            Ok(port) => {
+                let connected = tx
+                    .send(crate::event::Message::ConnectSuccess {
+                        port: self.name.clone(),
+                        cmd_tx,
+                        src_tx,
+                    })
+                    .is_ok();
+                if connected {
                     let mut reader = std::io::BufReader::new(port);
                     let mut line = String::new();
 
@@ -149,8 +160,7 @@ impl Port {
                     }
                 }
             }
-        });
-        (handle, cmd_tx)
+        }));
     }
 }
 
