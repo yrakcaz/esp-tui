@@ -131,6 +131,7 @@ pub(crate) struct App {
     status_msg: Option<(String, Instant)>,
     running: bool,
     port_selector: Option<PortSelector>,
+    demo: bool,
 }
 
 impl App {
@@ -156,6 +157,7 @@ impl App {
             status_msg: None,
             running: true,
             port_selector: None,
+            demo: false,
         }
     }
 
@@ -500,6 +502,21 @@ impl App {
         self.port_name = None;
         self.port_cmd_tx = None;
     }
+
+    /// Returns `true` when the application is running in demo mode.
+    ///
+    /// # Returns
+    ///
+    /// `true` if demo mode is active, `false` otherwise.
+    #[must_use]
+    pub(crate) fn is_demo(&self) -> bool {
+        self.demo
+    }
+
+    /// Puts the application into demo mode, sealing it from real hardware.
+    pub(crate) fn set_demo(&mut self) {
+        self.demo = true;
+    }
 }
 
 fn connect_port(
@@ -539,26 +556,28 @@ fn handle_ports_detected(
     previous: &[String],
     tx: &mpsc::UnboundedSender<event::Message>,
 ) {
-    if app.port_name().is_none() {
-        if app.port_selector().is_some() {
-            app.refresh_port_selector(current);
-            if app.port_selector().is_none() {
-                app.set_status("No devices detected.".into());
+    if !app.is_demo() {
+        if app.port_name().is_none() {
+            if app.port_selector().is_some() {
+                app.refresh_port_selector(current);
+                if app.port_selector().is_none() {
+                    app.set_status("No devices detected.".into());
+                }
+            } else {
+                match current.len() {
+                    0 => {}
+                    1 => connect_port(app, current.remove(0), tx),
+                    _ => app.open_port_selector(current),
+                }
             }
         } else {
-            match current.len() {
-                0 => {}
-                1 => connect_port(app, current.remove(0), tx),
-                _ => app.open_port_selector(current),
+            let connected_present = app
+                .port_name()
+                .is_some_and(|n| current.iter().any(|p| p.as_str() == n));
+            let has_new_port = current.iter().any(|p| !previous.contains(p));
+            if has_new_port && connected_present {
+                app.set_status("New device detected. Press [c] to connect.".into());
             }
-        }
-    } else {
-        let connected_present = app
-            .port_name()
-            .is_some_and(|n| current.iter().any(|p| p.as_str() == n));
-        let has_new_port = current.iter().any(|p| !previous.contains(p));
-        if has_new_port && connected_present {
-            app.set_status("New device detected. Press [c] to connect.".into());
         }
     }
 }
@@ -602,6 +621,7 @@ fn handle_action(
     tx: &mpsc::UnboundedSender<event::Message>,
 ) {
     match action {
+        Action::None => {}
         Action::Quit => app.quit(),
         Action::Disconnect => {
             if app.port_name().is_some() {
@@ -610,6 +630,11 @@ fn handle_action(
             } else {
                 app.set_status("Not connected.".into());
             }
+        }
+        // All actions below touch real hardware. New hardware actions must go
+        // after this arm so demo mode blocks them automatically.
+        _ if app.is_demo() => {
+            app.set_status("Not available in demo mode.".into());
         }
         Action::ResetDevice => match app.port_cmd_tx() {
             Some(cmd_tx) => {
@@ -626,7 +651,6 @@ fn handle_action(
         },
         Action::ScanPorts => apply_scan(app, tx),
         Action::ConnectPort(port) => connect_port(app, port, tx),
-        Action::None => {}
     }
 }
 
@@ -641,8 +665,9 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
     let mut app = App::new(None);
 
     if args.demo {
+        app.set_demo();
         let (src_tx, src_rx) = watch::channel(false);
-        drop(demo::spawn(tx.clone(), src_rx));
+        demo::spawn(tx.clone(), src_rx);
         app.set_port("demo".into());
         app.set_source_shutdown(src_tx);
         app.set_status("Connected to demo.".into());
@@ -653,8 +678,8 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
             1 => connect_port(&mut app, ports.remove(0), &tx),
             _ => app.open_port_selector(ports),
         }
+        spawn_port_poller(tx.clone(), shutdown_rx.clone());
     }
-    spawn_port_poller(tx.clone(), shutdown_rx.clone());
 
     let mut tick = interval(Duration::from_millis(250));
 
@@ -829,6 +854,7 @@ mod tests {
         assert_eq!(app.scroll(), 0);
         assert!(app.status_msg().is_none());
         assert!(app.port_selector().is_none());
+        assert!(!app.is_demo(), "new App must not start in demo mode");
     }
 
     #[test]
@@ -1397,6 +1423,30 @@ mod tests {
     }
 
     #[test]
+    fn handle_ports_detected_is_noop_in_demo_mode() {
+        let mut app = App::new(None);
+        app.set_demo();
+        handle_ports_detected(
+            &mut app,
+            vec!["/dev/ttyUSB0".into()],
+            &[],
+            &make_tx(),
+        );
+        assert!(
+            app.port_name().is_none(),
+            "PortsDetected must not connect a port in demo mode"
+        );
+        assert!(
+            app.port_selector().is_none(),
+            "PortsDetected must not open port selector in demo mode"
+        );
+        assert!(
+            app.status_msg().is_none(),
+            "PortsDetected must not set status in demo mode"
+        );
+    }
+
+    #[test]
     fn handle_action_quit() {
         let mut app = App::new(None);
         handle_action(&mut app, Action::Quit, &make_tx());
@@ -1445,6 +1495,60 @@ mod tests {
                 || app.port_name().is_some()
                 || app.port_selector().is_some(),
             "scan_ports must produce an observable state change"
+        );
+    }
+
+    #[test]
+    fn demo_scan_ports_is_noop() {
+        let mut app = App::new(None);
+        app.set_demo();
+        handle_action(&mut app, Action::ScanPorts, &make_tx());
+        assert_eq!(
+            app.status_msg(),
+            Some("Not available in demo mode."),
+            "ScanPorts must be blocked in demo mode"
+        );
+        assert!(
+            app.port_name().is_none(),
+            "port_name must not be set by ScanPorts in demo mode"
+        );
+        assert!(
+            app.port_selector().is_none(),
+            "port selector must not open from ScanPorts in demo mode"
+        );
+    }
+
+    #[test]
+    fn demo_connect_port_is_noop() {
+        let mut app = App::new(None);
+        app.set_demo();
+        app.set_port("demo".into());
+        handle_action(
+            &mut app,
+            Action::ConnectPort("/dev/ttyUSB0".into()),
+            &make_tx(),
+        );
+        assert_eq!(
+            app.status_msg(),
+            Some("Not available in demo mode."),
+            "ConnectPort must be blocked in demo mode"
+        );
+        assert_eq!(
+            app.port_name(),
+            Some("demo"),
+            "port_name must remain 'demo' after blocked ConnectPort"
+        );
+    }
+
+    #[test]
+    fn demo_reset_is_noop() {
+        let mut app = App::new(None);
+        app.set_demo();
+        handle_action(&mut app, Action::ResetDevice, &make_tx());
+        assert_eq!(
+            app.status_msg(),
+            Some("Not available in demo mode."),
+            "ResetDevice must be blocked in demo mode"
         );
     }
 }

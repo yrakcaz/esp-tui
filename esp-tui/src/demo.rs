@@ -27,15 +27,10 @@ static LINES: &[&str] = &[
 ///   [`crate::event::Message::Serial`] events.
 /// * `shutdown` - Watch receiver; the task exits when the value becomes
 ///   `true`.
-///
-/// # Returns
-///
-/// A [`tokio::task::JoinHandle`] for the spawned task.
-#[must_use]
 pub(crate) fn spawn(
     tx: tokio::sync::mpsc::UnboundedSender<crate::event::Message>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
-) -> tokio::task::JoinHandle<()> {
+) {
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_millis(100));
         let mut idx = 0usize;
@@ -51,7 +46,7 @@ pub(crate) fn spawn(
                 _ = shutdown.changed() => break,
             }
         }
-    })
+    });
 }
 
 #[cfg(test)]
