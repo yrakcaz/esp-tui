@@ -11,3 +11,12 @@ repository = "https://github.com/yrakcaz/esp-tui"
 readme = "../README.md"
 keywords = ["esp32", "tui", "serial", "embedded", "monitor"]
 categories = ["command-line-utilities", "embedded", "development-tools"]
+
+[dependencies]
+anyhow     = "1"
+clap       = { version = "4", features = ["derive"] }
+crossterm  = { version = "0.29" }
+ratatui    = "0.30"
+regex      = "1"
+serialport = "4"
+tokio      = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

@@ -54,7 +54,7 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - UART stream rendering
 - ESP-IDF log level color coding (ERROR/WARN/INFO/DEBUG/VERBOSE)
 - Tag-based filtering
-- `Ctrl-R` reset, `Ctrl-F` flash (espflash)
+- `r` reset (DTR/RTS), `f` flash stub (Phase 2), `e` erase stub (Phase 2), `c` connect/scan
 - Port auto-detection
 - `--demo` flag: synthetic log output for UI dev without hardware
 
@@ -91,10 +91,16 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - Only add a comment when there is a specific reason to believe the logic will not be self-evident to a reader (e.g. a non-obvious algorithm, an intentional workaround, or an external constraint)
 - Never add boilerplate or redundant comments such as `// initialize`, `// return result`, or anything that merely restates the code
 
-### Library Documentation (library crates only)
-- Public functions/methods must document `# Arguments`, `# Returns`, and `# Errors` sections
-- Public structs/enums must have a doc comment describing their purpose
-- Public fields must have inline doc comments explaining their role
+### Documentation
+- All items visible outside their defining module (`pub(crate)`) must have a doc comment describing their purpose
+- Functions/methods visible outside their defining module must document `# Arguments`, `# Returns`, and `# Errors` sections
+- Structs/enums visible outside their defining module must have a doc comment describing their purpose
+- Fully private helpers (no visibility modifier) do not require structured doc sections
+
+### Visibility
+- `esp-tui` is a binary crate; `main.rs` is the crate root with bare `mod` declarations
+- Items used across modules use `pub(crate)`; single-module helpers are fully private (no modifier)
+- Bare `pub` is not used: nothing in this crate is consumed by external code
 
 ### Generated Text
 - Do not use em-dashes in any generated text (README, doc comments, commit messages, etc.); use a colon, comma, or rewrite the sentence instead
@@ -106,6 +112,12 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - Use `match`, `if let`, `map`, `and_then`, `unwrap_or_else` over early returns
 - Prefer iterator methods (`map`, `filter`, `fold`) over `for` loops with mutation
 
+### Ownership and Copying
+- Prefer borrowing over cloning; only clone when ownership is genuinely required
+- Pass references into functions that do not need to own the value
+- Avoid `.to_string()` / `.to_owned()` / `.clone()` allocations that exist only to satisfy the borrow checker; fix the lifetime instead
+- Do not collect into a `Vec` only to immediately iterate; keep it as an iterator chain
+
 ### Error Handling
 - Use `anyhow::Result` for error handling
 - Use `?` operator; avoid `.unwrap()` except in tests
@@ -116,6 +128,14 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - Run `cargo clippy` and fix all warnings; `clippy::all`, `clippy::cargo`, and `clippy::pedantic` are denied via `[workspace.lints]` in `Cargo.toml`
 - Follow standard Rust naming conventions (`snake_case` for functions/modules, `PascalCase` for types)
 
+### Testing
+- Maximize code coverage: every new function or behavior should have corresponding tests
+- Prefer unit tests (`#[cfg(test)] mod tests` at the bottom of the same file) for pure logic: parsing, filtering, state transitions, formatting
+- Use integration tests (`tests/` directory) for flows that span multiple modules or require a realistic wiring of components
+- `.unwrap()` is acceptable in test code
+- Test both the happy path and representative error/edge cases; do not test only the success branch
+- Do not test private implementation details that are already covered transitively by public-API tests
+
 ### Dependency Management
 - Only add a dependency when the code using it is actively being written
 - Do not add dependencies that duplicate capabilities already provided by existing ones
@@ -124,6 +144,6 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 
 - **`TODO.md`**: check off items as they are completed; add new items when scope expands
 - **`README.md`**: update when new features are usable or installation/usage instructions change
-- **`AGENTS.md`**: update when new conventions are established or tech stack decisions are made
-- **`.github/workflows/ci.yml`**: update when new system dependencies, toolchain requirements, or build steps are introduced
+- **`AGENTS.md`**: the canonical conventions file; edit only this file. `CLAUDE.md` and `.github/copilot-instructions.md` are symlinks to it and update automatically
+- **`.github/workflows/ci.yml`** and **`.devcontainer/devcontainer.json`**: both must be updated together when new system-level packages are required to build; a package missing from either will break that environment
 - **`cargo fmt` and `cargo clippy`**: run after every code change and fix all issues before committing; CI denies all clippy warnings

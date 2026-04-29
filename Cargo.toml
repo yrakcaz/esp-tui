@@ -3,6 +3,7 @@ members = ["esp-tui"]
 resolver = "2"
 
 [workspace.lints.clippy]
-all = "deny"
-cargo = "deny"
-pedantic = "deny"
+all = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+multiple_crate_versions = "allow"
