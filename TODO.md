@@ -18,14 +18,15 @@
 
 ## Phase 2: Flash Integration
 
-- [ ] espflash library integration (not subprocess)
-- [ ] Flash progress bar rendered in bottom pane during flash
-- [ ] Board info display on connect (chip type, revision, flash size, MAC)
-- [ ] Partition table viewer popup
-- [ ] `--elf <path>` CLI flag
-- [ ] `--port`, `--baud`, and `--elf` CLI flags
-- [ ] Port auto-reconnect after reset/flash cycle
-- [ ] Erase flash with confirmation prompt
+- [x] espflash library integration (not subprocess)
+- [x] Flash progress bar rendered in bottom pane during flash
+- [x] Board info display on connect (chip type, revision, flash size, MAC)
+- [ ] Partition table viewer popup (deferred: no direct espflash API without stub/temp file)
+- [x] `--elf <path>` CLI flag
+- [x] `--baud` CLI flag; `--port` was already present
+- [x] Port auto-reconnect after reset/flash cycle
+- [x] Erase flash with confirmation prompt
+- [x] ELF path selector popup with tab-completion (`s` keybinding)
 
 ## Phase 3: Agent + System Inspector
 
@@ -43,6 +44,7 @@
 - [ ] Pane focus: introduce a `FocusedPane` enum so scroll and resize operations target the active pane; review and reassign conflicting keybindings (e.g. `Tab` currently opens the filter popup) at that time
 - [ ] Per-pane independent scrolling once Inspector has scrollable content
 - [ ] Per-pane independent resizing (adjust split ratio with keybindings)
+- [ ] Split `app.rs`: move `run_inner`, `begin_connect`, `spawn_port_poller`, `handle_ports_detected`, and `apply_scan` into a new `runner.rs`; `app.rs` becomes a pure state container. The seam already exists but the split is not worth the churn until agent state grows the file further.
 
 ## Phase 4: Polish
 

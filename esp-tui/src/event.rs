@@ -25,4 +25,13 @@ pub(crate) enum Message {
         current: Vec<String>,
         previous: Vec<String>,
     },
+    /// Flash write progress; `current` and `total` are byte counts for the
+    /// current flash segment.
+    FlashProgress { current: usize, total: usize },
+    /// Flash operation completed; carries the result.
+    FlashDone(anyhow::Result<()>),
+    /// Device info probe completed; carries the result.
+    DeviceInfo(anyhow::Result<crate::flash::DeviceInfo>),
+    /// Erase operation completed; carries the result.
+    EraseDone(anyhow::Result<()>),
 }

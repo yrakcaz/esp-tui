@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Context;
@@ -13,10 +14,11 @@ use ratatui::Terminal;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{interval, Duration};
 
-use crate::{demo, event, filter, log, serial, ui};
+use crate::{demo, elf, event, filter, flash, log, port, serial, ui};
 
 const BUFFER_SIZE: usize = 10_000;
 const STATUS_TTL_SECS: u64 = 3;
+const DEFAULT_BAUD: u32 = 115_200;
 
 #[derive(Parser)]
 #[command(name = "esp-tui", about = "ESP32 developer TUI")]
@@ -28,6 +30,14 @@ struct Args {
     /// Run in demo mode with synthetic log output (no hardware required).
     #[arg(long)]
     demo: bool,
+
+    /// Path to the ELF firmware file to flash.
+    #[arg(long)]
+    elf: Option<PathBuf>,
+
+    /// Serial baud rate.
+    #[arg(long, short = 'b')]
+    baud: Option<u32>,
 }
 
 /// Outcome of a keypress that requires I/O, returned to the event loop to act on.
@@ -45,79 +55,18 @@ pub(crate) enum Action {
     ScanPorts,
     /// Connect to the given port name (emitted by the port selector popup).
     ConnectPort(String),
-}
-
-/// State for the port selection popup shown at startup when multiple ports are
-/// detected.
-pub(crate) struct PortSelector {
-    ports: Vec<String>,
-    cursor: usize,
-}
-
-impl PortSelector {
-    /// Creates a new port selector with the given list of candidate ports.
-    ///
-    /// # Arguments
-    ///
-    /// * `ports` - Non-empty list of port names to select from.
-    #[must_use]
-    pub(crate) fn new(ports: Vec<String>) -> Self {
-        Self { ports, cursor: 0 }
-    }
-
-    /// Returns all candidate port names.
-    ///
-    /// # Returns
-    ///
-    /// A slice of port name strings in selection order.
-    #[must_use]
-    pub(crate) fn ports(&self) -> &[String] {
-        &self.ports
-    }
-
-    /// Returns the current cursor index.
-    ///
-    /// # Returns
-    ///
-    /// Zero-based index into the port list.
-    #[must_use]
-    pub(crate) fn cursor(&self) -> usize {
-        self.cursor
-    }
-
-    /// Moves the cursor by `delta`, clamped to the port list bounds.
-    ///
-    /// # Arguments
-    ///
-    /// * `delta` - Positive to move down, negative to move up.
-    pub(crate) fn move_cursor(&mut self, delta: isize) {
-        let len = self.ports.len();
-        if len > 0 {
-            self.cursor = self.cursor.saturating_add_signed(delta).min(len - 1);
-        }
-    }
-
-    /// Returns the currently selected port name.
-    ///
-    /// # Returns
-    ///
-    /// The port name at the current cursor, or an empty string if the list is
-    /// empty.
-    #[must_use]
-    pub(crate) fn selected(&self) -> &str {
-        self.ports.get(self.cursor).map_or("", String::as_str)
-    }
-
-    /// Replaces the candidate port list and clamps the cursor to the new
-    /// bounds.
-    ///
-    /// # Arguments
-    ///
-    /// * `ports` - Updated list of available ports.
-    pub(crate) fn update_ports(&mut self, ports: Vec<String>) {
-        self.cursor = self.cursor.min(ports.len().saturating_sub(1));
-        self.ports = ports;
-    }
+    /// Start flashing the selected ELF to the connected device.
+    Flash,
+    /// Open the erase confirmation prompt.
+    ErasePrompt,
+    /// Confirm the erase and start the operation.
+    ConfirmErase,
+    /// Open the ELF path selector popup.
+    SelectElf,
+    /// Close the ELF path selector popup without saving.
+    CloseElfSelector,
+    /// Confirm the ELF path currently typed in the selector.
+    ConfirmElfPath,
 }
 
 /// Central application state.
@@ -130,8 +79,14 @@ pub(crate) struct App {
     source_shutdown_tx: Option<watch::Sender<bool>>,
     status_msg: Option<(String, Instant)>,
     running: bool,
-    port_selector: Option<PortSelector>,
+    port_selector: Option<port::Selector>,
     demo: bool,
+    flash_state: flash::State,
+    device_info: Option<flash::DeviceInfo>,
+    erase_confirm: bool,
+    elf_path: Option<PathBuf>,
+    elf_selector: Option<elf::Selector>,
+    baud: u32,
 }
 
 impl App {
@@ -158,6 +113,12 @@ impl App {
             running: true,
             port_selector: None,
             demo: false,
+            flash_state: flash::State::Idle,
+            device_info: None,
+            erase_confirm: false,
+            elf_path: None,
+            elf_selector: None,
+            baud: DEFAULT_BAUD,
         }
     }
 
@@ -190,11 +151,92 @@ impl App {
     /// # Returns
     ///
     /// An [`Action`] indicating what I/O the event loop should perform.
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Action {
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
-            Action::Quit
-        } else if self.port_selector.is_some() {
-            match key.code {
+            return Action::Quit;
+        }
+
+        if self.erase_confirm {
+            return match key.code {
+                KeyCode::Char('y') => Action::ConfirmErase,
+                KeyCode::Char('n' | 'q') | KeyCode::Esc => {
+                    self.erase_confirm = false;
+                    Action::None
+                }
+                _ => Action::None,
+            };
+        }
+
+        if self.elf_selector.is_some() {
+            return match key.code {
+                KeyCode::Esc => Action::CloseElfSelector,
+                KeyCode::Enter => {
+                    if self
+                        .elf_selector
+                        .as_ref()
+                        .is_some_and(|s| !s.completions().is_empty())
+                    {
+                        if let Some(s) = self.elf_selector.as_mut() {
+                            s.accept_completion();
+                        }
+                        Action::None
+                    } else {
+                        Action::ConfirmElfPath
+                    }
+                }
+                KeyCode::Tab => {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        if s.completions().is_empty() {
+                            s.complete();
+                        } else {
+                            s.cycle_completion();
+                        }
+                    }
+                    Action::None
+                }
+                KeyCode::Up => {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.move_completion(-1);
+                    }
+                    Action::None
+                }
+                KeyCode::Down => {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.move_completion(1);
+                    }
+                    Action::None
+                }
+                KeyCode::Left => {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.move_cursor(-1);
+                    }
+                    Action::None
+                }
+                KeyCode::Right => {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.move_cursor(1);
+                    }
+                    Action::None
+                }
+                KeyCode::Backspace => {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.backspace();
+                    }
+                    Action::None
+                }
+                KeyCode::Char(ch) => {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.push_char(ch);
+                    }
+                    Action::None
+                }
+                _ => Action::None,
+            };
+        }
+
+        if self.port_selector.is_some() {
+            return match key.code {
                 KeyCode::Up => {
                     if let Some(s) = self.port_selector.as_mut() {
                         s.move_cursor(-1);
@@ -217,8 +259,10 @@ impl App {
                     Action::None
                 }
                 _ => Action::None,
-            }
-        } else if self.filter.is_popup_open() {
+            };
+        }
+
+        if self.filter.is_popup_open() {
             match key.code {
                 KeyCode::Up => self.filter.move_cursor(-1),
                 KeyCode::Down => self.filter.move_cursor(1),
@@ -231,51 +275,46 @@ impl App {
                 }
                 _ => {}
             }
-            Action::None
-        } else {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc if self.scroll > 0 => {
-                    self.scroll = 0;
-                    Action::None
-                }
-                KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
-                KeyCode::Char('d') => Action::Disconnect,
-                KeyCode::Char('r') => Action::ResetDevice,
-                KeyCode::Char('f') => {
-                    self.set_status("Flash: not implemented (Phase 2)".into());
-                    Action::None
-                }
-                KeyCode::Char('e') => {
-                    self.set_status("Erase: not implemented (Phase 2)".into());
-                    Action::None
-                }
-                KeyCode::Char('c') => Action::ScanPorts,
-                KeyCode::Tab => {
-                    self.filter.toggle_popup();
-                    Action::None
-                }
-                KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
-                    self.clear_log();
-                    Action::None
-                }
-                KeyCode::Up => {
-                    self.scroll = self.scroll.saturating_add(1);
-                    Action::None
-                }
-                KeyCode::Down => {
-                    self.scroll = self.scroll.saturating_sub(1);
-                    Action::None
-                }
-                KeyCode::PageUp => {
-                    self.scroll = self.scroll.saturating_add(10);
-                    Action::None
-                }
-                KeyCode::PageDown => {
-                    self.scroll = self.scroll.saturating_sub(10);
-                    Action::None
-                }
-                _ => Action::None,
+            return Action::None;
+        }
+
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc if self.scroll > 0 => {
+                self.scroll = 0;
+                Action::None
             }
+            KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+            KeyCode::Char('d') => Action::Disconnect,
+            KeyCode::Char('r') => Action::ResetDevice,
+            KeyCode::Char('f') => Action::Flash,
+            KeyCode::Char('e') => Action::ErasePrompt,
+            KeyCode::Char('s') => Action::SelectElf,
+            KeyCode::Char('c') => Action::ScanPorts,
+            KeyCode::Tab => {
+                self.filter.toggle_popup();
+                Action::None
+            }
+            KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
+                self.clear_log();
+                Action::None
+            }
+            KeyCode::Up => {
+                self.scroll = self.scroll.saturating_add(1);
+                Action::None
+            }
+            KeyCode::Down => {
+                self.scroll = self.scroll.saturating_sub(1);
+                Action::None
+            }
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_add(10);
+                Action::None
+            }
+            KeyCode::PageDown => {
+                self.scroll = self.scroll.saturating_sub(10);
+                Action::None
+            }
+            _ => Action::None,
         }
     }
 
@@ -376,10 +415,10 @@ impl App {
     ///
     /// # Returns
     ///
-    /// `Some` with a reference to the active [`PortSelector`], or `None` if no
-    /// selector is open.
+    /// `Some` with a reference to the active [`port::Selector`], or `None` if
+    /// no selector is open.
     #[must_use]
-    pub(crate) fn port_selector(&self) -> Option<&PortSelector> {
+    pub(crate) fn port_selector(&self) -> Option<&port::Selector> {
         self.port_selector.as_ref()
     }
 
@@ -387,10 +426,10 @@ impl App {
     ///
     /// # Returns
     ///
-    /// `Some` with a mutable reference to the active [`PortSelector`], or
+    /// `Some` with a mutable reference to the active [`port::Selector`], or
     /// `None` if no selector is open.
     #[cfg(test)]
-    pub(crate) fn port_selector_mut(&mut self) -> Option<&mut PortSelector> {
+    pub(crate) fn port_selector_mut(&mut self) -> Option<&mut port::Selector> {
         self.port_selector.as_mut()
     }
 
@@ -457,13 +496,13 @@ impl App {
     ///
     /// * `ports` - Non-empty list of port names to present for selection.
     pub(crate) fn open_port_selector(&mut self, ports: Vec<String>) {
-        self.port_selector = Some(PortSelector::new(ports));
+        self.port_selector = Some(port::Selector::new(ports));
     }
 
     /// Updates the open port selector with a refreshed port list.
     ///
-    /// Closes the selector when `ports` is empty; otherwise replaces the
-    /// list and clamps the cursor.
+    /// Closes the selector when `ports` is empty; otherwise replaces the list
+    /// and clamps the cursor.
     ///
     /// # Arguments
     ///
@@ -522,11 +561,164 @@ impl App {
     pub(crate) fn set_demo(&mut self) {
         self.demo = true;
     }
+
+    /// Returns the current flash operation state.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the current [`flash::State`].
+    #[must_use]
+    pub(crate) fn flash_state(&self) -> &flash::State {
+        &self.flash_state
+    }
+
+    /// Returns `true` while a flash or erase operation is in progress.
+    ///
+    /// # Returns
+    ///
+    /// `true` if state is `Flashing` or `Erasing`, `false` otherwise.
+    #[must_use]
+    pub(crate) fn is_flashing(&self) -> bool {
+        matches!(
+            self.flash_state,
+            flash::State::Flashing { .. } | flash::State::Erasing
+        )
+    }
+
+    /// Updates the flash operation state.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - The new [`flash::State`].
+    pub(crate) fn set_flash_state(&mut self, state: flash::State) {
+        self.flash_state = state;
+    }
+
+    /// Returns the device info received after the last successful connection.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with a reference to [`flash::DeviceInfo`], or `None` if no info
+    /// has been received.
+    #[must_use]
+    pub(crate) fn device_info(&self) -> Option<&flash::DeviceInfo> {
+        self.device_info.as_ref()
+    }
+
+    /// Stores device info received from the probe task.
+    ///
+    /// # Arguments
+    ///
+    /// * `info` - The [`flash::DeviceInfo`] returned by the probe.
+    pub(crate) fn set_device_info(&mut self, info: flash::DeviceInfo) {
+        self.device_info = Some(info);
+    }
+
+    /// Returns `true` while the erase confirmation prompt is visible.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the erase confirm dialog is open, `false` otherwise.
+    #[must_use]
+    pub(crate) fn is_erase_confirm_open(&self) -> bool {
+        self.erase_confirm
+    }
+
+    /// Opens the erase confirmation prompt.
+    pub(crate) fn open_erase_confirm(&mut self) {
+        self.erase_confirm = true;
+    }
+
+    /// Closes the erase confirmation prompt.
+    pub(crate) fn close_erase_confirm(&mut self) {
+        self.erase_confirm = false;
+    }
+
+    /// Returns the currently selected ELF path, if any.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with a reference to the path, or `None` if not set.
+    #[must_use]
+    pub(crate) fn elf_path(&self) -> Option<&Path> {
+        self.elf_path.as_deref()
+    }
+
+    /// Sets the ELF path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to the ELF firmware file.
+    pub(crate) fn set_elf_path(&mut self, path: PathBuf) {
+        self.elf_path = Some(path);
+    }
+
+    /// Returns the configured baud rate.
+    ///
+    /// # Returns
+    ///
+    /// The serial baud rate in bits per second.
+    #[must_use]
+    pub(crate) fn baud(&self) -> u32 {
+        self.baud
+    }
+
+    /// Sets the baud rate.
+    ///
+    /// # Arguments
+    ///
+    /// * `baud` - The baud rate in bits per second.
+    pub(crate) fn set_baud(&mut self, baud: u32) {
+        self.baud = baud;
+    }
+
+    /// Opens the ELF path selector popup, optionally pre-filling the input.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefill` - If `Some`, the input is pre-populated with this path.
+    pub(crate) fn open_elf_selector(&mut self, prefill: Option<&Path>) {
+        self.elf_selector = Some(elf::Selector::new(prefill));
+    }
+
+    /// Closes the ELF path selector popup.
+    pub(crate) fn close_elf_selector(&mut self) {
+        self.elf_selector = None;
+    }
+
+    /// Returns `true` while the ELF path selector popup is visible.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the ELF selector is open, `false` otherwise.
+    #[must_use]
+    pub(crate) fn is_elf_selector_open(&self) -> bool {
+        self.elf_selector.is_some()
+    }
+
+    /// Returns a shared reference to the ELF selector, if open.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with a reference to the [`elf::Selector`], or `None`.
+    #[must_use]
+    pub(crate) fn elf_selector(&self) -> Option<&elf::Selector> {
+        self.elf_selector.as_ref()
+    }
 }
 
-fn begin_connect(port: &str, tx: &mpsc::UnboundedSender<event::Message>) {
+fn begin_connect(port: &str, baud: u32, tx: &mpsc::UnboundedSender<event::Message>) {
     let (src_tx, src_rx) = watch::channel(false);
-    serial::Port::new(port).spawn(tx.clone(), src_rx, src_tx);
+    let port_name = port.to_owned();
+    let tx_task = tx.clone();
+    drop(tokio::task::spawn_blocking(move || {
+        let probe = flash::probe_device_info(&port_name, baud);
+        let _ = tx_task.send(event::Message::DeviceInfo(probe));
+        // Let the OS release the file descriptor before opening for serial reads.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        serial::Port::new(&port_name, baud)
+            .connect_and_read(&tx_task, &src_rx, src_tx);
+    }));
 }
 
 fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
@@ -540,7 +732,7 @@ fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
             app.set_status("No devices detected.".into());
         }
         Ok(mut ports) if ports.len() == 1 => {
-            begin_connect(&ports.remove(0), tx);
+            begin_connect(&ports.remove(0), app.baud(), tx);
         }
         Ok(ports) => app.open_port_selector(ports),
     }
@@ -552,7 +744,7 @@ fn handle_ports_detected(
     previous: &[String],
     tx: &mpsc::UnboundedSender<event::Message>,
 ) {
-    if !app.is_demo() {
+    if !app.is_demo() && !app.is_flashing() {
         if app.port_name().is_none() {
             if app.port_selector().is_some() {
                 match current.len() {
@@ -562,14 +754,14 @@ fn handle_ports_detected(
                     }
                     1 => {
                         app.close_port_selector();
-                        begin_connect(&current[0], tx);
+                        begin_connect(&current[0], app.baud(), tx);
                     }
                     _ => app.refresh_port_selector(current),
                 }
             } else {
                 match current.len() {
                     0 => {}
-                    1 => begin_connect(&current.remove(0), tx),
+                    1 => begin_connect(&current.remove(0), app.baud(), tx),
                     _ => app.open_port_selector(current),
                 }
             }
@@ -634,6 +826,27 @@ fn handle_action(
                 app.set_status("Not connected.".into());
             }
         }
+        Action::SelectElf => {
+            let prefill = app.elf_path().map(Path::to_path_buf);
+            app.open_elf_selector(prefill.as_deref());
+        }
+        Action::CloseElfSelector => {
+            app.close_elf_selector();
+        }
+        Action::ConfirmElfPath => {
+            let value = app
+                .elf_selector()
+                .map(|s| s.value().to_owned())
+                .unwrap_or_default();
+            let path = PathBuf::from(&value);
+            if path.exists() {
+                app.set_elf_path(path);
+                app.close_elf_selector();
+                app.set_status("ELF path set.".into());
+            } else {
+                app.set_status("Path not found.".into());
+            }
+        }
         // All actions below touch real hardware. New hardware actions must go
         // after this arm so demo mode blocks them automatically.
         _ if app.is_demo() => {
@@ -653,10 +866,58 @@ fn handle_action(
             None => app.set_status("No port connected.".into()),
         },
         Action::ScanPorts => apply_scan(app, tx),
-        Action::ConnectPort(port) => begin_connect(&port, tx),
+        Action::ConnectPort(port) => begin_connect(&port, app.baud(), tx),
+        Action::ErasePrompt => {
+            if app.port_name().is_none() {
+                app.set_status("No port connected.".into());
+            } else if app.is_flashing() {
+                app.set_status("Operation already in progress.".into());
+            } else {
+                app.open_erase_confirm();
+            }
+        }
+        Action::ConfirmErase => {
+            app.close_erase_confirm();
+            if let Some(port) = app.port_name().map(str::to_owned) {
+                let baud = app.baud();
+                app.shutdown_source();
+                app.set_flash_state(flash::State::Erasing);
+                let tx_task = tx.clone();
+                drop(tokio::task::spawn_blocking(move || {
+                    let result = flash::erase_flash(&port, baud);
+                    let _ = tx_task.send(event::Message::EraseDone(result));
+                }));
+            }
+        }
+        Action::Flash => {
+            if app.elf_path().is_none() {
+                app.open_elf_selector(None);
+                app.set_status("Select ELF path first.".into());
+            } else if app.port_name().is_none() {
+                app.set_status("No port connected.".into());
+            } else if app.is_flashing() {
+                app.set_status("Flash already in progress.".into());
+            } else {
+                let port = app.port_name().unwrap().to_owned();
+                let baud = app.baud();
+                let elf_path = app.elf_path().unwrap().to_owned();
+                app.shutdown_source();
+                app.set_flash_state(flash::State::Flashing {
+                    current: 0,
+                    total: 0,
+                });
+                let tx_task = tx.clone();
+                drop(tokio::task::spawn_blocking(move || {
+                    let result =
+                        flash::flash_elf(&port, baud, &elf_path, tx_task.clone());
+                    let _ = tx_task.send(event::Message::FlashDone(result));
+                }));
+            }
+        }
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_inner(args: Args) -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal =
@@ -665,12 +926,18 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<event::Message>();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    let baud = args.baud.unwrap_or(DEFAULT_BAUD);
     let mut app = App::new(None);
+    app.set_baud(baud);
+    if let Some(path) = args.elf {
+        app.set_elf_path(path);
+    }
 
     if args.demo {
         app.set_demo();
         let (src_tx, src_rx) = watch::channel(false);
         demo::spawn(tx.clone(), src_rx);
+        demo::spawn_device_info(tx.clone());
         app.set_port("demo".into());
         app.set_source_shutdown(src_tx);
         app.set_status("Connected to demo.".into());
@@ -678,7 +945,7 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
         let mut ports = resolve_ports(args.port)?;
         match ports.len() {
             0 => {}
-            1 => begin_connect(&ports.remove(0), &tx),
+            1 => begin_connect(&ports.remove(0), baud, &tx),
             _ => app.open_port_selector(ports),
         }
         spawn_port_poller(tx.clone(), shutdown_rx.clone());
@@ -743,6 +1010,42 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
             event::Message::PortsDetected { current, previous } => {
                 handle_ports_detected(&mut app, current, &previous, &tx);
             }
+            event::Message::FlashProgress { current, total } => {
+                app.set_flash_state(flash::State::Flashing { current, total });
+            }
+            event::Message::FlashDone(result) => {
+                app.set_flash_state(flash::State::Idle);
+                match result {
+                    Ok(()) => {
+                        app.set_status("Flash complete. Reconnecting...".into());
+                    }
+                    Err(e) => {
+                        app.set_status(format!("Flash failed: {e}"));
+                        if let Some(port) = app.port_name().map(str::to_owned) {
+                            begin_connect(&port, baud, &tx);
+                        }
+                    }
+                }
+            }
+            event::Message::DeviceInfo(result) => {
+                if let Ok(info) = result {
+                    app.set_device_info(info);
+                }
+            }
+            event::Message::EraseDone(result) => {
+                app.set_flash_state(flash::State::Idle);
+                match result {
+                    Ok(()) => {
+                        app.set_status("Erase complete.".into());
+                    }
+                    Err(e) => {
+                        app.set_status(format!("Erase failed: {e}"));
+                    }
+                }
+                if let Some(port) = app.port_name().map(str::to_owned) {
+                    begin_connect(&port, baud, &tx);
+                }
+            }
         }
 
         if !app.is_running() {
@@ -780,12 +1083,9 @@ pub(crate) async fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
     use tokio::sync::mpsc;
 
-    use super::{
-        handle_action, handle_ports_detected, Action, App, PortSelector, BUFFER_SIZE,
-    };
+    use super::{handle_action, handle_ports_detected, Action, App, BUFFER_SIZE};
     use crate::log;
 
     fn make_tx() -> mpsc::UnboundedSender<crate::event::Message> {
@@ -802,64 +1102,6 @@ mod tests {
     }
 
     #[test]
-    fn port_selector_initial_cursor() {
-        let sel = PortSelector::new(vec!["COM1".into(), "COM2".into()]);
-        assert_eq!(sel.cursor(), 0);
-        assert_eq!(sel.selected(), "COM1");
-    }
-
-    #[test]
-    fn port_selector_move_cursor_navigation() {
-        let mut sel =
-            PortSelector::new(vec!["COM1".into(), "COM2".into(), "COM3".into()]);
-        sel.move_cursor(1);
-        assert_eq!(sel.cursor(), 1);
-        assert_eq!(sel.selected(), "COM2");
-        sel.move_cursor(-1);
-        assert_eq!(sel.cursor(), 0);
-    }
-
-    #[test]
-    fn port_selector_move_cursor_clamps() {
-        let mut sel = PortSelector::new(vec!["COM1".into(), "COM2".into()]);
-        sel.move_cursor(-10);
-        assert_eq!(sel.cursor(), 0);
-        sel.move_cursor(100);
-        assert_eq!(sel.cursor(), 1);
-    }
-
-    #[test]
-    fn port_selector_move_cursor_empty_list() {
-        let mut sel = PortSelector::new(vec![]);
-        sel.move_cursor(1);
-        assert_eq!(sel.cursor(), 0);
-    }
-
-    #[test]
-    fn port_selector_selected_empty() {
-        let sel = PortSelector::new(vec![]);
-        assert_eq!(sel.selected(), "");
-    }
-
-    #[test]
-    fn port_selector_update_ports_replaces_list_and_clamps_cursor() {
-        let mut sel =
-            PortSelector::new(vec!["COM1".into(), "COM2".into(), "COM3".into()]);
-        sel.move_cursor(2);
-        sel.update_ports(vec!["COM4".into()]);
-        assert_eq!(sel.ports(), &["COM4"]);
-        assert_eq!(sel.cursor(), 0);
-    }
-
-    #[test]
-    fn port_selector_update_ports_empty_resets_cursor() {
-        let mut sel = PortSelector::new(vec!["COM1".into()]);
-        sel.update_ports(vec![]);
-        assert_eq!(sel.cursor(), 0);
-        assert!(sel.ports().is_empty());
-    }
-
-    #[test]
     fn app_initial_state() {
         let app = App::new(Some("COM1".into()));
         assert!(app.is_running());
@@ -868,6 +1110,10 @@ mod tests {
         assert!(app.status_msg().is_none());
         assert!(app.port_selector().is_none());
         assert!(!app.is_demo(), "new App must not start in demo mode");
+        assert!(!app.is_flashing());
+        assert!(app.device_info().is_none());
+        assert!(!app.is_erase_confirm_open());
+        assert!(app.elf_path().is_none());
     }
 
     #[test]
@@ -1125,17 +1371,21 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_f_sets_status_and_returns_none() {
+    fn handle_key_f_returns_flash_action() {
         let mut app = App::new(None);
-        assert_eq!(app.handle_key(key(KeyCode::Char('f'))), Action::None);
-        assert!(app.status_msg().is_some());
+        assert_eq!(app.handle_key(key(KeyCode::Char('f'))), Action::Flash);
     }
 
     #[test]
-    fn handle_key_e_sets_status_and_returns_none() {
+    fn handle_key_e_returns_erase_prompt_action() {
         let mut app = App::new(None);
-        assert_eq!(app.handle_key(key(KeyCode::Char('e'))), Action::None);
-        assert!(app.status_msg().is_some());
+        assert_eq!(app.handle_key(key(KeyCode::Char('e'))), Action::ErasePrompt);
+    }
+
+    #[test]
+    fn handle_key_s_returns_select_elf_action() {
+        let mut app = App::new(None);
+        assert_eq!(app.handle_key(key(KeyCode::Char('s'))), Action::SelectElf);
     }
 
     #[test]
@@ -1295,7 +1545,7 @@ mod tests {
         app.push_line("E (1) tag: error");
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.scroll(), 1);
-        app.filter_mut().move_cursor(2); // Info is at index 2
+        app.filter_mut().move_cursor(2);
         app.filter_mut().toggle_at_cursor();
         app.push_line("I (1) tag: info filtered");
         assert_eq!(app.scroll(), 1);
@@ -1476,6 +1726,23 @@ mod tests {
     }
 
     #[test]
+    fn handle_ports_detected_is_noop_while_flashing() {
+        let mut app = App::new(None);
+        app.set_flash_state(crate::flash::State::Flashing {
+            current: 0,
+            total: 0,
+        });
+        handle_ports_detected(
+            &mut app,
+            vec!["/dev/ttyUSB0".into()],
+            &[],
+            &make_tx(),
+        );
+        assert!(app.port_selector().is_none());
+        assert!(app.port_name().is_none());
+    }
+
+    #[test]
     fn handle_action_quit() {
         let mut app = App::new(None);
         handle_action(&mut app, Action::Quit, &make_tx());
@@ -1521,11 +1788,10 @@ mod tests {
         let mut app = App::new(Some("COM1".into()));
         app.set_source_shutdown(old_src_tx);
 
-        let status = "Connected to COM2.".to_owned();
         app.set_port("COM2".into());
         app.set_port_cmd(cmd_tx);
         app.set_source_shutdown(new_src_tx);
-        app.set_status(status);
+        app.set_status("Connected to COM2.".into());
 
         assert_eq!(app.port_name(), Some("COM2"));
         assert_eq!(app.status_msg(), Some("Connected to COM2."));
@@ -1549,9 +1815,6 @@ mod tests {
     fn handle_action_scan_ports_leaves_app_in_consistent_state() {
         let mut app = App::new(None);
         handle_action(&mut app, Action::ScanPorts, &make_tx());
-        // After a scan, exactly one of these must be true: a status message
-        // was set (no ports or error), a port was connected, or the selector
-        // is open (multiple ports found).
         assert!(
             app.status_msg().is_some()
                 || app.port_name().is_some()
@@ -1570,14 +1833,8 @@ mod tests {
             Some("Not available in demo mode."),
             "ScanPorts must be blocked in demo mode"
         );
-        assert!(
-            app.port_name().is_none(),
-            "port_name must not be set by ScanPorts in demo mode"
-        );
-        assert!(
-            app.port_selector().is_none(),
-            "port selector must not open from ScanPorts in demo mode"
-        );
+        assert!(app.port_name().is_none());
+        assert!(app.port_selector().is_none());
     }
 
     #[test]
@@ -1595,11 +1852,7 @@ mod tests {
             Some("Not available in demo mode."),
             "ConnectPort must be blocked in demo mode"
         );
-        assert_eq!(
-            app.port_name(),
-            Some("demo"),
-            "port_name must remain 'demo' after blocked ConnectPort"
-        );
+        assert_eq!(app.port_name(), Some("demo"));
     }
 
     #[test]
@@ -1607,10 +1860,212 @@ mod tests {
         let mut app = App::new(None);
         app.set_demo();
         handle_action(&mut app, Action::ResetDevice, &make_tx());
+        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
+    }
+
+    #[test]
+    fn handle_key_erase_confirm_y_confirms() {
+        let mut app = App::new(None);
+        app.open_erase_confirm();
         assert_eq!(
-            app.status_msg(),
-            Some("Not available in demo mode."),
-            "ResetDevice must be blocked in demo mode"
+            app.handle_key(key(KeyCode::Char('y'))),
+            Action::ConfirmErase
         );
+    }
+
+    #[test]
+    fn handle_key_erase_confirm_n_closes() {
+        let mut app = App::new(None);
+        app.open_erase_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Char('n'))), Action::None);
+        assert!(!app.is_erase_confirm_open());
+    }
+
+    #[test]
+    fn handle_key_erase_confirm_esc_closes() {
+        let mut app = App::new(None);
+        app.open_erase_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::None);
+        assert!(!app.is_erase_confirm_open());
+    }
+
+    #[test]
+    fn handle_key_ctrl_c_quits_with_erase_confirm_open() {
+        let mut app = App::new(None);
+        app.open_erase_confirm();
+        assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
+    }
+
+    #[test]
+    fn handle_key_elf_selector_char_updates_input() {
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.elf_selector().unwrap().value(), "/t");
+    }
+
+    #[test]
+    fn handle_key_elf_selector_esc_closes() {
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::CloseElfSelector);
+    }
+
+    #[test]
+    fn handle_key_elf_selector_enter_confirms() {
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), Action::ConfirmElfPath);
+    }
+
+    #[test]
+    fn handle_action_flash_no_elf_opens_selector() {
+        let mut app = App::new(Some("COM1".into()));
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert!(app.is_elf_selector_open());
+        assert!(app.status_msg().is_some());
+    }
+
+    #[test]
+    fn handle_action_flash_no_port_sets_status() {
+        let mut app = App::new(None);
+        app.set_elf_path(std::path::PathBuf::from("/tmp/app.elf"));
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert_eq!(app.status_msg(), Some("No port connected."));
+    }
+
+    #[test]
+    fn handle_action_flash_already_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_elf_path(std::path::PathBuf::from("/tmp/app.elf"));
+        app.set_flash_state(crate::flash::State::Flashing {
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert_eq!(app.status_msg(), Some("Flash already in progress."));
+    }
+
+    #[test]
+    fn handle_action_flash_demo_is_noop() {
+        let mut app = App::new(None);
+        app.set_demo();
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
+    }
+
+    #[test]
+    fn handle_action_confirm_elf_path_valid() {
+        let path = std::env::temp_dir().join("esp-tui-test-elf");
+        std::fs::write(&path, b"").unwrap();
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        if let Some(s) = app.elf_selector.as_mut() {
+            for ch in path.to_str().unwrap().chars() {
+                s.push_char(ch);
+            }
+        }
+        handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
+        assert_eq!(app.elf_path(), Some(path.as_path()));
+        assert!(!app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("ELF path set."));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn handle_action_confirm_elf_path_nonexistent_stays_open() {
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        if let Some(s) = app.elf_selector.as_mut() {
+            for ch in "/nonexistent/path.elf".chars() {
+                s.push_char(ch);
+            }
+        }
+        handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
+        assert!(app.elf_path().is_none());
+        assert!(app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("Path not found."));
+    }
+
+    #[test]
+    fn is_flashing_reflects_state() {
+        let mut app = App::new(None);
+        assert!(!app.is_flashing());
+        app.set_flash_state(crate::flash::State::Flashing {
+            current: 0,
+            total: 100,
+        });
+        assert!(app.is_flashing());
+        app.set_flash_state(crate::flash::State::Erasing);
+        assert!(app.is_flashing());
+        app.set_flash_state(crate::flash::State::Idle);
+        assert!(!app.is_flashing());
+    }
+
+    #[test]
+    fn handle_action_erase_prompt_no_port_sets_status() {
+        let mut app = App::new(None);
+        handle_action(&mut app, Action::ErasePrompt, &make_tx());
+        assert_eq!(app.status_msg(), Some("No port connected."));
+        assert!(!app.is_erase_confirm_open());
+    }
+
+    #[test]
+    fn handle_action_erase_prompt_while_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::ErasePrompt, &make_tx());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+        assert!(!app.is_erase_confirm_open());
+    }
+
+    #[test]
+    fn handle_action_erase_prompt_connected_opens_confirm() {
+        let mut app = App::new(Some("COM1".into()));
+        handle_action(&mut app, Action::ErasePrompt, &make_tx());
+        assert!(app.is_erase_confirm_open());
+    }
+
+    #[test]
+    fn handle_action_select_elf_opens_selector() {
+        let mut app = App::new(None);
+        handle_action(&mut app, Action::SelectElf, &make_tx());
+        assert!(app.is_elf_selector_open());
+    }
+
+    #[test]
+    fn handle_action_select_elf_prefills_existing_path() {
+        let mut app = App::new(None);
+        app.set_elf_path(std::path::PathBuf::from("/tmp/firmware.elf"));
+        handle_action(&mut app, Action::SelectElf, &make_tx());
+        assert_eq!(app.elf_selector().unwrap().value(), "/tmp/firmware.elf");
+    }
+
+    #[test]
+    fn handle_action_close_elf_selector_closes() {
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        handle_action(&mut app, Action::CloseElfSelector, &make_tx());
+        assert!(!app.is_elf_selector_open());
+    }
+
+    #[test]
+    fn demo_erase_is_noop() {
+        let mut app = App::new(None);
+        app.set_demo();
+        handle_action(&mut app, Action::ErasePrompt, &make_tx());
+        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
+    }
+
+    #[test]
+    fn demo_flash_is_noop() {
+        let mut app = App::new(None);
+        app.set_demo();
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
     }
 }

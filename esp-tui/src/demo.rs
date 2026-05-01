@@ -49,6 +49,28 @@ pub(crate) fn spawn(
     });
 }
 
+/// Spawns a task that sends synthetic device info after a short delay, for
+/// UI development without hardware.
+///
+/// # Arguments
+///
+/// * `tx` - Sender for forwarding the info as a
+///   [`crate::event::Message::DeviceInfo`] event.
+pub(crate) fn spawn_device_info(
+    tx: tokio::sync::mpsc::UnboundedSender<crate::event::Message>,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        let info = crate::flash::DeviceInfo::new(
+            "ESP32-S3 (rev v0.2)",
+            "4MB",
+            "AA:BB:CC:DD:EE:FF",
+            Vec::new(),
+        );
+        let _ = tx.send(crate::event::Message::DeviceInfo(Ok(info)));
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::LINES;

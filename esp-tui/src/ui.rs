@@ -2,12 +2,13 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap,
+    Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Wrap,
 };
 use ratatui::Frame;
 
-use crate::app::{App, PortSelector};
+use crate::app::App;
 use crate::filter;
+use crate::flash;
 
 /// Renders the full TUI to the given frame.
 ///
@@ -29,10 +30,14 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
 
     render_menu_bar(frame, outer[0], app);
     render_monitor(frame, main[0], app);
-    render_inspector(frame, main[1]);
+    render_inspector(frame, main[1], app);
     render_status_bar(frame, outer[2], app);
 
-    if let Some(sel) = app.port_selector() {
+    if app.is_erase_confirm_open() {
+        render_erase_confirm_popup(frame, frame.area());
+    } else if app.is_elf_selector_open() {
+        render_elf_selector_popup(frame, frame.area(), app);
+    } else if let Some(sel) = app.port_selector() {
         render_port_selector(frame, frame.area(), sel);
     } else if app.filter().is_popup_open() {
         render_filter_popup(frame, frame.area(), app);
@@ -40,9 +45,17 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let elf_label: std::borrow::Cow<str> = app
+        .elf_path()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .map_or("none".into(), std::borrow::Cow::Borrowed);
+
     let port_label: std::borrow::Cow<str> = app
         .port_name()
-        .map_or("Port: none".into(), |p| format!("Port: {p}").into());
+        .map_or("none".into(), std::borrow::Cow::Borrowed);
+
+    let right_text = format!("ELF: {elf_label} | Port: {port_label}");
 
     let left = Line::from(vec![
         hint("[C]onnect"),
@@ -51,18 +64,18 @@ fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
         Span::raw("  "),
         hint("[F]lash"),
         Span::raw("  "),
-        hint("[R]eset"),
-        Span::raw("  "),
         hint("[E]rase"),
         Span::raw("  "),
-        hint("[Q]uit"),
+        hint("[R]eset"),
         Span::raw("  "),
-        hint("[Tab]Filter"),
+        hint("[S]elect ELF"),
+        Span::raw("  "),
+        hint("[Q]uit"),
     ]);
 
-    let right_len = u16::try_from(port_label.len()).unwrap_or(u16::MAX);
+    let right_len = u16::try_from(right_text.len()).unwrap_or(u16::MAX);
     let right =
-        Line::from(Span::styled(port_label, Style::default().fg(Color::Cyan)));
+        Line::from(Span::styled(right_text, Style::default().fg(Color::Cyan)));
     let [left_area, right_area] =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(right_len)])
             .areas(area);
@@ -152,17 +165,67 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(footer), footer_area);
 }
 
-fn render_inspector(frame: &mut Frame, area: Rect) {
+fn render_inspector(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(" System Inspector ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new("(Phase 3)").style(Style::default().fg(Color::DarkGray)),
-        inner,
-    );
+
+    if let Some(info) = app.device_info() {
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled("Board: ", Style::default().fg(Color::DarkGray)),
+                Span::raw(info.chip().to_owned()),
+            ]),
+            Line::from(vec![
+                Span::styled("Flash: ", Style::default().fg(Color::DarkGray)),
+                Span::raw(info.flash_size().to_owned()),
+            ]),
+            Line::from(vec![
+                Span::styled("MAC:   ", Style::default().fg(Color::DarkGray)),
+                Span::raw(info.mac_address().to_owned()),
+            ]),
+        ];
+
+        if !info.partitions().is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Partitions:",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            for p in info.partitions() {
+                lines.push(Line::from(format!(
+                    "{:<8} {}/{:<8} 0x{:06X}  {}",
+                    p.name(),
+                    p.partition_type(),
+                    p.subtype(),
+                    p.offset(),
+                    format_bytes(p.size()),
+                )));
+            }
+        }
+
+        frame.render_widget(Paragraph::new(lines), inner);
+    } else {
+        frame.render_widget(
+            Paragraph::new("(Phase 3)").style(Style::default().fg(Color::DarkGray)),
+            inner,
+        );
+    }
+}
+
+fn format_bytes(bytes: u32) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{}MB", bytes / (1024 * 1024))
+    } else if bytes >= 1024 {
+        format!("{}KB", bytes / 1024)
+    } else {
+        format!("{bytes}B")
+    }
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
@@ -173,23 +236,194 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let content = app.status_msg().unwrap_or("");
-    let style = if content.is_empty() {
-        Style::default().fg(Color::DarkGray)
-    } else {
-        Style::default().fg(Color::Yellow)
-    };
-    frame.render_widget(
-        Paragraph::new(if content.is_empty() { "Ready" } else { content })
-            .style(style),
-        inner,
-    );
+    match app.flash_state() {
+        flash::State::Flashing { current, total } => {
+            #[allow(clippy::cast_precision_loss)]
+            let ratio = if *total == 0 {
+                0.0_f64
+            } else {
+                *current as f64 / *total as f64
+            };
+            let label = format!("{:.0}%", ratio * 100.0);
+            let gauge = Gauge::default()
+                .gauge_style(Style::default().fg(Color::Green))
+                .ratio(ratio)
+                .label(label);
+            frame.render_widget(gauge, inner);
+        }
+        flash::State::Erasing => {
+            frame.render_widget(
+                Paragraph::new("Erasing flash...")
+                    .style(Style::default().fg(Color::Yellow)),
+                inner,
+            );
+        }
+        flash::State::Idle => {
+            let content = app.status_msg().unwrap_or("");
+            let style = if content.is_empty() {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            frame.render_widget(
+                Paragraph::new(if content.is_empty() { "Ready" } else { content })
+                    .style(style),
+                inner,
+            );
+        }
+    }
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     Rect::new(x, y, width.min(area.width), height.min(area.height))
+}
+
+fn render_erase_confirm_popup(frame: &mut Frame, area: Rect) {
+    let popup = centered_rect(52, 7, area);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" Confirm Erase ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "This will erase ALL flash data.",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
+        Line::from("This operation cannot be undone."),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "[Y]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" confirm   "),
+            Span::styled("[N] / [Esc]", Style::default().fg(Color::DarkGray)),
+            Span::raw(" cancel"),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(text), inner);
+}
+
+fn render_elf_selector_popup(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(sel) = app.elf_selector() else {
+        return;
+    };
+
+    let completions = sel.completions();
+    let comp_count = u16::try_from(completions.len()).unwrap_or(u16::MAX);
+    let height = if completions.is_empty() {
+        5u16
+    } else {
+        (4 + comp_count).min(area.height)
+    };
+    let width = 64u16.min(area.width);
+    let popup = centered_rect(width, height, area);
+
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" ELF Path ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if inner.height == 0 {
+        return;
+    }
+
+    let input_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 1,
+    };
+
+    let input = sel.value();
+    let cursor_byte = sel.cursor_pos();
+    let before = &input[..cursor_byte];
+    let rest = &input[cursor_byte..];
+    let (cursor_str, after) = if let Some(c) = rest.chars().next() {
+        let char_len = c.len_utf8();
+        (&rest[..char_len], &rest[char_len..])
+    } else {
+        (" ", "")
+    };
+
+    let input_line = Line::from(vec![
+        Span::raw(before),
+        Span::styled(
+            cursor_str,
+            Style::default().add_modifier(Modifier::REVERSED),
+        ),
+        Span::raw(after),
+    ]);
+    frame.render_widget(Paragraph::new(input_line), input_area);
+
+    let cursor_col = u16::try_from(before.chars().count()).unwrap_or(0);
+    if cursor_col < inner.width {
+        frame.set_cursor_position((input_area.x + cursor_col, input_area.y));
+    }
+
+    if inner.height <= 1 {
+        return;
+    }
+
+    let hint_area = Rect {
+        x: inner.x,
+        y: inner.y + inner.height - 1,
+        width: inner.width,
+        height: 1,
+    };
+
+    if completions.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "[Tab] complete  [Enter] confirm  [Esc] cancel",
+                Style::default().fg(Color::DarkGray),
+            )),
+            hint_area,
+        );
+    } else {
+        let comp_area = Rect {
+            x: inner.x,
+            y: inner.y + 1,
+            width: inner.width,
+            height: inner.height.saturating_sub(2),
+        };
+
+        let items: Vec<ListItem> = completions
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let style = if i == sel.completion_cursor() {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(format!("  {name}")).style(style)
+            })
+            .collect();
+
+        frame.render_widget(List::new(items), comp_area);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "[Tab] cycle  [↑/↓] navigate  [Enter] select  [Esc] cancel",
+                Style::default().fg(Color::DarkGray),
+            )),
+            hint_area,
+        );
+    }
 }
 
 fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
@@ -262,7 +496,7 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(list, popup);
 }
 
-fn render_port_selector(frame: &mut Frame, area: Rect, sel: &PortSelector) {
+fn render_port_selector(frame: &mut Frame, area: Rect, sel: &crate::port::Selector) {
     const HINT: &str = " [↑/↓] navigate  [Enter] connect  [q/Esc] close";
 
     let ports = sel.ports();
@@ -350,6 +584,71 @@ mod tests {
     fn draw_with_port_selector_open_does_not_panic() {
         let mut app = App::new(None);
         app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_erase_confirm_open_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.open_erase_confirm();
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_elf_selector_open_does_not_panic() {
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_elf_selector_and_completions_does_not_panic() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        fn key(code: KeyCode) -> KeyEvent {
+            KeyEvent::new(code, KeyModifiers::empty())
+        }
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        for ch in "/tmp/".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Tab));
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_flash_state_flashing_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            current: 512,
+            total: 1024,
+        });
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_flash_state_erasing_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Erasing);
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_device_info_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_device_info(crate::flash::DeviceInfo::new(
+            "ESP32-S3 (rev v0.1)",
+            "4MB",
+            "AA:BB:CC:DD:EE:FF",
+            Vec::new(),
+        ));
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_elf_path_set_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_elf_path(std::path::PathBuf::from("/tmp/firmware.elf"));
         render(&app);
     }
 

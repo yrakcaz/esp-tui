@@ -16,6 +16,7 @@ categories = ["command-line-utilities", "embedded", "development-tools"]
 anyhow     = "1"
 clap       = { version = "4", features = ["derive"] }
 crossterm  = { version = "0.29" }
+espflash   = { version = "3", default-features = false, features = ["serialport"] }
 ratatui    = "0.30"
 regex      = "1"
 serialport = "4"

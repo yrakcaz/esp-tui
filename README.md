@@ -11,7 +11,7 @@ Works with any ESP32 firmware: C, C++, Rust, Arduino.
 
 ## Features
 
-**Phase 1 (current)**
+**Phase 1**
 
 - ESP-IDF log parsing with color-coded severity levels: `ERROR` `WARN` `INFO` `DEBUG` `VERBOSE`
 - Tag-based filtering: show or hide output by ESP-IDF component tag
@@ -21,6 +21,15 @@ Works with any ESP32 firmware: C, C++, Rust, Arduino.
 - Hardware reset via DTR/RTS (`r`)
 - `--demo` flag: synthetic log output for UI development without hardware
 - `Ctrl-L` to clear the log on demand
+
+**Phase 2 (current)**
+
+- Board info probe on connect: chip type, revision, flash size, and MAC address displayed in the inspector pane
+- ELF firmware flashing via espflash with a live progress gauge (`f`)
+- Full-flash erase with confirmation prompt (`e`)
+- ELF path selector popup with filesystem tab-completion (`s`)
+- `--elf <path>` and `--baud <rate>` CLI flags
+- Port auto-reconnect after flash or erase
 
 ---
 
@@ -47,6 +56,8 @@ esp-tui [OPTIONS]
 
 Options:
   -p, --port <PORT>  Serial port to connect to
+  -b, --baud <BAUD>  Serial baud rate (default: 115200)
+      --elf <ELF>    Path to ELF firmware file to flash
       --demo         Run in demo mode with synthetic log output (no hardware required)
   -h, --help         Print help
 ```
@@ -54,9 +65,10 @@ Options:
 **Examples**
 
 ```
-esp-tui                        # auto-detect port
-esp-tui --port /dev/ttyUSB0   # connect to a specific port
-esp-tui --demo                 # run without hardware
+esp-tui                                          # auto-detect port
+esp-tui --port /dev/ttyUSB0                      # connect to a specific port
+esp-tui --elf target/xtensa-esp32s3-espidf/debug/app.elf  # pre-load ELF path
+esp-tui --demo                                   # run without hardware
 ```
 
 ---
@@ -67,7 +79,10 @@ esp-tui --demo                 # run without hardware
 |---|---|
 | `c` | Connect / scan for ports |
 | `d` | Disconnect |
+| `f` | Flash ELF to device (opens path selector if no ELF set) |
+| `e` | Erase flash (shows confirmation prompt) |
 | `r` | Reset device (DTR/RTS) |
+| `s` | Open ELF path selector |
 | `Tab` | Open / close filter popup |
 | `Space` | Toggle filter item (inside popup) |
 | `Ctrl-A` | Toggle all filter items (inside popup) |
@@ -84,6 +99,6 @@ esp-tui --demo                 # run without hardware
 | Phase | Description | Status |
 |---|---|---|
 | 1 | Serial monitor MVP | Complete |
-| 2 | Flash integration (espflash, progress bar, board info) | Planned |
+| 2 | Flash integration (espflash, progress bar, board info) | Complete |
 | 3 | Agent + System Inspector (heap, CPU, task list) | Planned |
 | 4 | Polish (backtrace decoding, sparklines, defmt, multi-device) | Planned |
