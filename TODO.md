@@ -21,7 +21,6 @@
 - [x] espflash library integration (not subprocess)
 - [x] Flash progress bar rendered in bottom pane during flash
 - [x] Board info display on connect (chip type, revision, flash size, MAC)
-- [ ] Partition table viewer popup (deferred: no direct espflash API without stub/temp file)
 - [x] `--elf <path>` CLI flag
 - [x] `--baud` CLI flag; `--port` was already present
 - [x] Port auto-reconnect after reset/flash cycle
@@ -38,6 +37,7 @@
 - [ ] Define a `Source` trait to unify `serial::Port` and the agent telemetry stream behind a common interface
 - [ ] Host-side COBS demuxer (splits agent frames from plain log lines)
 - [ ] System Inspector pane: heap gauges, per-core CPU bars, task list
+- [ ] Partition table viewer: read via agent using `esp_partition_find`/`esp_partition_get` and stream in `TelemetryFrame`; display in Inspector pane
 - [ ] Agent detection / graceful absence ("agent not detected" prompt)
 - [ ] In-TUI agent install flow (`[A]` keybinding)
 - [ ] `esp-tui agent install` CLI subcommand
