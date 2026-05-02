@@ -732,7 +732,9 @@ fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
             app.set_status("No devices detected.".into());
         }
         Ok(mut ports) if ports.len() == 1 => {
-            begin_connect(&ports.remove(0), app.baud(), tx);
+            let port = ports.remove(0);
+            app.set_status(format!("Connecting to {port}..."));
+            begin_connect(&port, app.baud(), tx);
         }
         Ok(ports) => app.open_port_selector(ports),
     }
@@ -754,6 +756,7 @@ fn handle_ports_detected(
                     }
                     1 => {
                         app.close_port_selector();
+                        app.set_status(format!("Connecting to {}...", current[0]));
                         begin_connect(&current[0], app.baud(), tx);
                     }
                     _ => app.refresh_port_selector(current),
@@ -761,7 +764,11 @@ fn handle_ports_detected(
             } else {
                 match current.len() {
                     0 => {}
-                    1 => begin_connect(&current.remove(0), app.baud(), tx),
+                    1 => {
+                        let port = current.remove(0);
+                        app.set_status(format!("Connecting to {port}..."));
+                        begin_connect(&port, app.baud(), tx);
+                    }
                     _ => app.open_port_selector(current),
                 }
             }
@@ -810,6 +817,50 @@ fn spawn_port_poller(
     });
 }
 
+fn confirm_elf_path(app: &mut App) {
+    let value = app
+        .elf_selector()
+        .map(|s| s.value().to_owned())
+        .unwrap_or_default();
+    let path = PathBuf::from(&value);
+    if path.is_dir() {
+        app.set_status("Path is a directory.".into());
+    } else if !path.is_file() {
+        app.set_status("Path not found.".into());
+    } else if !elf::is_elf_file(&path) {
+        app.set_status("Not a valid ELF file.".into());
+    } else {
+        app.set_elf_path(path);
+        app.close_elf_selector();
+        app.set_status("ELF path set.".into());
+    }
+}
+
+fn start_flash(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
+    if app.elf_path().is_none() {
+        app.open_elf_selector(None);
+        app.set_status("Select ELF path first.".into());
+    } else if app.port_name().is_none() {
+        app.set_status("No port connected.".into());
+    } else if app.is_flashing() {
+        app.set_status("Flash already in progress.".into());
+    } else {
+        let port = app.port_name().unwrap().to_owned();
+        let baud = app.baud();
+        let elf_path = app.elf_path().unwrap().to_owned();
+        app.shutdown_source();
+        app.set_flash_state(flash::State::Flashing {
+            current: 0,
+            total: 0,
+        });
+        let tx_task = tx.clone();
+        drop(tokio::task::spawn_blocking(move || {
+            let result = flash::flash_elf(&port, baud, &elf_path, tx_task.clone());
+            let _ = tx_task.send(event::Message::FlashDone(result));
+        }));
+    }
+}
+
 fn handle_action(
     app: &mut App,
     action: Action,
@@ -830,23 +881,8 @@ fn handle_action(
             let prefill = app.elf_path().map(Path::to_path_buf);
             app.open_elf_selector(prefill.as_deref());
         }
-        Action::CloseElfSelector => {
-            app.close_elf_selector();
-        }
-        Action::ConfirmElfPath => {
-            let value = app
-                .elf_selector()
-                .map(|s| s.value().to_owned())
-                .unwrap_or_default();
-            let path = PathBuf::from(&value);
-            if path.exists() {
-                app.set_elf_path(path);
-                app.close_elf_selector();
-                app.set_status("ELF path set.".into());
-            } else {
-                app.set_status("Path not found.".into());
-            }
-        }
+        Action::CloseElfSelector => app.close_elf_selector(),
+        Action::ConfirmElfPath => confirm_elf_path(app),
         // All actions below touch real hardware. New hardware actions must go
         // after this arm so demo mode blocks them automatically.
         _ if app.is_demo() => {
@@ -866,7 +902,10 @@ fn handle_action(
             None => app.set_status("No port connected.".into()),
         },
         Action::ScanPorts => apply_scan(app, tx),
-        Action::ConnectPort(port) => begin_connect(&port, app.baud(), tx),
+        Action::ConnectPort(port) => {
+            app.set_status(format!("Connecting to {port}..."));
+            begin_connect(&port, app.baud(), tx);
+        }
         Action::ErasePrompt => {
             if app.port_name().is_none() {
                 app.set_status("No port connected.".into());
@@ -889,31 +928,7 @@ fn handle_action(
                 }));
             }
         }
-        Action::Flash => {
-            if app.elf_path().is_none() {
-                app.open_elf_selector(None);
-                app.set_status("Select ELF path first.".into());
-            } else if app.port_name().is_none() {
-                app.set_status("No port connected.".into());
-            } else if app.is_flashing() {
-                app.set_status("Flash already in progress.".into());
-            } else {
-                let port = app.port_name().unwrap().to_owned();
-                let baud = app.baud();
-                let elf_path = app.elf_path().unwrap().to_owned();
-                app.shutdown_source();
-                app.set_flash_state(flash::State::Flashing {
-                    current: 0,
-                    total: 0,
-                });
-                let tx_task = tx.clone();
-                drop(tokio::task::spawn_blocking(move || {
-                    let result =
-                        flash::flash_elf(&port, baud, &elf_path, tx_task.clone());
-                    let _ = tx_task.send(event::Message::FlashDone(result));
-                }));
-            }
-        }
+        Action::Flash => start_flash(app, tx),
     }
 }
 
@@ -945,7 +960,11 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
         let mut ports = resolve_ports(args.port)?;
         match ports.len() {
             0 => {}
-            1 => begin_connect(&ports.remove(0), baud, &tx),
+            1 => {
+                let port = ports.remove(0);
+                app.set_status(format!("Connecting to {port}..."));
+                begin_connect(&port, baud, &tx);
+            }
             _ => app.open_port_selector(ports),
         }
         spawn_port_poller(tx.clone(), shutdown_rx.clone());
@@ -1018,6 +1037,9 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
                 match result {
                     Ok(()) => {
                         app.set_status("Flash complete. Reconnecting...".into());
+                        if let Some(port) = app.port_name().map(str::to_owned) {
+                            begin_connect(&port, baud, &tx);
+                        }
                     }
                     Err(e) => {
                         app.set_status(format!("Flash failed: {e}"));
@@ -1958,7 +1980,7 @@ mod tests {
     #[test]
     fn handle_action_confirm_elf_path_valid() {
         let path = std::env::temp_dir().join("esp-tui-test-elf");
-        std::fs::write(&path, b"").unwrap();
+        std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
         let mut app = App::new(None);
         app.open_elf_selector(None);
         if let Some(s) = app.elf_selector.as_mut() {
@@ -1986,6 +2008,40 @@ mod tests {
         assert!(app.elf_path().is_none());
         assert!(app.is_elf_selector_open());
         assert_eq!(app.status_msg(), Some("Path not found."));
+    }
+
+    #[test]
+    fn handle_action_confirm_elf_path_directory_rejected() {
+        let dir = std::env::temp_dir();
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        if let Some(s) = app.elf_selector.as_mut() {
+            for ch in dir.to_str().unwrap().chars() {
+                s.push_char(ch);
+            }
+        }
+        handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
+        assert!(app.elf_path().is_none());
+        assert!(app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("Path is a directory."));
+    }
+
+    #[test]
+    fn handle_action_confirm_elf_path_non_elf_rejected() {
+        let path = std::env::temp_dir().join("esp-tui-test-non-elf");
+        std::fs::write(&path, b"not an elf file").unwrap();
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        if let Some(s) = app.elf_selector.as_mut() {
+            for ch in path.to_str().unwrap().chars() {
+                s.push_char(ch);
+            }
+        }
+        handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
+        assert!(app.elf_path().is_none());
+        assert!(app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("Not a valid ELF file."));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

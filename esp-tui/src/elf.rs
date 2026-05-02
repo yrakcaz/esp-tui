@@ -1,4 +1,28 @@
+use std::io::Read as _;
 use std::path::Path;
+
+/// Returns `true` if `path` begins with the ELF magic bytes `\x7fELF`.
+///
+/// Opens the file, reads exactly four bytes, and compares them against the
+/// standard ELF magic header. Returns `false` on any I/O error, if the file
+/// is shorter than four bytes, or if the magic does not match.
+///
+/// # Arguments
+///
+/// * `path` - Path to the file to inspect.
+///
+/// # Returns
+///
+/// `true` when the file starts with `[0x7f, b'E', b'L', b'F']`.
+pub(crate) fn is_elf_file(path: &Path) -> bool {
+    std::fs::File::open(path)
+        .ok()
+        .and_then(|mut f| {
+            let mut buf = [0u8; 4];
+            f.read_exact(&mut buf).ok().map(|()| buf)
+        })
+        .is_some_and(|buf| buf == [0x7f, b'E', b'L', b'F'])
+}
 
 /// State for the ELF path input popup with filesystem tab-completion.
 pub(crate) struct Selector {
@@ -122,6 +146,9 @@ impl Selector {
                     return None;
                 }
                 let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+                if !is_dir && !is_elf_file(&entry.path()) {
+                    return None;
+                }
                 let display = if is_dir {
                     format!("{name_str}/")
                 } else {
@@ -288,7 +315,7 @@ mod tests {
     #[test]
     fn complete_populates_matching_entries() {
         let dir = tempdir();
-        fs::write(dir.join("app.elf"), b"").unwrap();
+        fs::write(dir.join("app.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
         fs::write(dir.join("app.elf.map"), b"").unwrap();
         fs::write(dir.join("other"), b"").unwrap();
 
@@ -296,7 +323,7 @@ mod tests {
         let mut s = sel(&prefix);
         s.complete();
         assert!(s.completions().contains(&"app.elf".to_owned()));
-        assert!(s.completions().contains(&"app.elf.map".to_owned()));
+        assert!(!s.completions().contains(&"app.elf.map".to_owned()));
         assert!(!s.completions().contains(&"other".to_owned()));
     }
 
@@ -321,7 +348,7 @@ mod tests {
     #[test]
     fn complete_relative_prefix_uses_current_dir() {
         let dir = tempdir();
-        fs::write(dir.join("firmware.elf"), b"").unwrap();
+        fs::write(dir.join("firmware.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
         let orig = std::env::current_dir().unwrap();
         std::env::set_current_dir(&dir).unwrap();
         let mut s = sel("firmware");
@@ -338,7 +365,7 @@ mod tests {
     fn complete_dot_prefix_shows_hidden_entries() {
         let dir = tempdir();
         fs::create_dir(dir.join(".hidden")).unwrap();
-        fs::write(dir.join(".dotfile"), b"").unwrap();
+        fs::write(dir.join(".dotfile"), b"\x7fELF\x00\x00\x00\x00").unwrap();
         fs::write(dir.join("visible"), b"").unwrap();
         let orig = std::env::current_dir().unwrap();
         std::env::set_current_dir(&dir).unwrap();
@@ -352,11 +379,11 @@ mod tests {
         );
         assert!(
             comps.contains(&".dotfile".to_owned()),
-            "should find .dotfile"
+            "should find .dotfile with ELF magic"
         );
         assert!(
             !comps.contains(&"visible".to_owned()),
-            "should not show non-dot files"
+            "should not show non-ELF files"
         );
     }
 
@@ -394,7 +421,7 @@ mod tests {
     #[test]
     fn accept_completion_replaces_filename_prefix() {
         let dir = tempdir();
-        fs::write(dir.join("app.elf"), b"").unwrap();
+        fs::write(dir.join("app.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
 
         let prefix = format!("{}/app", dir.display());
         let mut s = sel(&prefix);
@@ -421,6 +448,35 @@ mod tests {
         let mut s = sel("foo");
         s.accept_completion();
         assert_eq!(s.value(), "foo");
+    }
+
+    #[test]
+    fn is_elf_file_returns_true_for_valid_elf() {
+        let dir = tempdir();
+        let path = dir.join("valid.elf");
+        fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
+        assert!(is_elf_file(&path));
+    }
+
+    #[test]
+    fn is_elf_file_returns_false_for_non_elf() {
+        let dir = tempdir();
+        let path = dir.join("not.elf");
+        fs::write(&path, b"not an elf").unwrap();
+        assert!(!is_elf_file(&path));
+    }
+
+    #[test]
+    fn is_elf_file_returns_false_for_too_short() {
+        let dir = tempdir();
+        let path = dir.join("short.elf");
+        fs::write(&path, b"\x7fEL").unwrap();
+        assert!(!is_elf_file(&path));
+    }
+
+    #[test]
+    fn is_elf_file_returns_false_for_nonexistent() {
+        assert!(!is_elf_file(Path::new("/nonexistent/path.elf")));
     }
 
     fn tempdir() -> std::path::PathBuf {

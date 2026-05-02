@@ -165,7 +165,11 @@ impl ProgressCallbacks for TuiProgress {
     }
 }
 
-fn open_flasher(port_name: &str, baud: u32) -> anyhow::Result<Flasher> {
+fn open_flasher(
+    port_name: &str,
+    baud: u32,
+    use_stub: bool,
+) -> anyhow::Result<Flasher> {
     let serial = serialport::new(port_name, baud)
         .flow_control(FlowControl::None)
         .open_native()
@@ -183,7 +187,7 @@ fn open_flasher(port_name: &str, baud: u32) -> anyhow::Result<Flasher> {
         serial,
         port_info,
         None,
-        true,
+        use_stub,
         false,
         false,
         None,
@@ -191,6 +195,24 @@ fn open_flasher(port_name: &str, baud: u32) -> anyhow::Result<Flasher> {
         ResetBeforeOperation::DefaultReset,
     )
     .with_context(|| format!("failed to connect to {port_name}"))
+}
+
+fn collect_device_info(flasher: &mut Flasher) -> anyhow::Result<DeviceInfo> {
+    let info = flasher
+        .device_info()
+        .context("failed to read device info")?;
+
+    let chip = info.revision.map_or_else(
+        || format!("{}", info.chip),
+        |(major, minor)| format!("{} (rev v{major}.{minor})", info.chip),
+    );
+
+    Ok(DeviceInfo::new(
+        chip,
+        format!("{}", info.flash_size),
+        info.mac_address,
+        Vec::new(),
+    ))
 }
 
 /// Probes the device for board information.
@@ -215,36 +237,25 @@ pub(crate) fn probe_device_info(
     port_name: &str,
     baud: u32,
 ) -> anyhow::Result<DeviceInfo> {
-    let mut flasher = open_flasher(port_name, baud)?;
-    let info = flasher
-        .device_info()
-        .context("failed to read device info")?;
-
-    let chip = info.revision.map_or_else(
-        || format!("{}", info.chip),
-        |(major, minor)| format!("{} (rev v{major}.{minor})", info.chip),
-    );
-
-    Ok(DeviceInfo::new(
-        chip,
-        format!("{}", info.flash_size),
-        info.mac_address,
-        Vec::new(),
-    ))
+    let mut flasher = open_flasher(port_name, baud, false)?;
+    collect_device_info(&mut flasher)
 }
 
 /// Flashes an ELF firmware image to the connected device.
 ///
 /// Reads the ELF file, opens the port via espflash, and calls
 /// `load_elf_to_flash`, sending [`Message::FlashProgress`] events while
-/// writing.
+/// writing. After the flasher connects successfully, a
+/// [`Message::DeviceInfo`] is sent as a free side effect so board info is
+/// refreshed on every flash.
 ///
 /// # Arguments
 ///
 /// * `port_name` - System port name.
 /// * `baud` - Baud rate.
 /// * `elf_path` - Path to the ELF firmware file.
-/// * `tx` - Event sender for [`Message::FlashProgress`] updates.
+/// * `tx` - Event sender for [`Message::FlashProgress`] and
+///   [`Message::DeviceInfo`] updates.
 ///
 /// # Errors
 ///
@@ -258,7 +269,9 @@ pub(crate) fn flash_elf(
 ) -> anyhow::Result<()> {
     let elf_data = std::fs::read(elf_path).context("failed to read ELF file")?;
 
-    let mut flasher = open_flasher(port_name, baud)?;
+    let mut flasher = open_flasher(port_name, baud, true)?;
+
+    let _ = tx.send(Message::DeviceInfo(collect_device_info(&mut flasher)));
 
     let chip = flasher.chip();
     let xtal_freq = chip
@@ -291,7 +304,7 @@ pub(crate) fn flash_elf(
 ///
 /// Returns an error if the port cannot be opened or the erase command fails.
 pub(crate) fn erase_flash(port_name: &str, baud: u32) -> anyhow::Result<()> {
-    let mut flasher = open_flasher(port_name, baud)?;
+    let mut flasher = open_flasher(port_name, baud, true)?;
     flasher.erase_flash().context("failed to erase flash")
 }
 
