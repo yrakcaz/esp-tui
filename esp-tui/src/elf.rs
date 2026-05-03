@@ -74,6 +74,72 @@ impl Selector {
         }
     }
 
+    /// Moves the text cursor to the beginning of the input and clears
+    /// completions.
+    pub(crate) fn move_cursor_to_start(&mut self) {
+        self.cursor = 0;
+        self.completions.clear();
+        self.completion_cursor = 0;
+    }
+
+    /// Moves the text cursor to the end of the input and clears completions.
+    pub(crate) fn move_cursor_to_end(&mut self) {
+        self.cursor = self.input.len();
+        self.completions.clear();
+        self.completion_cursor = 0;
+    }
+
+    /// Clears the entire input text, resets the cursor, and clears
+    /// completions.
+    pub(crate) fn clear_input(&mut self) {
+        self.input.clear();
+        self.cursor = 0;
+        self.completions.clear();
+        self.completion_cursor = 0;
+    }
+
+    /// Deletes the character under the cursor (forward delete) and clears
+    /// completions.
+    pub(crate) fn delete_forward(&mut self) {
+        if self.cursor < self.input.len() {
+            let ch = self.input[self.cursor..].chars().next().unwrap_or('\0');
+            self.input.drain(self.cursor..self.cursor + ch.len_utf8());
+            self.completions.clear();
+            self.completion_cursor = 0;
+        }
+    }
+
+    /// Deletes from the cursor to the end of the input and clears completions.
+    pub(crate) fn kill_to_end(&mut self) {
+        self.input.truncate(self.cursor);
+        self.completions.clear();
+        self.completion_cursor = 0;
+    }
+
+    /// Deletes from the start of the input to the cursor and clears
+    /// completions.
+    pub(crate) fn kill_to_start(&mut self) {
+        self.input.drain(..self.cursor);
+        self.cursor = 0;
+        self.completions.clear();
+        self.completion_cursor = 0;
+    }
+
+    /// Deletes the word immediately before the cursor, stopping at `/`
+    /// boundaries, and clears completions.
+    pub(crate) fn kill_word_back(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let before = &self.input[..self.cursor];
+        let trimmed = before.trim_end_matches('/');
+        let word_start = trimmed.rfind('/').map_or(0, |i| i + 1);
+        self.input.drain(word_start..self.cursor);
+        self.cursor = word_start;
+        self.completions.clear();
+        self.completion_cursor = 0;
+    }
+
     /// Moves the text cursor left or right, clamped to the input bounds.
     ///
     /// # Arguments
@@ -208,6 +274,57 @@ impl Selector {
         self.completion_cursor = 0;
     }
 
+    /// Performs bash-like tab completion.
+    ///
+    /// When no completions are loaded, computes them from the filesystem:
+    /// - Single result: auto-accepts it; if the result is a directory (ends
+    ///   with `/`), immediately computes completions for that directory.
+    /// - Multiple results: extends the input to the longest common prefix of
+    ///   all completions (bash-style partial fill).
+    ///
+    /// When completions are already showing, cycles to the next entry.
+    pub(crate) fn tab_complete(&mut self) {
+        if self.completions.is_empty() {
+            self.complete();
+            match self.completions.len() {
+                0 => {}
+                1 => {
+                    self.accept_completion();
+                    if self.input.ends_with('/') {
+                        self.complete();
+                    }
+                }
+                _ => self.extend_to_common_prefix(),
+            }
+        } else {
+            self.cycle_completion();
+        }
+    }
+
+    fn extend_to_common_prefix(&mut self) {
+        let Some(first) = self.completions.first() else {
+            return;
+        };
+        let prefix = self
+            .completions
+            .iter()
+            .skip(1)
+            .fold(first.as_str(), |acc, s| common_prefix(acc, s))
+            .to_owned();
+
+        let parent_end = if self.input.ends_with('/') {
+            self.input.len()
+        } else {
+            self.input.rfind('/').map_or(0, |i| i + 1)
+        };
+
+        let new_input = format!("{}{prefix}", &self.input[..parent_end]);
+        if new_input.len() > self.input.len() {
+            self.input = new_input;
+            self.cursor = self.input.len();
+        }
+    }
+
     /// Returns the current completion list.
     ///
     /// # Returns
@@ -224,6 +341,16 @@ impl Selector {
     pub(crate) fn completion_cursor(&self) -> usize {
         self.completion_cursor
     }
+}
+
+fn common_prefix<'a>(a: &'a str, b: &str) -> &'a str {
+    let end = a
+        .char_indices()
+        .zip(b.chars())
+        .take_while(|((_, ca), cb)| ca == cb)
+        .last()
+        .map_or(0, |((i, c), _)| i + c.len_utf8());
+    &a[..end]
 }
 
 #[cfg(test)]
@@ -477,6 +604,229 @@ mod tests {
     #[test]
     fn is_elf_file_returns_false_for_nonexistent() {
         assert!(!is_elf_file(Path::new("/nonexistent/path.elf")));
+    }
+
+    #[test]
+    fn move_cursor_to_start_sets_cursor_zero() {
+        let mut s = sel("hello");
+        s.move_cursor_to_start();
+        assert_eq!(s.cursor_pos(), 0);
+    }
+
+    #[test]
+    fn move_cursor_to_start_clears_completions() {
+        let mut s = sel("foo");
+        s.completions = vec!["foobar".into()];
+        s.move_cursor_to_start();
+        assert!(s.completions().is_empty());
+    }
+
+    #[test]
+    fn move_cursor_to_end_sets_cursor_to_len() {
+        let mut s = sel("hello");
+        s.move_cursor(-5);
+        s.move_cursor_to_end();
+        assert_eq!(s.cursor_pos(), 5);
+    }
+
+    #[test]
+    fn move_cursor_to_end_clears_completions() {
+        let mut s = sel("foo");
+        s.completions = vec!["foobar".into()];
+        s.move_cursor_to_end();
+        assert!(s.completions().is_empty());
+    }
+
+    #[test]
+    fn clear_input_empties_input_and_cursor() {
+        let mut s = sel("hello");
+        s.completions = vec!["helloworld".into()];
+        s.clear_input();
+        assert_eq!(s.value(), "");
+        assert_eq!(s.cursor_pos(), 0);
+        assert!(s.completions().is_empty());
+    }
+
+    #[test]
+    fn tab_complete_single_match_auto_accepts() {
+        let dir = tempdir();
+        fs::write(dir.join("app.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+
+        let prefix = format!("{}/app", dir.display());
+        let mut s = sel(&prefix);
+        s.tab_complete();
+        assert_eq!(s.value(), format!("{}/app.elf", dir.display()));
+        assert!(s.completions().is_empty());
+    }
+
+    #[test]
+    fn tab_complete_single_dir_match_descends() {
+        let dir = tempdir();
+        fs::create_dir(dir.join("build")).unwrap();
+        fs::write(
+            dir.join("build").join("app.elf"),
+            b"\x7fELF\x00\x00\x00\x00",
+        )
+        .unwrap();
+
+        let prefix = format!("{}/bui", dir.display());
+        let mut s = sel(&prefix);
+        s.tab_complete();
+        assert_eq!(s.value(), format!("{}/build/", dir.display()));
+        assert!(
+            !s.completions().is_empty(),
+            "should immediately list build/ contents"
+        );
+    }
+
+    #[test]
+    fn tab_complete_multiple_matches_extend_to_common_prefix() {
+        let dir = tempdir();
+        fs::write(dir.join("app_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        fs::write(dir.join("app_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+
+        let prefix = format!("{}/a", dir.display());
+        let mut s = sel(&prefix);
+        s.tab_complete();
+        assert_eq!(s.value(), format!("{}/app_", dir.display()));
+        assert_eq!(s.completions().len(), 2);
+    }
+
+    #[test]
+    fn tab_complete_already_showing_cycles() {
+        let dir = tempdir();
+        fs::write(dir.join("app_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        fs::write(dir.join("app_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+
+        let prefix = format!("{}/app", dir.display());
+        let mut s = sel(&prefix);
+        s.tab_complete();
+        let first = s.completion_cursor();
+        s.tab_complete();
+        assert_ne!(s.completion_cursor(), first);
+    }
+
+    #[test]
+    fn tab_complete_no_matches_is_noop() {
+        let mut s = sel("/nonexistent/path/prefix");
+        s.tab_complete();
+        assert_eq!(s.value(), "/nonexistent/path/prefix");
+        assert!(s.completions().is_empty());
+    }
+
+    #[test]
+    fn delete_forward_removes_char_under_cursor() {
+        let mut s = sel("abc");
+        s.move_cursor(-2);
+        s.delete_forward();
+        assert_eq!(s.value(), "ac");
+        assert_eq!(s.cursor_pos(), 1);
+    }
+
+    #[test]
+    fn delete_forward_at_end_is_noop() {
+        let mut s = sel("abc");
+        s.delete_forward();
+        assert_eq!(s.value(), "abc");
+    }
+
+    #[test]
+    fn delete_forward_clears_completions() {
+        let mut s = sel("foo");
+        s.completions = vec!["foobar".into()];
+        s.move_cursor(-1);
+        s.delete_forward();
+        assert!(s.completions().is_empty());
+    }
+
+    #[test]
+    fn kill_to_end_removes_from_cursor_to_end() {
+        let mut s = sel("hello");
+        s.move_cursor(-3);
+        s.kill_to_end();
+        assert_eq!(s.value(), "he");
+        assert_eq!(s.cursor_pos(), 2);
+    }
+
+    #[test]
+    fn kill_to_end_at_end_is_noop() {
+        let mut s = sel("hello");
+        s.kill_to_end();
+        assert_eq!(s.value(), "hello");
+    }
+
+    #[test]
+    fn kill_to_end_clears_completions() {
+        let mut s = sel("foo");
+        s.completions = vec!["foobar".into()];
+        s.move_cursor(-1);
+        s.kill_to_end();
+        assert!(s.completions().is_empty());
+    }
+
+    #[test]
+    fn kill_to_start_removes_from_start_to_cursor() {
+        let mut s = sel("hello");
+        s.move_cursor(-3);
+        s.kill_to_start();
+        assert_eq!(s.value(), "llo");
+        assert_eq!(s.cursor_pos(), 0);
+    }
+
+    #[test]
+    fn kill_to_start_at_start_is_noop() {
+        let mut s = sel("hello");
+        s.move_cursor(-5);
+        s.kill_to_start();
+        assert_eq!(s.value(), "hello");
+    }
+
+    #[test]
+    fn kill_to_start_clears_completions() {
+        let mut s = sel("foo");
+        s.completions = vec!["foobar".into()];
+        s.move_cursor(-1);
+        s.kill_to_start();
+        assert!(s.completions().is_empty());
+    }
+
+    #[test]
+    fn kill_word_back_removes_last_path_segment() {
+        let mut s = sel("/tmp/foo/bar");
+        s.kill_word_back();
+        assert_eq!(s.value(), "/tmp/foo/");
+        assert_eq!(s.cursor_pos(), 9);
+    }
+
+    #[test]
+    fn kill_word_back_strips_trailing_slashes_first() {
+        let mut s = sel("/tmp/foo/");
+        s.kill_word_back();
+        assert_eq!(s.value(), "/tmp/");
+        assert_eq!(s.cursor_pos(), 5);
+    }
+
+    #[test]
+    fn kill_word_back_at_root_clears_all() {
+        let mut s = sel("filename.elf");
+        s.kill_word_back();
+        assert_eq!(s.value(), "");
+        assert_eq!(s.cursor_pos(), 0);
+    }
+
+    #[test]
+    fn kill_word_back_at_start_is_noop() {
+        let mut s = Selector::new(None);
+        s.kill_word_back();
+        assert_eq!(s.value(), "");
+    }
+
+    #[test]
+    fn kill_word_back_clears_completions() {
+        let mut s = sel("/tmp/foo");
+        s.completions = vec!["foobar".into()];
+        s.kill_word_back();
+        assert!(s.completions().is_empty());
     }
 
     fn tempdir() -> std::path::PathBuf {

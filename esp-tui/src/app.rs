@@ -185,11 +185,7 @@ impl App {
                 }
                 KeyCode::Tab => {
                     if let Some(s) = self.elf_selector.as_mut() {
-                        if s.completions().is_empty() {
-                            s.complete();
-                        } else {
-                            s.cycle_completion();
-                        }
+                        s.tab_complete();
                     }
                     Action::None
                 }
@@ -223,7 +219,65 @@ impl App {
                     }
                     Action::None
                 }
-                KeyCode::Char(ch) => {
+                KeyCode::Char('a')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.move_cursor_to_start();
+                    }
+                    Action::None
+                }
+                KeyCode::Char('e')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.move_cursor_to_end();
+                    }
+                    Action::None
+                }
+                KeyCode::Char('l')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.clear_input();
+                    }
+                    Action::None
+                }
+                KeyCode::Char('d')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.delete_forward();
+                    }
+                    Action::None
+                }
+                KeyCode::Char('k')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.kill_to_end();
+                    }
+                    Action::None
+                }
+                KeyCode::Char('u')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.kill_to_start();
+                    }
+                    Action::None
+                }
+                KeyCode::Char('w')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.kill_word_back();
+                    }
+                    Action::None
+                }
+                KeyCode::Char(ch)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
                     if let Some(s) = self.elf_selector.as_mut() {
                         s.push_char(ch);
                     }
