@@ -61,8 +61,6 @@ pub(crate) enum Action {
     ErasePrompt,
     /// Confirm the erase and start the operation.
     ConfirmErase,
-    /// Open the ELF path selector popup.
-    SelectElf,
     /// Close the ELF path selector popup without saving.
     CloseElfSelector,
     /// Confirm the ELF path currently typed in the selector.
@@ -288,7 +286,6 @@ impl App {
             KeyCode::Char('r') => Action::ResetDevice,
             KeyCode::Char('f') => Action::Flash,
             KeyCode::Char('e') => Action::ErasePrompt,
-            KeyCode::Char('s') => Action::SelectElf,
             KeyCode::Char('c') => Action::ScanPorts,
             KeyCode::Tab => {
                 self.filter.toggle_popup();
@@ -817,7 +814,7 @@ fn spawn_port_poller(
     });
 }
 
-fn confirm_elf_path(app: &mut App) {
+fn confirm_elf_path(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
     let value = app
         .elf_selector()
         .map(|s| s.value().to_owned())
@@ -832,15 +829,17 @@ fn confirm_elf_path(app: &mut App) {
     } else {
         app.set_elf_path(path);
         app.close_elf_selector();
-        app.set_status("ELF path set.".into());
+        do_flash(app, tx);
     }
 }
 
-fn start_flash(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
-    if app.elf_path().is_none() {
-        app.open_elf_selector(None);
-        app.set_status("Select ELF path first.".into());
-    } else if app.port_name().is_none() {
+fn start_flash(app: &mut App, _tx: &mpsc::UnboundedSender<event::Message>) {
+    let prefill = app.elf_path().map(Path::to_path_buf);
+    app.open_elf_selector(prefill.as_deref());
+}
+
+fn do_flash(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
+    if app.port_name().is_none() {
         app.set_status("No port connected.".into());
     } else if app.is_flashing() {
         app.set_status("Flash already in progress.".into());
@@ -877,12 +876,8 @@ fn handle_action(
                 app.set_status("Not connected.".into());
             }
         }
-        Action::SelectElf => {
-            let prefill = app.elf_path().map(Path::to_path_buf);
-            app.open_elf_selector(prefill.as_deref());
-        }
         Action::CloseElfSelector => app.close_elf_selector(),
-        Action::ConfirmElfPath => confirm_elf_path(app),
+        Action::ConfirmElfPath => confirm_elf_path(app, tx),
         // All actions below touch real hardware. New hardware actions must go
         // after this arm so demo mode blocks them automatically.
         _ if app.is_demo() => {
@@ -1405,9 +1400,9 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_s_returns_select_elf_action() {
+    fn handle_key_s_is_noop() {
         let mut app = App::new(None);
-        assert_eq!(app.handle_key(key(KeyCode::Char('s'))), Action::SelectElf);
+        assert_eq!(app.handle_key(key(KeyCode::Char('s'))), Action::None);
     }
 
     #[test]
@@ -1942,31 +1937,46 @@ mod tests {
     }
 
     #[test]
-    fn handle_action_flash_no_elf_opens_selector() {
+    fn handle_action_flash_always_opens_selector() {
         let mut app = App::new(Some("COM1".into()));
         handle_action(&mut app, Action::Flash, &make_tx());
         assert!(app.is_elf_selector_open());
-        assert!(app.status_msg().is_some());
     }
 
     #[test]
-    fn handle_action_flash_no_port_sets_status() {
+    fn handle_action_confirm_elf_path_no_port_sets_status() {
+        let path = std::env::temp_dir().join("esp-tui-test-elf-no-port");
+        std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
         let mut app = App::new(None);
-        app.set_elf_path(std::path::PathBuf::from("/tmp/app.elf"));
-        handle_action(&mut app, Action::Flash, &make_tx());
+        app.open_elf_selector(None);
+        if let Some(s) = app.elf_selector.as_mut() {
+            for ch in path.to_str().unwrap().chars() {
+                s.push_char(ch);
+            }
+        }
+        handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
         assert_eq!(app.status_msg(), Some("No port connected."));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
-    fn handle_action_flash_already_flashing_sets_status() {
+    fn handle_action_confirm_elf_path_already_flashing_sets_status() {
+        let path = std::env::temp_dir().join("esp-tui-test-elf-flashing");
+        std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
         let mut app = App::new(Some("COM1".into()));
-        app.set_elf_path(std::path::PathBuf::from("/tmp/app.elf"));
         app.set_flash_state(crate::flash::State::Flashing {
             current: 0,
             total: 0,
         });
-        handle_action(&mut app, Action::Flash, &make_tx());
+        app.open_elf_selector(None);
+        if let Some(s) = app.elf_selector.as_mut() {
+            for ch in path.to_str().unwrap().chars() {
+                s.push_char(ch);
+            }
+        }
+        handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
         assert_eq!(app.status_msg(), Some("Flash already in progress."));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1991,7 +2001,7 @@ mod tests {
         handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
         assert_eq!(app.elf_path(), Some(path.as_path()));
         assert!(!app.is_elf_selector_open());
-        assert_eq!(app.status_msg(), Some("ELF path set."));
+        assert_eq!(app.status_msg(), Some("No port connected."));
         std::fs::remove_file(path).unwrap();
     }
 
@@ -2087,17 +2097,19 @@ mod tests {
     }
 
     #[test]
-    fn handle_action_select_elf_opens_selector() {
+    fn handle_action_flash_opens_selector_empty_when_no_elf() {
         let mut app = App::new(None);
-        handle_action(&mut app, Action::SelectElf, &make_tx());
+        handle_action(&mut app, Action::Flash, &make_tx());
         assert!(app.is_elf_selector_open());
+        assert_eq!(app.elf_selector().unwrap().value(), "");
     }
 
     #[test]
-    fn handle_action_select_elf_prefills_existing_path() {
+    fn handle_action_flash_opens_selector_prefilled_when_elf_set() {
         let mut app = App::new(None);
         app.set_elf_path(std::path::PathBuf::from("/tmp/firmware.elf"));
-        handle_action(&mut app, Action::SelectElf, &make_tx());
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert!(app.is_elf_selector_open());
         assert_eq!(app.elf_selector().unwrap().value(), "/tmp/firmware.elf");
     }
 

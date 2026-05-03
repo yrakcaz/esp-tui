@@ -68,8 +68,6 @@ fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
         Span::raw("  "),
         hint("[R]eset"),
         Span::raw("  "),
-        hint("[S]elect ELF"),
-        Span::raw("  "),
         hint("[Q]uit"),
     ]);
 
