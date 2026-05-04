@@ -246,23 +246,25 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 *current as f64 / *total as f64
             };
-            let addr_label = format!(" Writing at 0x{addr:08x}...");
-            let [addr_area, gauge_area] = Layout::horizontal([
-                Constraint::Length(
-                    u16::try_from(addr_label.len()).unwrap_or(u16::MAX),
-                ),
-                Constraint::Min(0),
-            ])
-            .areas(inner);
-            frame.render_widget(
-                Paragraph::new(addr_label).style(Style::default().fg(Color::Green)),
-                addr_area,
-            );
             let gauge = Gauge::default()
                 .gauge_style(Style::default().fg(Color::Green))
                 .ratio(ratio)
                 .label(format!("{:.0}%", ratio * 100.0));
-            frame.render_widget(gauge, gauge_area);
+            frame.render_widget(gauge, inner);
+            // Overwrite characters only; the gauge already painted the correct
+            // fg/bg on every cell so the fill boundary colour is handled for free.
+            let addr_label = format!(" Writing at 0x{addr:08x}...");
+            let buf = frame.buffer_mut();
+            for (i, ch) in addr_label.chars().enumerate() {
+                #[allow(clippy::cast_possible_truncation)]
+                let x = inner.x + i as u16;
+                if x >= inner.x + inner.width {
+                    break;
+                }
+                if let Some(cell) = buf.cell_mut((x, inner.y)) {
+                    cell.set_char(ch);
+                }
+            }
         }
         flash::State::Erasing => {
             frame.render_widget(
