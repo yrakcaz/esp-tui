@@ -246,12 +246,23 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 *current as f64 / *total as f64
             };
-            let label = format!("Writing 0x{addr:08x}  {:.0}%", ratio * 100.0);
+            let addr_label = format!(" Writing at 0x{addr:08x}...");
+            let [addr_area, gauge_area] = Layout::horizontal([
+                Constraint::Length(
+                    u16::try_from(addr_label.len()).unwrap_or(u16::MAX),
+                ),
+                Constraint::Min(0),
+            ])
+            .areas(inner);
+            frame.render_widget(
+                Paragraph::new(addr_label).style(Style::default().fg(Color::Green)),
+                addr_area,
+            );
             let gauge = Gauge::default()
                 .gauge_style(Style::default().fg(Color::Green))
                 .ratio(ratio)
-                .label(label);
-            frame.render_widget(gauge, inner);
+                .label(format!("{:.0}%", ratio * 100.0));
+            frame.render_widget(gauge, gauge_area);
         }
         flash::State::Erasing => {
             frame.render_widget(
