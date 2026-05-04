@@ -812,6 +812,7 @@ fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
         Ok(mut ports) if ports.len() == 1 => {
             let port = ports.remove(0);
             app.set_status(format!("Connecting to {port}..."));
+            app.set_port(port.clone());
             begin_connect(&port, app.baud(), tx);
         }
         Ok(ports) => app.open_port_selector(ports),
@@ -835,6 +836,7 @@ fn handle_ports_detected(
                     1 => {
                         app.close_port_selector();
                         app.set_status(format!("Connecting to {}...", current[0]));
+                        app.set_port(current[0].clone());
                         begin_connect(&current[0], app.baud(), tx);
                     }
                     _ => app.refresh_port_selector(current),
@@ -845,6 +847,7 @@ fn handle_ports_detected(
                     1 => {
                         let port = current.remove(0);
                         app.set_status(format!("Connecting to {port}..."));
+                        app.set_port(port.clone());
                         begin_connect(&port, app.baud(), tx);
                     }
                     _ => app.open_port_selector(current),
@@ -983,6 +986,7 @@ fn handle_action(
         Action::ScanPorts => apply_scan(app, tx),
         Action::ConnectPort(port) => {
             app.set_status(format!("Connecting to {port}..."));
+            app.set_port(port.clone());
             begin_connect(&port, app.baud(), tx);
         }
         Action::ErasePrompt => {
@@ -1045,6 +1049,7 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
             1 => {
                 let port = ports.remove(0);
                 app.set_status(format!("Connecting to {port}..."));
+                app.set_port(port.clone());
                 begin_connect(&port, baud, &tx);
             }
             _ => app.open_port_selector(ports),
@@ -1106,6 +1111,7 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
             }
             event::Message::ConnectError(msg) => {
                 app.set_status(msg);
+                app.disconnect();
             }
             event::Message::Tick => app.tick(),
             event::Message::PortsDetected { current, previous } => {
