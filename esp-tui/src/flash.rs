@@ -191,7 +191,7 @@ fn open_flasher(
         false,
         false,
         None,
-        ResetAfterOperation::HardReset,
+        ResetAfterOperation::NoReset,
         ResetBeforeOperation::DefaultReset,
     )
     .with_context(|| format!("failed to connect to {port_name}"))

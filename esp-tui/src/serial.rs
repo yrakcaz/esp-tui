@@ -174,10 +174,10 @@ fn reset_via_handle(
 /// Pulses EN with BOOT (IO0) deasserted so the chip runs firmware rather than
 /// re-entering the ROM bootloader.
 ///
-/// espflash's `HardReset` only pulses EN via RTS without clearing DTR, which
-/// leaves IO0/BOOT asserted and causes the chip to enter ROM bootloader mode
-/// on every espflash-initiated reset. This function drives DTR low first,
-/// mirroring what the interactive `r` key reset does.
+/// espflash's `DefaultReset` drives DTR high (IO0/BOOT low) to enter ROM
+/// bootloader mode before a flash or erase operation. After the operation
+/// completes, this function drives DTR low first so the subsequent EN pulse
+/// boots into firmware rather than ROM bootloader mode.
 ///
 /// Errors are swallowed; the caller discovers port availability through the
 /// subsequent `connect_and_read` attempt.
