@@ -763,14 +763,6 @@ fn begin_connect(port: &str, baud: u32, tx: &mpsc::UnboundedSender<event::Messag
     let port_name = port.to_owned();
     let tx_task = tx.clone();
     drop(tokio::task::spawn_blocking(move || {
-        let probe = flash::probe_device_info(&port_name, baud);
-        let _ = tx_task.send(event::Message::DeviceInfo(probe));
-        // espflash's HardReset leaves DTR asserted (BOOT/IO0 low), causing the
-        // chip to re-enter ROM bootloader mode. Drive DTR low explicitly before
-        // releasing EN so the chip runs firmware.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        serial::reset_to_run(&port_name, baud);
-        std::thread::sleep(std::time::Duration::from_millis(500));
         serial::Port::new(&port_name, baud)
             .connect_and_read(&tx_task, &src_rx, src_tx);
     }));

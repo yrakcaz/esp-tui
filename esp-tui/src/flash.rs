@@ -215,32 +215,6 @@ fn collect_device_info(flasher: &mut Flasher) -> anyhow::Result<DeviceInfo> {
     ))
 }
 
-/// Probes the device for board information.
-///
-/// Opens the serial port via the espflash ROM protocol, reads the chip type,
-/// flash size, and MAC address, then releases the port.
-///
-/// # Arguments
-///
-/// * `port_name` - System port name (e.g. `/dev/ttyUSB0`).
-/// * `baud` - Baud rate to use when opening the port.
-///
-/// # Returns
-///
-/// A [`DeviceInfo`] with chip, flash size, and MAC address populated.
-/// The `partitions` field is always empty in the current implementation.
-///
-/// # Errors
-///
-/// Returns an error if the port cannot be opened or the ROM protocol fails.
-pub(crate) fn probe_device_info(
-    port_name: &str,
-    baud: u32,
-) -> anyhow::Result<DeviceInfo> {
-    let mut flasher = open_flasher(port_name, baud, false)?;
-    collect_device_info(&mut flasher)
-}
-
 /// Flashes an ELF firmware image to the connected device.
 ///
 /// Reads the ELF file, opens the port via espflash, and calls
