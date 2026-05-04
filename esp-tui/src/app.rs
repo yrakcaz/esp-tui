@@ -925,6 +925,7 @@ fn do_flash(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
         let elf_path = app.elf_path().unwrap().to_owned();
         app.shutdown_source();
         app.set_flash_state(flash::State::Flashing {
+            addr: 0,
             current: 0,
             total: 0,
         });
@@ -1109,8 +1110,16 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
             event::Message::PortsDetected { current, previous } => {
                 handle_ports_detected(&mut app, current, &previous, &tx);
             }
-            event::Message::FlashProgress { current, total } => {
-                app.set_flash_state(flash::State::Flashing { current, total });
+            event::Message::FlashProgress {
+                addr,
+                current,
+                total,
+            } => {
+                app.set_flash_state(flash::State::Flashing {
+                    addr,
+                    current,
+                    total,
+                });
             }
             event::Message::FlashDone(result) => {
                 app.set_flash_state(flash::State::Idle);
@@ -1831,6 +1840,7 @@ mod tests {
     fn handle_ports_detected_is_noop_while_flashing() {
         let mut app = App::new(None);
         app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
             current: 0,
             total: 0,
         });
@@ -2050,6 +2060,7 @@ mod tests {
         std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
         let mut app = App::new(Some("COM1".into()));
         app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
             current: 0,
             total: 0,
         });
@@ -2144,6 +2155,7 @@ mod tests {
         let mut app = App::new(None);
         assert!(!app.is_flashing());
         app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
             current: 0,
             total: 100,
         });
@@ -2166,6 +2178,7 @@ mod tests {
     fn handle_action_erase_prompt_while_flashing_sets_status() {
         let mut app = App::new(Some("COM1".into()));
         app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
             current: 0,
             total: 0,
         });

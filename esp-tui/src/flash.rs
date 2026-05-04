@@ -15,7 +15,11 @@ pub(crate) enum State {
     /// No flash operation in progress.
     Idle,
     /// A flash operation is in progress.
-    Flashing { current: usize, total: usize },
+    Flashing {
+        addr: u32,
+        current: usize,
+        total: usize,
+    },
     /// An erase operation is in progress.
     Erasing,
 }
@@ -141,17 +145,24 @@ impl PartitionEntry {
 
 struct TuiProgress {
     tx: UnboundedSender<Message>,
+    addr: u32,
     total: usize,
 }
 
 impl ProgressCallbacks for TuiProgress {
-    fn init(&mut self, _addr: u32, total: usize) {
+    fn init(&mut self, addr: u32, total: usize) {
+        self.addr = addr;
         self.total = total;
-        let _ = self.tx.send(Message::FlashProgress { current: 0, total });
+        let _ = self.tx.send(Message::FlashProgress {
+            addr,
+            current: 0,
+            total,
+        });
     }
 
     fn update(&mut self, current: usize) {
         let _ = self.tx.send(Message::FlashProgress {
+            addr: self.addr,
             current,
             total: self.total,
         });
@@ -159,6 +170,7 @@ impl ProgressCallbacks for TuiProgress {
 
     fn finish(&mut self) {
         let _ = self.tx.send(Message::FlashProgress {
+            addr: self.addr,
             current: self.total,
             total: self.total,
         });
@@ -258,7 +270,11 @@ pub(crate) fn flash_elf(
         .build()
         .context("failed to build flash data")?;
 
-    let mut progress = TuiProgress { tx, total: 0 };
+    let mut progress = TuiProgress {
+        tx,
+        addr: 0,
+        total: 0,
+    };
 
     flasher
         .load_elf_to_flash(&elf_data, flash_data, Some(&mut progress), xtal_freq)
@@ -291,13 +307,18 @@ mod tests {
     #[test]
     fn tui_progress_sends_flash_progress_messages() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut progress = TuiProgress { tx, total: 0 };
+        let mut progress = TuiProgress {
+            tx,
+            addr: 0,
+            total: 0,
+        };
 
         progress.init(0x1000, 4096);
         let msg = rx.try_recv().unwrap();
         assert!(matches!(
             msg,
             Message::FlashProgress {
+                addr: 0x1000,
                 current: 0,
                 total: 4096
             }
@@ -308,6 +329,7 @@ mod tests {
         assert!(matches!(
             msg,
             Message::FlashProgress {
+                addr: 0x1000,
                 current: 1024,
                 total: 4096
             }
@@ -318,6 +340,7 @@ mod tests {
         assert!(matches!(
             msg,
             Message::FlashProgress {
+                addr: 0x1000,
                 current: 4096,
                 total: 4096
             }

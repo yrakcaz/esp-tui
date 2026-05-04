@@ -235,14 +235,18 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(block, area);
 
     match app.flash_state() {
-        flash::State::Flashing { current, total } => {
+        flash::State::Flashing {
+            addr,
+            current,
+            total,
+        } => {
             #[allow(clippy::cast_precision_loss)]
             let ratio = if *total == 0 {
                 0.0_f64
             } else {
                 *current as f64 / *total as f64
             };
-            let label = format!("{:.0}%", ratio * 100.0);
+            let label = format!("Writing 0x{addr:08x}  {:.0}%", ratio * 100.0);
             let gauge = Gauge::default()
                 .gauge_style(Style::default().fg(Color::Green))
                 .ratio(ratio)
@@ -618,6 +622,7 @@ mod tests {
     fn draw_with_flash_state_flashing_does_not_panic() {
         let mut app = App::new(Some("COM1".into()));
         app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0x1000,
             current: 512,
             total: 1024,
         });

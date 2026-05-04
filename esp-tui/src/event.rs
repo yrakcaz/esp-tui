@@ -25,9 +25,13 @@ pub(crate) enum Message {
         current: Vec<String>,
         previous: Vec<String>,
     },
-    /// Flash write progress; `current` and `total` are byte counts for the
-    /// current flash segment.
-    FlashProgress { current: usize, total: usize },
+    /// Flash write progress; `addr` is the segment base address, `current` and
+    /// `total` are byte counts for the current flash segment.
+    FlashProgress {
+        addr: u32,
+        current: usize,
+        total: usize,
+    },
     /// Flash operation completed; carries the result.
     FlashDone(anyhow::Result<()>),
     /// Device info probe completed; carries the result.
