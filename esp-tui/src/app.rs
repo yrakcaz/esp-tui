@@ -158,7 +158,7 @@ impl App {
         if self.erase_confirm {
             return match key.code {
                 KeyCode::Char('y') => Action::ConfirmErase,
-                KeyCode::Char('n' | 'q') | KeyCode::Esc => {
+                KeyCode::Char('n' | 'q' | 'e') | KeyCode::Esc => {
                     self.erase_confirm = false;
                     Action::None
                 }
@@ -1998,6 +1998,14 @@ mod tests {
         let mut app = App::new(None);
         app.open_erase_confirm();
         assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::None);
+        assert!(!app.is_erase_confirm_open());
+    }
+
+    #[test]
+    fn handle_key_erase_confirm_e_closes() {
+        let mut app = App::new(None);
+        app.open_erase_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Char('e'))), Action::None);
         assert!(!app.is_erase_confirm_open());
     }
 

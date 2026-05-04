@@ -318,7 +318,7 @@ fn render_erase_confirm_popup(frame: &mut Frame, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" confirm   "),
-            Span::styled("[N] / [Esc]", Style::default().fg(Color::DarkGray)),
+            Span::styled("[N] / [q/Esc]", Style::default().fg(Color::DarkGray)),
             Span::raw(" cancel"),
         ]),
     ];
