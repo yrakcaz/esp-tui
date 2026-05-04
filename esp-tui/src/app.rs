@@ -772,6 +772,25 @@ fn begin_connect(port: &str, baud: u32, tx: &mpsc::UnboundedSender<event::Messag
     }));
 }
 
+// After flash/erase the chip is already reset by espflash and device info was
+// collected during the operation. Probing again would re-enter the ROM
+// bootloader via DefaultReset, and espflash's HardReset does not explicitly
+// release the BOOT pin, which can leave the chip in bootloader mode and silent.
+// This function skips the probe and opens the serial reader directly.
+fn begin_reconnect(
+    port: &str,
+    baud: u32,
+    tx: &mpsc::UnboundedSender<event::Message>,
+) {
+    let (src_tx, src_rx) = watch::channel(false);
+    let port_name = port.to_owned();
+    let tx_task = tx.clone();
+    drop(tokio::task::spawn_blocking(move || {
+        serial::Port::new(&port_name, baud)
+            .connect_and_read(&tx_task, &src_rx, src_tx);
+    }));
+}
+
 fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
     port_arg.map_or_else(serial::detect_esp_ports, |p| Ok(vec![p]))
 }
@@ -1093,13 +1112,13 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
                     Ok(()) => {
                         app.set_status("Flash complete. Reconnecting...".into());
                         if let Some(port) = app.port_name().map(str::to_owned) {
-                            begin_connect(&port, baud, &tx);
+                            begin_reconnect(&port, baud, &tx);
                         }
                     }
                     Err(e) => {
                         app.set_status(format!("Flash failed: {e}"));
                         if let Some(port) = app.port_name().map(str::to_owned) {
-                            begin_connect(&port, baud, &tx);
+                            begin_reconnect(&port, baud, &tx);
                         }
                     }
                 }
@@ -1120,7 +1139,7 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
                     }
                 }
                 if let Some(port) = app.port_name().map(str::to_owned) {
-                    begin_connect(&port, baud, &tx);
+                    begin_reconnect(&port, baud, &tx);
                 }
             }
         }
