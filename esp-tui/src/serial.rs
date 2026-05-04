@@ -171,6 +171,30 @@ fn reset_via_handle(
     Ok(())
 }
 
+/// Pulses EN with BOOT (IO0) deasserted so the chip runs firmware rather than
+/// re-entering the ROM bootloader.
+///
+/// espflash's `HardReset` only pulses EN via RTS without clearing DTR, which
+/// leaves IO0/BOOT asserted and causes the chip to enter ROM bootloader mode
+/// on every espflash-initiated reset. This function drives DTR low first,
+/// mirroring what the interactive `r` key reset does.
+///
+/// Errors are swallowed; the caller discovers port availability through the
+/// subsequent `connect_and_read` attempt.
+///
+/// # Arguments
+///
+/// * `name` - System port name (e.g. `/dev/ttyUSB0`).
+/// * `baud` - Baud rate used to open the port.
+pub(crate) fn reset_to_run(name: &str, baud: u32) {
+    if let Ok(mut port) = serialport::new(name, baud)
+        .timeout(std::time::Duration::from_millis(100))
+        .open()
+    {
+        let _ = reset_via_handle(&mut port);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serialport::{SerialPortInfo, SerialPortType, UsbPortInfo};

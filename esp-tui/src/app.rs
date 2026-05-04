@@ -765,8 +765,12 @@ fn begin_connect(port: &str, baud: u32, tx: &mpsc::UnboundedSender<event::Messag
     drop(tokio::task::spawn_blocking(move || {
         let probe = flash::probe_device_info(&port_name, baud);
         let _ = tx_task.send(event::Message::DeviceInfo(probe));
-        // Let the OS release the file descriptor before opening for serial reads.
+        // espflash's HardReset leaves DTR asserted (BOOT/IO0 low), causing the
+        // chip to re-enter ROM bootloader mode. Drive DTR low explicitly before
+        // releasing EN so the chip runs firmware.
         std::thread::sleep(std::time::Duration::from_millis(50));
+        serial::reset_to_run(&port_name, baud);
+        std::thread::sleep(std::time::Duration::from_millis(500));
         serial::Port::new(&port_name, baud)
             .connect_and_read(&tx_task, &src_rx, src_tx);
     }));
@@ -774,9 +778,8 @@ fn begin_connect(port: &str, baud: u32, tx: &mpsc::UnboundedSender<event::Messag
 
 // After flash/erase the chip is already reset by espflash and device info was
 // collected during the operation. Probing again would re-enter the ROM
-// bootloader via DefaultReset, and espflash's HardReset does not explicitly
-// release the BOOT pin, which can leave the chip in bootloader mode and silent.
-// This function skips the probe and opens the serial reader directly.
+// bootloader, so this function skips the probe and goes straight to the
+// firmware-mode reset and serial reader.
 fn begin_reconnect(
     port: &str,
     baud: u32,
@@ -786,6 +789,11 @@ fn begin_reconnect(
     let port_name = port.to_owned();
     let tx_task = tx.clone();
     drop(tokio::task::spawn_blocking(move || {
+        // Wait for the chip to finish its espflash-initiated reset and for any
+        // USB re-enumeration to settle before asserting our own reset.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        serial::reset_to_run(&port_name, baud);
+        std::thread::sleep(std::time::Duration::from_millis(500));
         serial::Port::new(&port_name, baud)
             .connect_and_read(&tx_task, &src_rx, src_tx);
     }));
