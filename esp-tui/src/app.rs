@@ -910,8 +910,14 @@ fn confirm_elf_path(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
 }
 
 fn start_flash(app: &mut App, _tx: &mpsc::UnboundedSender<event::Message>) {
-    let prefill = app.elf_path().map(Path::to_path_buf);
-    app.open_elf_selector(prefill.as_deref());
+    if app.port_name().is_none() {
+        app.set_status("No port connected.".into());
+    } else if app.is_flashing() {
+        app.set_status("Operation already in progress.".into());
+    } else {
+        let prefill = app.elf_path().map(Path::to_path_buf);
+        app.open_elf_selector(prefill.as_deref());
+    }
 }
 
 fn do_flash(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
@@ -963,19 +969,27 @@ fn handle_action(
         _ if app.is_demo() => {
             app.set_status("Not available in demo mode.".into());
         }
-        Action::ResetDevice => match app.port_cmd_tx() {
-            Some(cmd_tx) => {
-                if cmd_tx.send(serial::PortCommand::Reset).is_err() {
-                    app.set_status("Reset failed: port disconnected.".into());
-                } else {
-                    app.set_status("Reset sent.".into());
+        Action::ResetDevice => {
+            if app.is_flashing() {
+                app.set_status("Operation already in progress.".into());
+            } else {
+                match app.port_cmd_tx() {
+                    Some(cmd_tx) => {
+                        if cmd_tx.send(serial::PortCommand::Reset).is_err() {
+                            app.set_status(
+                                "Reset failed: port disconnected.".into(),
+                            );
+                        } else {
+                            app.set_status("Reset sent.".into());
+                        }
+                    }
+                    None if app.port_name().is_some() => {
+                        app.set_status("Reset not supported.".into());
+                    }
+                    None => app.set_status("No port connected.".into()),
                 }
             }
-            None if app.port_name().is_some() => {
-                app.set_status("Reset not supported.".into());
-            }
-            None => app.set_status("No port connected.".into()),
-        },
+        }
         Action::ScanPorts => apply_scan(app, tx),
         Action::ConnectPort(port) => {
             app.set_status(format!("Connecting to {port}..."));
@@ -1884,6 +1898,26 @@ mod tests {
     }
 
     #[test]
+    fn handle_action_reset_while_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::ResetDevice, &make_tx());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+    }
+
+    #[test]
+    fn handle_action_reset_while_erasing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Erasing);
+        handle_action(&mut app, Action::ResetDevice, &make_tx());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+    }
+
+    #[test]
     fn handle_action_none_is_noop() {
         let mut app = App::new(None);
         handle_action(&mut app, Action::None, &make_tx());
@@ -2203,16 +2237,16 @@ mod tests {
     }
 
     #[test]
-    fn handle_action_flash_opens_selector_empty_when_no_elf() {
+    fn handle_action_flash_no_port_sets_status_and_does_not_open_selector() {
         let mut app = App::new(None);
         handle_action(&mut app, Action::Flash, &make_tx());
-        assert!(app.is_elf_selector_open());
-        assert_eq!(app.elf_selector().unwrap().value(), "");
+        assert!(!app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("No port connected."));
     }
 
     #[test]
     fn handle_action_flash_opens_selector_prefilled_when_elf_set() {
-        let mut app = App::new(None);
+        let mut app = App::new(Some("COM1".into()));
         app.set_elf_path(std::path::PathBuf::from("/tmp/firmware.elf"));
         handle_action(&mut app, Action::Flash, &make_tx());
         assert!(app.is_elf_selector_open());
@@ -2241,5 +2275,27 @@ mod tests {
         app.set_demo();
         handle_action(&mut app, Action::Flash, &make_tx());
         assert_eq!(app.status_msg(), Some("Not available in demo mode."));
+    }
+
+    #[test]
+    fn handle_action_flash_while_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert!(!app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+    }
+
+    #[test]
+    fn handle_action_flash_while_erasing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Erasing);
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert!(!app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
     }
 }

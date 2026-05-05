@@ -45,17 +45,11 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let elf_label: std::borrow::Cow<str> = app
-        .elf_path()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .map_or("none".into(), std::borrow::Cow::Borrowed);
-
     let port_label: std::borrow::Cow<str> = app
         .port_name()
         .map_or("none".into(), std::borrow::Cow::Borrowed);
 
-    let right_text = format!("ELF: {elf_label} | Port: {port_label}");
+    let right_text = format!("Port: {port_label}");
 
     let left = Line::from(vec![
         hint("[C]onnect"),
