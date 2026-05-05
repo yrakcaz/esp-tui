@@ -236,34 +236,49 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             current,
             total,
         } => {
-            #[allow(clippy::cast_precision_loss)]
-            let ratio = if *total == 0 {
-                0.0_f64
+            if let Some(msg) = app.status_msg() {
+                frame.render_widget(
+                    Paragraph::new(msg).style(Style::default().fg(Color::Yellow)),
+                    inner,
+                );
             } else {
-                *current as f64 / *total as f64
-            };
-            let addr_str = format!(" Writing at 0x{addr:08x}...");
-            let pct_str = format!("{:.0}%", ratio * 100.0);
-            let width = inner.width as usize;
-            // Build a label as wide as the gauge area so the gauge positions
-            // it at x=0; every character then goes through the gauge's own
-            // colour-inversion logic at the fill boundary for free.
-            let pct_start = (width / 2).saturating_sub(pct_str.len() / 2);
-            let mid = pct_start.saturating_sub(addr_str.len());
-            let right = width.saturating_sub(addr_str.len() + mid + pct_str.len());
-            let label = format!("{addr_str}{:mid$}{pct_str}{:right$}", "", "");
-            let gauge = Gauge::default()
-                .gauge_style(Style::default().fg(Color::Green))
-                .ratio(ratio)
-                .label(label);
-            frame.render_widget(gauge, inner);
+                #[allow(clippy::cast_precision_loss)]
+                let ratio = if *total == 0 {
+                    0.0_f64
+                } else {
+                    *current as f64 / *total as f64
+                };
+                let addr_str = format!(" Writing at 0x{addr:08x}...");
+                let pct_str = format!("{:.0}%", ratio * 100.0);
+                let width = inner.width as usize;
+                // Build a label as wide as the gauge area so the gauge positions
+                // it at x=0; every character then goes through the gauge's own
+                // colour-inversion logic at the fill boundary for free.
+                let pct_start = (width / 2).saturating_sub(pct_str.len() / 2);
+                let mid = pct_start.saturating_sub(addr_str.len());
+                let right =
+                    width.saturating_sub(addr_str.len() + mid + pct_str.len());
+                let label = format!("{addr_str}{:mid$}{pct_str}{:right$}", "", "");
+                let gauge = Gauge::default()
+                    .gauge_style(Style::default().fg(Color::Green))
+                    .ratio(ratio)
+                    .label(label);
+                frame.render_widget(gauge, inner);
+            }
         }
         flash::State::Erasing => {
-            frame.render_widget(
-                Paragraph::new("Erasing flash...")
-                    .style(Style::default().fg(Color::Yellow)),
-                inner,
-            );
+            if let Some(msg) = app.status_msg() {
+                frame.render_widget(
+                    Paragraph::new(msg).style(Style::default().fg(Color::Yellow)),
+                    inner,
+                );
+            } else {
+                frame.render_widget(
+                    Paragraph::new("Erasing flash...")
+                        .style(Style::default().fg(Color::Yellow)),
+                    inner,
+                );
+            }
         }
         flash::State::Idle => {
             let content = app.status_msg().unwrap_or("");
@@ -693,9 +708,29 @@ mod tests {
     }
 
     #[test]
+    fn draw_with_flash_state_flashing_and_status_overlay_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        app.set_status("Waiting for flash to complete...".into());
+        render(&app);
+    }
+
+    #[test]
     fn draw_with_flash_state_erasing_does_not_panic() {
         let mut app = App::new(Some("COM1".into()));
         app.set_flash_state(crate::flash::State::Erasing);
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_flash_state_erasing_and_status_overlay_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Erasing);
+        app.set_status("Operation already in progress.".into());
         render(&app);
     }
 
