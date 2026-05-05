@@ -178,7 +178,7 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw(info.flash_size().to_owned()),
             ]),
             Line::from(vec![
-                Span::styled("MAC:   ", Style::default().fg(Color::DarkGray)),
+                Span::styled("MAC: ", Style::default().fg(Color::DarkGray)),
                 Span::raw(info.mac_address().to_owned()),
             ]),
         ];
