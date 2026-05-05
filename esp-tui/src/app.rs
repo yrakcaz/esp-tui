@@ -65,9 +65,12 @@ pub(crate) enum Action {
     CloseElfSelector,
     /// Confirm the ELF path currently typed in the selector.
     ConfirmElfPath,
+    /// Open the quit confirmation prompt.
+    QuitPrompt,
 }
 
 /// Central application state.
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct App {
     log_buffer: VecDeque<log::Entry>,
     scroll: usize,
@@ -82,6 +85,7 @@ pub(crate) struct App {
     flash_state: flash::State,
     device_info: Option<flash::DeviceInfo>,
     erase_confirm: bool,
+    quit_confirm: bool,
     elf_path: Option<PathBuf>,
     elf_selector: Option<elf::Selector>,
     baud: u32,
@@ -114,6 +118,7 @@ impl App {
             flash_state: flash::State::Idle,
             device_info: None,
             erase_confirm: false,
+            quit_confirm: false,
             elf_path: None,
             elf_selector: None,
             baud: DEFAULT_BAUD,
@@ -153,6 +158,17 @@ impl App {
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Action {
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
             return Action::Quit;
+        }
+
+        if self.quit_confirm {
+            return match key.code {
+                KeyCode::Char('y') => Action::Quit,
+                KeyCode::Char('n' | 'q') | KeyCode::Esc => {
+                    self.close_quit_confirm();
+                    Action::None
+                }
+                _ => Action::None,
+            };
         }
 
         if self.erase_confirm {
@@ -335,7 +351,7 @@ impl App {
                 self.scroll = 0;
                 Action::None
             }
-            KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+            KeyCode::Char('q') | KeyCode::Esc => Action::QuitPrompt,
             KeyCode::Char('d') => Action::Disconnect,
             KeyCode::Char('r') => Action::ResetDevice,
             KeyCode::Char('f') => Action::Flash,
@@ -685,6 +701,26 @@ impl App {
         self.erase_confirm = false;
     }
 
+    /// Returns `true` if the quit confirm dialog is open, `false` otherwise.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the quit confirm dialog is open, `false` otherwise.
+    #[must_use]
+    pub(crate) fn is_quit_confirm_open(&self) -> bool {
+        self.quit_confirm
+    }
+
+    /// Opens the quit confirmation prompt.
+    pub(crate) fn open_quit_confirm(&mut self) {
+        self.quit_confirm = true;
+    }
+
+    /// Closes the quit confirmation prompt.
+    pub(crate) fn close_quit_confirm(&mut self) {
+        self.quit_confirm = false;
+    }
+
     /// Returns the currently selected ELF path, if any.
     ///
     /// # Returns
@@ -954,8 +990,11 @@ fn handle_action(
     match action {
         Action::None => {}
         Action::Quit => app.quit(),
+        Action::QuitPrompt => app.open_quit_confirm(),
         Action::Disconnect => {
-            if app.port_name().is_some() {
+            if app.is_flashing() {
+                app.set_status("Operation already in progress.".into());
+            } else if app.port_name().is_some() {
                 app.disconnect();
                 app.set_status("Disconnected.".into());
             } else {
@@ -992,9 +1031,13 @@ fn handle_action(
         }
         Action::ScanPorts => apply_scan(app, tx),
         Action::ConnectPort(port) => {
-            app.set_status(format!("Connecting to {port}..."));
-            app.set_port(port.clone());
-            begin_connect(&port, app.baud(), tx);
+            if app.is_flashing() {
+                app.set_status("Operation already in progress.".into());
+            } else {
+                app.set_status(format!("Connecting to {port}..."));
+                app.set_port(port.clone());
+                begin_connect(&port, app.baud(), tx);
+            }
         }
         Action::ErasePrompt => {
             if app.port_name().is_none() {
@@ -1441,9 +1484,9 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_q_quits() {
+    fn handle_key_q_opens_quit_confirm() {
         let mut app = App::new(None);
-        assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::Quit);
+        assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::QuitPrompt);
     }
 
     #[test]
@@ -1464,9 +1507,47 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_esc_quits_when_not_scrolled() {
+    fn handle_key_esc_opens_quit_confirm_when_not_scrolled() {
         let mut app = App::new(None);
-        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::Quit);
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::QuitPrompt);
+    }
+
+    #[test]
+    fn handle_key_quit_confirm_y_quits() {
+        let mut app = App::new(None);
+        app.open_quit_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Char('y'))), Action::Quit);
+    }
+
+    #[test]
+    fn handle_key_quit_confirm_n_closes() {
+        let mut app = App::new(None);
+        app.open_quit_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Char('n'))), Action::None);
+        assert!(!app.is_quit_confirm_open());
+    }
+
+    #[test]
+    fn handle_key_quit_confirm_q_closes() {
+        let mut app = App::new(None);
+        app.open_quit_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::None);
+        assert!(!app.is_quit_confirm_open());
+    }
+
+    #[test]
+    fn handle_key_quit_confirm_esc_closes() {
+        let mut app = App::new(None);
+        app.open_quit_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::None);
+        assert!(!app.is_quit_confirm_open());
+    }
+
+    #[test]
+    fn handle_key_ctrl_c_quits_with_quit_confirm_open() {
+        let mut app = App::new(None);
+        app.open_quit_confirm();
+        assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
     }
 
     #[test]
@@ -1888,6 +1969,32 @@ mod tests {
         let mut app = App::new(None);
         handle_action(&mut app, Action::Disconnect, &make_tx());
         assert_eq!(app.status_msg(), Some("Not connected."));
+    }
+
+    #[test]
+    fn handle_action_disconnect_while_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::Disconnect, &make_tx());
+        assert!(app.port_name().is_some());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+    }
+
+    #[test]
+    fn handle_action_connect_port_while_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::ConnectPort("COM2".into()), &make_tx());
+        assert_eq!(app.port_name(), Some("COM1"));
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
     }
 
     #[test]

@@ -33,7 +33,9 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     render_inspector(frame, main[1], app);
     render_status_bar(frame, outer[2], app);
 
-    if app.is_erase_confirm_open() {
+    if app.is_quit_confirm_open() {
+        render_quit_confirm_popup(frame, frame.area(), app);
+    } else if app.is_erase_confirm_open() {
         render_erase_confirm_popup(frame, frame.area());
     } else if app.is_elf_selector_open() {
         render_elf_selector_popup(frame, frame.area(), app);
@@ -283,6 +285,45 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     Rect::new(x, y, width.min(area.width), height.min(area.height))
+}
+
+fn render_quit_confirm_popup(frame: &mut Frame, area: Rect, app: &App) {
+    let popup = centered_rect(52, 7, area);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" Confirm Quit ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let warning = if app.is_flashing() {
+        "Flash in progress. Quitting may corrupt firmware."
+    } else {
+        "Are you sure you want to quit?"
+    };
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            warning,
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "[Y]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" confirm   "),
+            Span::styled("[N] / [q/Esc]", Style::default().fg(Color::DarkGray)),
+            Span::raw(" cancel"),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(text), inner);
 }
 
 fn render_erase_confirm_popup(frame: &mut Frame, area: Rect) {
@@ -596,6 +637,25 @@ mod tests {
     fn draw_with_erase_confirm_open_does_not_panic() {
         let mut app = App::new(Some("COM1".into()));
         app.open_erase_confirm();
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_quit_confirm_open_does_not_panic() {
+        let mut app = App::new(None);
+        app.open_quit_confirm();
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_quit_confirm_open_while_flashing_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        app.open_quit_confirm();
         render(&app);
     }
 
