@@ -375,6 +375,42 @@ fn render_erase_confirm_popup(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(text), inner);
 }
 
+fn render_elf_input(frame: &mut Frame, area: Rect, sel: &crate::elf::Selector) {
+    let input = sel.value();
+    let cursor_byte = sel.cursor_pos();
+    let before = &input[..cursor_byte];
+    let rest = &input[cursor_byte..];
+    let (cursor_str, after) = if let Some(c) = rest.chars().next() {
+        let char_len = c.len_utf8();
+        (&rest[..char_len], &rest[char_len..])
+    } else {
+        (" ", "")
+    };
+
+    let cursor_chars = before.chars().count();
+    let visible_width = area.width as usize;
+    let scroll = cursor_chars.saturating_sub(visible_width.saturating_sub(1));
+    let display_before = before
+        .char_indices()
+        .nth(scroll)
+        .map_or("", |(i, _)| &before[i..]);
+
+    let input_line = Line::from(vec![
+        Span::raw(display_before),
+        Span::styled(
+            cursor_str,
+            Style::default().add_modifier(Modifier::REVERSED),
+        ),
+        Span::raw(after),
+    ]);
+    frame.render_widget(Paragraph::new(input_line), area);
+
+    let display_cursor_col = u16::try_from(cursor_chars - scroll).unwrap_or(0);
+    if display_cursor_col < area.width {
+        frame.set_cursor_position((area.x + display_cursor_col, area.y));
+    }
+}
+
 fn render_elf_selector_popup(frame: &mut Frame, area: Rect, app: &App) {
     let Some(sel) = app.elf_selector() else {
         return;
@@ -410,31 +446,7 @@ fn render_elf_selector_popup(frame: &mut Frame, area: Rect, app: &App) {
         height: 1,
     };
 
-    let input = sel.value();
-    let cursor_byte = sel.cursor_pos();
-    let before = &input[..cursor_byte];
-    let rest = &input[cursor_byte..];
-    let (cursor_str, after) = if let Some(c) = rest.chars().next() {
-        let char_len = c.len_utf8();
-        (&rest[..char_len], &rest[char_len..])
-    } else {
-        (" ", "")
-    };
-
-    let input_line = Line::from(vec![
-        Span::raw(before),
-        Span::styled(
-            cursor_str,
-            Style::default().add_modifier(Modifier::REVERSED),
-        ),
-        Span::raw(after),
-    ]);
-    frame.render_widget(Paragraph::new(input_line), input_area);
-
-    let cursor_col = u16::try_from(before.chars().count()).unwrap_or(0);
-    if cursor_col < inner.width {
-        frame.set_cursor_position((input_area.x + cursor_col, input_area.y));
-    }
+    render_elf_input(frame, input_area, sel);
 
     if inner.height <= 1 {
         return;
