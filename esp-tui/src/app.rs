@@ -976,7 +976,7 @@ fn do_flash(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
             total: 0,
         });
         let tx_task = tx.clone();
-        drop(tokio::task::spawn_blocking(move || {
+        drop(std::thread::spawn(move || {
             // The serial reader has a 100ms read timeout; wait long enough for
             // it to observe the shutdown signal and release the port fd.
             std::thread::sleep(std::time::Duration::from_millis(200));
@@ -1065,7 +1065,7 @@ fn handle_action(
                 app.shutdown_source();
                 app.set_flash_state(flash::State::Erasing);
                 let tx_task = tx.clone();
-                drop(tokio::task::spawn_blocking(move || {
+                drop(std::thread::spawn(move || {
                     // The serial reader has a 100ms read timeout; wait long enough for
                     // it to observe the shutdown signal and release the port fd.
                     std::thread::sleep(std::time::Duration::from_millis(200));
