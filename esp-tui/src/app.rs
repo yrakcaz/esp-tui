@@ -86,7 +86,6 @@ pub(crate) struct App {
     device_info: Option<flash::DeviceInfo>,
     erase_confirm: bool,
     quit_confirm: bool,
-    pending_quit: bool,
     elf_path: Option<PathBuf>,
     elf_selector: Option<elf::Selector>,
     baud: u32,
@@ -120,7 +119,6 @@ impl App {
             device_info: None,
             erase_confirm: false,
             quit_confirm: false,
-            pending_quit: false,
             elf_path: None,
             elf_selector: None,
             baud: DEFAULT_BAUD,
@@ -160,10 +158,6 @@ impl App {
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Action {
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
             return Action::Quit;
-        }
-
-        if self.pending_quit {
-            return Action::None;
         }
 
         if self.quit_confirm {
@@ -727,23 +721,6 @@ impl App {
         self.quit_confirm = false;
     }
 
-    /// Returns `true` if a quit is pending completion of an in-progress operation.
-    ///
-    /// # Returns
-    ///
-    /// `true` if quit is pending, `false` otherwise.
-    #[must_use]
-    pub(crate) fn is_pending_quit(&self) -> bool {
-        self.pending_quit
-    }
-
-    /// Marks quit as pending: the application will exit once the current
-    /// flash or erase operation completes.
-    pub(crate) fn set_pending_quit(&mut self) {
-        self.pending_quit = true;
-        self.quit_confirm = false;
-    }
-
     /// Returns the currently selected ELF path, if any.
     ///
     /// # Returns
@@ -1016,15 +993,14 @@ fn handle_action(
 ) {
     match action {
         Action::None => {}
-        Action::Quit => {
+        Action::Quit => app.quit(),
+        Action::QuitPrompt => {
             if app.is_flashing() {
-                app.set_pending_quit();
-                app.set_status("Waiting for flash to complete...".into());
+                app.set_status("Operation already in progress.".into());
             } else {
-                app.quit();
+                app.open_quit_confirm();
             }
         }
-        Action::QuitPrompt => app.open_quit_confirm(),
         Action::Disconnect => {
             if app.is_flashing() {
                 app.set_status("Operation already in progress.".into());
@@ -1214,21 +1190,17 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
             }
             event::Message::FlashDone(result) => {
                 app.set_flash_state(flash::State::Idle);
-                if app.is_pending_quit() {
-                    app.quit();
-                } else {
-                    match result {
-                        Ok(()) => {
-                            app.set_status("Flash complete. Reconnecting...".into());
-                            if let Some(port) = app.port_name().map(str::to_owned) {
-                                begin_reconnect(&port, baud, &tx);
-                            }
+                match result {
+                    Ok(()) => {
+                        app.set_status("Flash complete. Reconnecting...".into());
+                        if let Some(port) = app.port_name().map(str::to_owned) {
+                            begin_reconnect(&port, baud, &tx);
                         }
-                        Err(e) => {
-                            app.set_status(format!("Flash failed: {e}"));
-                            if let Some(port) = app.port_name().map(str::to_owned) {
-                                begin_reconnect(&port, baud, &tx);
-                            }
+                    }
+                    Err(e) => {
+                        app.set_status(format!("Flash failed: {e}"));
+                        if let Some(port) = app.port_name().map(str::to_owned) {
+                            begin_reconnect(&port, baud, &tx);
                         }
                     }
                 }
@@ -1240,20 +1212,16 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
             }
             event::Message::EraseDone(result) => {
                 app.set_flash_state(flash::State::Idle);
-                if app.is_pending_quit() {
-                    app.quit();
-                } else {
-                    match result {
-                        Ok(()) => {
-                            app.set_status("Erase complete.".into());
-                        }
-                        Err(e) => {
-                            app.set_status(format!("Erase failed: {e}"));
-                        }
+                match result {
+                    Ok(()) => {
+                        app.set_status("Erase complete.".into());
                     }
-                    if let Some(port) = app.port_name().map(str::to_owned) {
-                        begin_reconnect(&port, baud, &tx);
+                    Err(e) => {
+                        app.set_status(format!("Erase failed: {e}"));
                     }
+                }
+                if let Some(port) = app.port_name().map(str::to_owned) {
+                    begin_reconnect(&port, baud, &tx);
                 }
             }
         }
@@ -1999,7 +1967,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_action_quit_while_flashing_sets_pending() {
+    fn handle_action_quit_while_flashing_quits_immediately() {
         let mut app = App::new(Some("COM1".into()));
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
@@ -2007,27 +1975,29 @@ mod tests {
             total: 0,
         });
         handle_action(&mut app, Action::Quit, &make_tx());
-        assert!(app.is_running());
-        assert!(app.is_pending_quit());
-        assert!(!app.is_quit_confirm_open());
+        assert!(!app.is_running());
     }
 
     #[test]
-    fn handle_action_quit_while_erasing_sets_pending() {
+    fn handle_action_quit_prompt_while_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::QuitPrompt, &make_tx());
+        assert!(!app.is_quit_confirm_open());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+    }
+
+    #[test]
+    fn handle_action_quit_prompt_while_erasing_sets_status() {
         let mut app = App::new(Some("COM1".into()));
         app.set_flash_state(crate::flash::State::Erasing);
-        handle_action(&mut app, Action::Quit, &make_tx());
-        assert!(app.is_running());
-        assert!(app.is_pending_quit());
-    }
-
-    #[test]
-    fn pending_quit_blocks_further_key_input() {
-        let mut app = App::new(None);
-        app.set_pending_quit();
-        assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::None);
-        assert_eq!(app.handle_key(key(KeyCode::Char('d'))), Action::None);
-        assert_eq!(app.handle_key(key(KeyCode::Char('f'))), Action::None);
+        handle_action(&mut app, Action::QuitPrompt, &make_tx());
+        assert!(!app.is_quit_confirm_open());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
     }
 
     #[test]
