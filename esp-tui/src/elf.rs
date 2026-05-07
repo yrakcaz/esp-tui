@@ -76,6 +76,7 @@ impl Selector {
             self.cursor = char_start;
             self.completions.clear();
             self.completion_cursor = 0;
+            self.completion_parent.clear();
         }
     }
 
@@ -114,6 +115,7 @@ impl Selector {
             self.input.drain(self.cursor..self.cursor + ch.len_utf8());
             self.completions.clear();
             self.completion_cursor = 0;
+            self.completion_parent.clear();
         }
     }
 
@@ -138,17 +140,16 @@ impl Selector {
     /// Deletes the word immediately before the cursor, stopping at `/`
     /// boundaries, and clears completions.
     pub(crate) fn kill_word_back(&mut self) {
-        if self.cursor == 0 {
-            return;
+        if self.cursor != 0 {
+            let before = &self.input[..self.cursor];
+            let trimmed = before.trim_end_matches('/');
+            let word_start = trimmed.rfind('/').map_or(0, |i| i + 1);
+            self.input.drain(word_start..self.cursor);
+            self.cursor = word_start;
+            self.completions.clear();
+            self.completion_cursor = 0;
+            self.completion_parent.clear();
         }
-        let before = &self.input[..self.cursor];
-        let trimmed = before.trim_end_matches('/');
-        let word_start = trimmed.rfind('/').map_or(0, |i| i + 1);
-        self.input.drain(word_start..self.cursor);
-        self.cursor = word_start;
-        self.completions.clear();
-        self.completion_cursor = 0;
-        self.completion_parent.clear();
     }
 
     /// Moves the text cursor left or right, clamped to the input bounds.
@@ -211,46 +212,40 @@ impl Selector {
             (".", self.input.as_str())
         };
 
-        let Ok(entries) = std::fs::read_dir(parent_str) else {
-            return;
-        };
-
-        let mut completions: Vec<String> = entries
-            .flatten()
-            .filter_map(|entry| {
-                let name = entry.file_name();
-                let name_str = name.to_str()?;
-                if !name_str.starts_with(prefix) {
-                    return None;
-                }
-                let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
-                if !is_dir && !is_elf_file(&entry.path()) {
-                    return None;
-                }
-                let display = if is_dir {
-                    format!("{name_str}/")
-                } else {
-                    name_str.to_owned()
-                };
-                Some(display)
-            })
-            .collect();
-        completions.sort();
-        self.completions = completions;
-        self.completion_cursor = 0;
-        self.completion_parent = if parent_str == "." {
-            String::new()
-        } else {
-            parent_str.to_owned()
-        };
+        if let Ok(entries) = std::fs::read_dir(parent_str) {
+            let mut completions: Vec<String> = entries
+                .flatten()
+                .filter_map(|entry| {
+                    let name = entry.file_name();
+                    let name_str = name.to_str()?;
+                    let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+                    (name_str.starts_with(prefix)
+                        && (is_dir || is_elf_file(&entry.path())))
+                    .then(|| {
+                        if is_dir {
+                            format!("{name_str}/")
+                        } else {
+                            name_str.to_owned()
+                        }
+                    })
+                })
+                .collect();
+            completions.sort();
+            self.completions = completions;
+            self.completion_cursor = 0;
+            self.completion_parent = if parent_str == "." {
+                String::new()
+            } else {
+                parent_str.to_owned()
+            };
+        }
     }
 
     fn apply_highlighted_completion(&mut self) {
-        let Some(completion) = self.completions.get(self.completion_cursor) else {
-            return;
-        };
-        self.input = format!("{}{completion}", self.completion_parent);
-        self.cursor = self.input.len();
+        if let Some(completion) = self.completions.get(self.completion_cursor) {
+            self.input = format!("{}{completion}", self.completion_parent);
+            self.cursor = self.input.len();
+        }
     }
 
     /// Navigates the completion list cursor by `delta`, clamped to bounds,
@@ -260,40 +255,37 @@ impl Selector {
     ///
     /// * `delta` - Negative to move up, positive to move down.
     pub(crate) fn move_completion(&mut self, delta: isize) {
-        if self.completions.is_empty() {
-            return;
+        if !self.completions.is_empty() {
+            self.completion_cursor = self
+                .completion_cursor
+                .saturating_add_signed(delta)
+                .min(self.completions.len() - 1);
+            self.apply_highlighted_completion();
         }
-        self.completion_cursor = self
-            .completion_cursor
-            .saturating_add_signed(delta)
-            .min(self.completions.len() - 1);
-        self.apply_highlighted_completion();
     }
 
     /// Advances the completion cursor by one, wrapping around to the first
     /// entry after the last, and writes the newly highlighted completion into
     /// the input. No-op when the list is empty.
     pub(crate) fn cycle_completion(&mut self) {
-        if self.completions.is_empty() {
-            return;
+        if !self.completions.is_empty() {
+            self.completion_cursor =
+                (self.completion_cursor + 1) % self.completions.len();
+            self.apply_highlighted_completion();
         }
-        self.completion_cursor =
-            (self.completion_cursor + 1) % self.completions.len();
-        self.apply_highlighted_completion();
     }
 
     /// Moves the completion cursor back by one, wrapping to the last entry,
     /// and writes the newly highlighted completion into the input. No-op
     /// when the list is empty.
     pub(crate) fn cycle_completion_back(&mut self) {
-        if self.completions.is_empty() {
-            return;
+        if !self.completions.is_empty() {
+            self.completion_cursor = self
+                .completion_cursor
+                .checked_sub(1)
+                .unwrap_or(self.completions.len() - 1);
+            self.apply_highlighted_completion();
         }
-        self.completion_cursor = self
-            .completion_cursor
-            .checked_sub(1)
-            .unwrap_or(self.completions.len() - 1);
-        self.apply_highlighted_completion();
     }
 
     /// Dismisses the completion menu, keeping the currently written input.
@@ -301,13 +293,12 @@ impl Selector {
     /// If the input has not yet been updated by live cycling, writes the
     /// highlighted entry first. No-op when the list is empty.
     pub(crate) fn accept_completion(&mut self) {
-        if self.completions.is_empty() {
-            return;
+        if !self.completions.is_empty() {
+            self.apply_highlighted_completion();
+            self.completions.clear();
+            self.completion_cursor = 0;
+            self.completion_parent.clear();
         }
-        self.apply_highlighted_completion();
-        self.completions.clear();
-        self.completion_cursor = 0;
-        self.completion_parent.clear();
     }
 
     /// Performs zsh-style menu tab completion.
@@ -343,26 +334,25 @@ impl Selector {
     }
 
     fn extend_to_common_prefix(&mut self) {
-        let Some(first) = self.completions.first() else {
-            return;
-        };
-        let prefix = self
-            .completions
-            .iter()
-            .skip(1)
-            .fold(first.as_str(), |acc, s| common_prefix(acc, s))
-            .to_owned();
+        if let Some(first) = self.completions.first() {
+            let prefix = self
+                .completions
+                .iter()
+                .skip(1)
+                .fold(first.as_str(), |acc, s| common_prefix(acc, s))
+                .to_owned();
 
-        let parent_end = if self.input.ends_with('/') {
-            self.input.len()
-        } else {
-            self.input.rfind('/').map_or(0, |i| i + 1)
-        };
+            let parent_end = if self.input.ends_with('/') {
+                self.input.len()
+            } else {
+                self.input.rfind('/').map_or(0, |i| i + 1)
+            };
 
-        let new_input = format!("{}{prefix}", &self.input[..parent_end]);
-        if new_input.len() > self.input.len() {
-            self.input = new_input;
-            self.cursor = self.input.len();
+            let new_input = format!("{}{prefix}", &self.input[..parent_end]);
+            if new_input.len() > self.input.len() {
+                self.input = new_input;
+                self.cursor = self.input.len();
+            }
         }
     }
 

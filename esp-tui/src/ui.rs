@@ -242,11 +242,12 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                     inner,
                 );
             } else {
-                #[allow(clippy::cast_precision_loss)]
                 let ratio = if *total == 0 {
                     0.0_f64
                 } else {
-                    *current as f64 / *total as f64
+                    let cur = f64::from(u32::try_from(*current).unwrap_or(u32::MAX));
+                    let tot = f64::from(u32::try_from(*total).unwrap_or(u32::MAX));
+                    cur / tot
                 };
                 let addr_str = format!(" Writing at 0x{addr:08x}...");
                 let pct_str = format!("{:.0}%", ratio * 100.0);
@@ -412,90 +413,84 @@ fn render_elf_input(frame: &mut Frame, area: Rect, sel: &crate::elf::Selector) {
 }
 
 fn render_elf_selector_popup(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(sel) = app.elf_selector() else {
-        return;
-    };
-
-    let completions = sel.completions();
-    let comp_count = u16::try_from(completions.len()).unwrap_or(u16::MAX);
-    let height = if completions.is_empty() {
-        5u16
-    } else {
-        (4 + comp_count).min(area.height)
-    };
-    let width = 64u16.min(area.width);
-    let popup = centered_rect(width, height, area);
-
-    frame.render_widget(Clear, popup);
-
-    let block = Block::default()
-        .title(" ELF Path ")
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded);
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-
-    if inner.height == 0 {
-        return;
-    }
-
-    let input_area = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
-        height: 1,
-    };
-
-    render_elf_input(frame, input_area, sel);
-
-    if inner.height <= 1 {
-        return;
-    }
-
-    let hint_area = Rect {
-        x: inner.x,
-        y: inner.y + inner.height - 1,
-        width: inner.width,
-        height: 1,
-    };
-
-    if completions.is_empty() {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "[Tab] complete  [Enter] confirm  [Esc] cancel",
-                Style::default().fg(Color::DarkGray),
-            )),
-            hint_area,
-        );
-    } else {
-        let comp_area = Rect {
-            x: inner.x,
-            y: inner.y + 1,
-            width: inner.width,
-            height: inner.height.saturating_sub(2),
+    if let Some(sel) = app.elf_selector() {
+        let completions = sel.completions();
+        let comp_count = u16::try_from(completions.len()).unwrap_or(u16::MAX);
+        let height = if completions.is_empty() {
+            5u16
+        } else {
+            (4 + comp_count).min(area.height)
         };
+        let width = 64u16.min(area.width);
+        let popup = centered_rect(width, height, area);
 
-        let items: Vec<ListItem> = completions
-            .iter()
-            .enumerate()
-            .map(|(i, name)| {
-                let style = if i == sel.completion_cursor() {
-                    Style::default().add_modifier(Modifier::REVERSED)
-                } else {
-                    Style::default()
+        frame.render_widget(Clear, popup);
+
+        let block = Block::default()
+            .title(" ELF Path ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded);
+        let inner = block.inner(popup);
+        frame.render_widget(block, popup);
+
+        if inner.height > 0 {
+            let input_area = Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: 1,
+            };
+
+            render_elf_input(frame, input_area, sel);
+
+            if inner.height > 1 {
+                let hint_area = Rect {
+                    x: inner.x,
+                    y: inner.y + inner.height - 1,
+                    width: inner.width,
+                    height: 1,
                 };
-                ListItem::new(format!("  {name}")).style(style)
-            })
-            .collect();
 
-        frame.render_widget(List::new(items), comp_area);
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "[Tab] cycle  [↑/↓] navigate  [Enter] select  [Esc] cancel",
-                Style::default().fg(Color::DarkGray),
-            )),
-            hint_area,
-        );
+                if completions.is_empty() {
+                    frame.render_widget(
+                        Paragraph::new(Span::styled(
+                            "[Tab] complete  [Enter] confirm  [Esc] cancel",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                        hint_area,
+                    );
+                } else {
+                    let comp_area = Rect {
+                        x: inner.x,
+                        y: inner.y + 1,
+                        width: inner.width,
+                        height: inner.height.saturating_sub(2),
+                    };
+
+                    let items: Vec<ListItem> = completions
+                        .iter()
+                        .enumerate()
+                        .map(|(i, name)| {
+                            let style = if i == sel.completion_cursor() {
+                                Style::default().add_modifier(Modifier::REVERSED)
+                            } else {
+                                Style::default()
+                            };
+                            ListItem::new(format!("  {name}")).style(style)
+                        })
+                        .collect();
+
+                    frame.render_widget(List::new(items), comp_area);
+                    frame.render_widget(
+                        Paragraph::new(Span::styled(
+                            "[Tab] cycle  [↑/↓] navigate  [Enter] select  [Esc] cancel",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                        hint_area,
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -699,9 +694,18 @@ mod tests {
         fn key(code: KeyCode) -> KeyEvent {
             KeyEvent::new(code, KeyModifiers::empty())
         }
+        let dir = std::env::temp_dir().join(format!(
+            "esp-tui-ui-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos())
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("fw_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        std::fs::write(dir.join("fw_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
         let mut app = App::new(None);
         app.open_elf_selector(None);
-        for ch in "/tmp/".chars() {
+        for ch in format!("{}/fw", dir.display()).chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
         app.handle_key(key(KeyCode::Tab));

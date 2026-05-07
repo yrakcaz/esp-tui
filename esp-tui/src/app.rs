@@ -65,8 +65,13 @@ pub(crate) enum Action {
     QuitPrompt,
 }
 
+enum ConfirmDialog {
+    None,
+    Quit,
+    Erase,
+}
+
 /// Central application state.
-#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct App {
     log_buffer: VecDeque<log::Entry>,
     scroll: usize,
@@ -80,8 +85,7 @@ pub(crate) struct App {
     demo: bool,
     flash_state: flash::State,
     device_info: Option<flash::DeviceInfo>,
-    erase_confirm: bool,
-    quit_confirm: bool,
+    confirm: ConfirmDialog,
     elf_path: Option<PathBuf>,
     elf_selector: Option<elf::Selector>,
     baud: u32,
@@ -113,8 +117,7 @@ impl App {
             demo: false,
             flash_state: flash::State::Idle,
             device_info: None,
-            erase_confirm: false,
-            quit_confirm: false,
+            confirm: ConfirmDialog::None,
             elf_path: None,
             elf_selector: None,
             baud: DEFAULT_BAUD,
@@ -150,204 +153,208 @@ impl App {
     /// # Returns
     ///
     /// An [`Action`] indicating what I/O the event loop should perform.
-    #[allow(clippy::too_many_lines)]
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Action {
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
-            return Action::Quit;
+            Action::Quit
+        } else if matches!(self.confirm, ConfirmDialog::Quit) {
+            self.handle_key_quit_confirm(key)
+        } else if matches!(self.confirm, ConfirmDialog::Erase) {
+            self.handle_key_erase_confirm(key)
+        } else if self.elf_selector.is_some() {
+            self.handle_key_elf_selector(key)
+        } else if self.port_selector.is_some() {
+            self.handle_key_port_selector(key)
+        } else if self.filter.is_popup_open() {
+            self.handle_key_filter_popup(key);
+            Action::None
+        } else {
+            self.handle_key_normal(key)
         }
+    }
 
-        if self.quit_confirm {
-            return match key.code {
-                KeyCode::Char('y') => Action::Quit,
-                KeyCode::Char('n' | 'q') | KeyCode::Esc => {
-                    self.close_quit_confirm();
-                    Action::None
-                }
-                _ => Action::None,
-            };
-        }
-
-        if self.erase_confirm {
-            return match key.code {
-                KeyCode::Char('y') => Action::ConfirmErase,
-                KeyCode::Char('n' | 'q' | 'e') | KeyCode::Esc => {
-                    self.erase_confirm = false;
-                    Action::None
-                }
-                _ => Action::None,
-            };
-        }
-
-        if self.elf_selector.is_some() {
-            return match key.code {
-                KeyCode::Esc => Action::CloseElfSelector,
-                KeyCode::Enter => {
-                    let was_cycling = self
-                        .elf_selector
-                        .as_ref()
-                        .is_some_and(|s| !s.completions().is_empty());
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.accept_completion();
-                    }
-                    if was_cycling {
-                        Action::None
-                    } else {
-                        Action::ConfirmElfPath
-                    }
-                }
-                KeyCode::Tab => {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.tab_complete();
-                    }
-                    Action::None
-                }
-                KeyCode::BackTab => {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.cycle_completion_back();
-                    }
-                    Action::None
-                }
-                KeyCode::Up => {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.move_completion(-1);
-                    }
-                    Action::None
-                }
-                KeyCode::Down => {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.move_completion(1);
-                    }
-                    Action::None
-                }
-                KeyCode::Left => {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.move_cursor(-1);
-                    }
-                    Action::None
-                }
-                KeyCode::Right => {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.move_cursor(1);
-                    }
-                    Action::None
-                }
-                KeyCode::Backspace => {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.backspace();
-                    }
-                    Action::None
-                }
-                KeyCode::Char('a')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.move_cursor_to_start();
-                    }
-                    Action::None
-                }
-                KeyCode::Char('e')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.move_cursor_to_end();
-                    }
-                    Action::None
-                }
-                KeyCode::Char('l')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.clear_input();
-                    }
-                    Action::None
-                }
-                KeyCode::Char('d')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.delete_forward();
-                    }
-                    Action::None
-                }
-                KeyCode::Char('k')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.kill_to_end();
-                    }
-                    Action::None
-                }
-                KeyCode::Char('u')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.kill_to_start();
-                    }
-                    Action::None
-                }
-                KeyCode::Char('w')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.kill_word_back();
-                    }
-                    Action::None
-                }
-                KeyCode::Char(ch)
-                    if !key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(s) = self.elf_selector.as_mut() {
-                        s.push_char(ch);
-                    }
-                    Action::None
-                }
-                _ => Action::None,
-            };
-        }
-
-        if self.port_selector.is_some() {
-            return match key.code {
-                KeyCode::Up => {
-                    if let Some(s) = self.port_selector.as_mut() {
-                        s.move_cursor(-1);
-                    }
-                    Action::None
-                }
-                KeyCode::Down => {
-                    if let Some(s) = self.port_selector.as_mut() {
-                        s.move_cursor(1);
-                    }
-                    Action::None
-                }
-                KeyCode::Enter => {
-                    self.port_selector.take().map_or(Action::None, |s| {
-                        Action::ConnectPort(s.selected().to_owned())
-                    })
-                }
-                KeyCode::Char('q' | 'c') | KeyCode::Esc => {
-                    self.port_selector = None;
-                    Action::None
-                }
-                _ => Action::None,
-            };
-        }
-
-        if self.filter.is_popup_open() {
-            match key.code {
-                KeyCode::Up => self.filter.move_cursor(-1),
-                KeyCode::Down => self.filter.move_cursor(1),
-                KeyCode::Char(' ') => self.filter.toggle_at_cursor(),
-                KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
-                    self.filter.toggle_all();
-                }
-                KeyCode::Tab | KeyCode::Esc | KeyCode::Char('q') => {
-                    self.filter.toggle_popup();
-                }
-                _ => {}
+    fn handle_key_quit_confirm(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Char('y') => Action::Quit,
+            KeyCode::Char('n' | 'q') | KeyCode::Esc => {
+                self.close_quit_confirm();
+                Action::None
             }
-            return Action::None;
+            _ => Action::None,
         }
+    }
 
+    fn handle_key_erase_confirm(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Char('y') => Action::ConfirmErase,
+            KeyCode::Char('n' | 'q' | 'e') | KeyCode::Esc => {
+                self.confirm = ConfirmDialog::None;
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn handle_key_elf_selector(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc => Action::CloseElfSelector,
+            KeyCode::Enter => {
+                let was_cycling = self
+                    .elf_selector
+                    .as_ref()
+                    .is_some_and(|s| !s.completions().is_empty());
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.accept_completion();
+                }
+                if was_cycling {
+                    Action::None
+                } else {
+                    Action::ConfirmElfPath
+                }
+            }
+            KeyCode::Tab => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.tab_complete();
+                }
+                Action::None
+            }
+            KeyCode::BackTab => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.cycle_completion_back();
+                }
+                Action::None
+            }
+            KeyCode::Up => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.move_completion(-1);
+                }
+                Action::None
+            }
+            KeyCode::Down => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.move_completion(1);
+                }
+                Action::None
+            }
+            KeyCode::Left => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.move_cursor(-1);
+                }
+                Action::None
+            }
+            KeyCode::Right => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.move_cursor(1);
+                }
+                Action::None
+            }
+            KeyCode::Backspace => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.backspace();
+                }
+                Action::None
+            }
+            _ if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.handle_key_elf_selector_ctrl(key)
+            }
+            KeyCode::Char(ch) => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.push_char(ch);
+                }
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn handle_key_elf_selector_ctrl(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Char('a') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.move_cursor_to_start();
+                }
+                Action::None
+            }
+            KeyCode::Char('e') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.move_cursor_to_end();
+                }
+                Action::None
+            }
+            KeyCode::Char('l') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.clear_input();
+                }
+                Action::None
+            }
+            KeyCode::Char('d') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.delete_forward();
+                }
+                Action::None
+            }
+            KeyCode::Char('k') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.kill_to_end();
+                }
+                Action::None
+            }
+            KeyCode::Char('u') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.kill_to_start();
+                }
+                Action::None
+            }
+            KeyCode::Char('w') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.kill_word_back();
+                }
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn handle_key_port_selector(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Up => {
+                if let Some(s) = self.port_selector.as_mut() {
+                    s.move_cursor(-1);
+                }
+                Action::None
+            }
+            KeyCode::Down => {
+                if let Some(s) = self.port_selector.as_mut() {
+                    s.move_cursor(1);
+                }
+                Action::None
+            }
+            KeyCode::Enter => self.port_selector.take().map_or(Action::None, |s| {
+                Action::ConnectPort(s.selected().to_owned())
+            }),
+            KeyCode::Char('q' | 'c') | KeyCode::Esc => {
+                self.port_selector = None;
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn handle_key_filter_popup(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up => self.filter.move_cursor(-1),
+            KeyCode::Down => self.filter.move_cursor(1),
+            KeyCode::Char(' ') => self.filter.toggle_at_cursor(),
+            KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
+                self.filter.toggle_all();
+            }
+            KeyCode::Tab | KeyCode::Esc | KeyCode::Char('q') => {
+                self.filter.toggle_popup();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_normal(&mut self, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc if self.scroll > 0 => {
                 self.scroll = 0;
@@ -690,17 +697,17 @@ impl App {
     /// `true` if the erase confirm dialog is open, `false` otherwise.
     #[must_use]
     pub(crate) fn is_erase_confirm_open(&self) -> bool {
-        self.erase_confirm
+        matches!(self.confirm, ConfirmDialog::Erase)
     }
 
     /// Opens the erase confirmation prompt.
     pub(crate) fn open_erase_confirm(&mut self) {
-        self.erase_confirm = true;
+        self.confirm = ConfirmDialog::Erase;
     }
 
     /// Closes the erase confirmation prompt.
     pub(crate) fn close_erase_confirm(&mut self) {
-        self.erase_confirm = false;
+        self.confirm = ConfirmDialog::None;
     }
 
     /// Returns `true` if the quit confirm dialog is open, `false` otherwise.
@@ -710,17 +717,17 @@ impl App {
     /// `true` if the quit confirm dialog is open, `false` otherwise.
     #[must_use]
     pub(crate) fn is_quit_confirm_open(&self) -> bool {
-        self.quit_confirm
+        matches!(self.confirm, ConfirmDialog::Quit)
     }
 
     /// Opens the quit confirmation prompt.
     pub(crate) fn open_quit_confirm(&mut self) {
-        self.quit_confirm = true;
+        self.confirm = ConfirmDialog::Quit;
     }
 
     /// Closes the quit confirmation prompt.
     pub(crate) fn close_quit_confirm(&mut self) {
-        self.quit_confirm = false;
+        self.confirm = ConfirmDialog::None;
     }
 
     /// Returns the currently selected ELF path, if any.
@@ -836,20 +843,20 @@ fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
 fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
     if app.is_flashing() {
         app.set_status("Operation already in progress.".into());
-        return;
-    }
-    match serial::detect_esp_ports() {
-        Err(e) => app.set_status(format!("Port scan failed: {e}")),
-        Ok(ports) if ports.is_empty() => {
-            app.set_status("No devices detected.".into());
+    } else {
+        match serial::detect_esp_ports() {
+            Err(e) => app.set_status(format!("Port scan failed: {e}")),
+            Ok(ports) if ports.is_empty() => {
+                app.set_status("No devices detected.".into());
+            }
+            Ok(mut ports) if ports.len() == 1 => {
+                let port = ports.remove(0);
+                app.set_status(format!("Connecting to {port}..."));
+                app.set_port(port.clone());
+                begin_connect(&port, app.baud(), tx);
+            }
+            Ok(ports) => app.open_port_selector(ports),
         }
-        Ok(mut ports) if ports.len() == 1 => {
-            let port = ports.remove(0);
-            app.set_status(format!("Connecting to {port}..."));
-            app.set_port(port.clone());
-            begin_connect(&port, app.baud(), tx);
-        }
-        Ok(ports) => app.open_port_selector(ports),
     }
 }
 
@@ -963,28 +970,35 @@ fn start_flash(app: &mut App, _tx: &mpsc::UnboundedSender<event::Message>) {
 }
 
 fn do_flash(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
-    if app.port_name().is_none() {
-        app.set_status("No port connected.".into());
-    } else if app.is_flashing() {
+    if app.is_flashing() {
         app.set_status("Flash already in progress.".into());
     } else {
-        let port = app.port_name().unwrap().to_owned();
-        let baud = app.baud();
-        let elf_path = app.elf_path().unwrap().to_owned();
-        app.shutdown_source();
-        app.set_flash_state(flash::State::Flashing {
-            addr: 0,
-            current: 0,
-            total: 0,
-        });
-        let tx_task = tx.clone();
-        drop(std::thread::spawn(move || {
-            // The serial reader has a 100ms read timeout; wait long enough for
-            // it to observe the shutdown signal and release the port fd.
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            let result = flash::flash_elf(&port, baud, &elf_path, tx_task.clone());
-            let _ = tx_task.send(event::Message::FlashDone(result));
-        }));
+        match (
+            app.port_name().map(str::to_owned),
+            app.elf_path().map(Path::to_path_buf),
+        ) {
+            (None, _) => app.set_status("No port connected.".into()),
+            (_, None) => {}
+            (Some(port), Some(elf_path)) => {
+                let baud = app.baud();
+                app.shutdown_source();
+                app.set_flash_state(flash::State::Flashing {
+                    addr: 0,
+                    current: 0,
+                    total: 0,
+                });
+                let tx_task = tx.clone();
+                drop(std::thread::spawn(move || {
+                    // The serial reader has a 100ms read timeout; wait long
+                    // enough for it to observe the shutdown signal and release
+                    // the port fd.
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    let result =
+                        flash::flash_elf(&port, baud, &elf_path, tx_task.clone());
+                    let _ = tx_task.send(event::Message::FlashDone(result));
+                }));
+            }
+        }
     }
 }
 
@@ -1080,7 +1094,91 @@ fn handle_action(
     }
 }
 
-#[allow(clippy::too_many_lines)]
+fn handle_event_message(
+    app: &mut App,
+    msg: event::Message,
+    baud: u32,
+    tx: &mpsc::UnboundedSender<event::Message>,
+) {
+    match msg {
+        event::Message::Key(key) => {
+            let action = app.handle_key(key);
+            handle_action(app, action, tx);
+        }
+        event::Message::Serial(line) => app.push_line(&line),
+        event::Message::Disconnected => {
+            app.disconnect();
+            app.set_status("Disconnected.".into());
+        }
+        event::Message::ConnectSuccess {
+            port,
+            cmd_tx,
+            src_tx,
+        } => {
+            let status = format!("Connected to {port}.");
+            app.set_port(port);
+            app.set_port_cmd(cmd_tx);
+            app.set_source_shutdown(src_tx);
+            app.set_status(status);
+        }
+        event::Message::ConnectError(msg) => {
+            app.set_status(msg);
+            app.disconnect();
+        }
+        event::Message::Tick => app.tick(),
+        event::Message::PortsDetected { current, previous } => {
+            handle_ports_detected(app, current, &previous, tx);
+        }
+        event::Message::FlashProgress {
+            addr,
+            current,
+            total,
+        } => {
+            app.set_flash_state(flash::State::Flashing {
+                addr,
+                current,
+                total,
+            });
+        }
+        event::Message::FlashDone(result) => {
+            app.set_flash_state(flash::State::Idle);
+            match result {
+                Ok(()) => {
+                    app.set_status("Flash complete. Reconnecting...".into());
+                    if let Some(port) = app.port_name().map(str::to_owned) {
+                        begin_reconnect(&port, baud, tx);
+                    }
+                }
+                Err(e) => {
+                    app.set_status(format!("Flash failed: {e}"));
+                    if let Some(port) = app.port_name().map(str::to_owned) {
+                        begin_reconnect(&port, baud, tx);
+                    }
+                }
+            }
+        }
+        event::Message::DeviceInfo(result) => {
+            if let Ok(info) = result {
+                app.set_device_info(info);
+            }
+        }
+        event::Message::EraseDone(result) => {
+            app.set_flash_state(flash::State::Idle);
+            match result {
+                Ok(()) => {
+                    app.set_status("Erase complete.".into());
+                }
+                Err(e) => {
+                    app.set_status(format!("Erase failed: {e}"));
+                }
+            }
+            if let Some(port) = app.port_name().map(str::to_owned) {
+                begin_reconnect(&port, baud, tx);
+            }
+        }
+    }
+}
+
 async fn run_inner(args: Args) -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal =
@@ -1147,83 +1245,7 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
             _ = tick.tick() => event::Message::Tick,
         };
 
-        match msg {
-            event::Message::Key(key) => {
-                let action = app.handle_key(key);
-                handle_action(&mut app, action, &tx);
-            }
-            event::Message::Serial(line) => app.push_line(&line),
-            event::Message::Disconnected => {
-                app.disconnect();
-                app.set_status("Disconnected.".into());
-            }
-            event::Message::ConnectSuccess {
-                port,
-                cmd_tx,
-                src_tx,
-            } => {
-                let status = format!("Connected to {port}.");
-                app.set_port(port);
-                app.set_port_cmd(cmd_tx);
-                app.set_source_shutdown(src_tx);
-                app.set_status(status);
-            }
-            event::Message::ConnectError(msg) => {
-                app.set_status(msg);
-                app.disconnect();
-            }
-            event::Message::Tick => app.tick(),
-            event::Message::PortsDetected { current, previous } => {
-                handle_ports_detected(&mut app, current, &previous, &tx);
-            }
-            event::Message::FlashProgress {
-                addr,
-                current,
-                total,
-            } => {
-                app.set_flash_state(flash::State::Flashing {
-                    addr,
-                    current,
-                    total,
-                });
-            }
-            event::Message::FlashDone(result) => {
-                app.set_flash_state(flash::State::Idle);
-                match result {
-                    Ok(()) => {
-                        app.set_status("Flash complete. Reconnecting...".into());
-                        if let Some(port) = app.port_name().map(str::to_owned) {
-                            begin_reconnect(&port, baud, &tx);
-                        }
-                    }
-                    Err(e) => {
-                        app.set_status(format!("Flash failed: {e}"));
-                        if let Some(port) = app.port_name().map(str::to_owned) {
-                            begin_reconnect(&port, baud, &tx);
-                        }
-                    }
-                }
-            }
-            event::Message::DeviceInfo(result) => {
-                if let Ok(info) = result {
-                    app.set_device_info(info);
-                }
-            }
-            event::Message::EraseDone(result) => {
-                app.set_flash_state(flash::State::Idle);
-                match result {
-                    Ok(()) => {
-                        app.set_status("Erase complete.".into());
-                    }
-                    Err(e) => {
-                        app.set_status(format!("Erase failed: {e}"));
-                    }
-                }
-                if let Some(port) = app.port_name().map(str::to_owned) {
-                    begin_reconnect(&port, baud, &tx);
-                }
-            }
-        }
+        handle_event_message(&mut app, msg, baud, &tx);
 
         if !app.is_running() {
             break;

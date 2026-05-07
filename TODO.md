@@ -21,11 +21,10 @@
 - [x] espflash library integration (not subprocess)
 - [x] Flash progress bar rendered in bottom pane during flash
 - [x] Board info display on connect (chip type, revision, flash size, MAC)
-- [x] `--elf <path>` CLI flag
 - [x] `--baud` CLI flag; `--port` was already present
 - [x] Port auto-reconnect after reset/flash cycle
 - [x] Erase flash with confirmation prompt
-- [x] ELF path selector popup with tab-completion (`s` keybinding)
+- [x] ELF path selector popup with tab-completion (`f` keybinding)
 
 ## Phase 3: Agent + System Inspector
 

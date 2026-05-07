@@ -27,8 +27,8 @@ Works with any ESP32 firmware: C, C++, Rust, Arduino.
 - Board info probe on connect: chip type, revision, flash size, and MAC address displayed in the inspector pane
 - ELF firmware flashing via espflash with a live progress gauge (`f`)
 - Full-flash erase with confirmation prompt (`e`)
-- ELF path selector popup with filesystem tab-completion (`s`)
-- `--elf <path>` and `--baud <rate>` CLI flags
+- ELF path selector popup with filesystem tab-completion, opened by `f`
+- `--baud <rate>` CLI flag
 - Port auto-reconnect after flash or erase
 
 ---
@@ -57,7 +57,6 @@ esp-tui [OPTIONS]
 Options:
   -p, --port <PORT>  Serial port to connect to
   -b, --baud <BAUD>  Serial baud rate (default: 115200)
-      --elf <ELF>    Path to ELF firmware file to flash
       --demo         Run in demo mode with synthetic log output (no hardware required)
   -h, --help         Print help
 ```
@@ -65,10 +64,9 @@ Options:
 **Examples**
 
 ```
-esp-tui                                          # auto-detect port
-esp-tui --port /dev/ttyUSB0                      # connect to a specific port
-esp-tui --elf target/xtensa-esp32s3-espidf/debug/app.elf  # pre-load ELF path
-esp-tui --demo                                   # run without hardware
+esp-tui                          # auto-detect port
+esp-tui --port /dev/ttyUSB0      # connect to a specific port
+esp-tui --demo                   # run without hardware
 ```
 
 ---
@@ -79,10 +77,9 @@ esp-tui --demo                                   # run without hardware
 |---|---|
 | `c` | Connect / scan for ports |
 | `d` | Disconnect |
-| `f` | Flash ELF to device (opens path selector if no ELF set) |
+| `f` | Open ELF path selector and flash to device |
 | `e` | Erase flash (shows confirmation prompt) |
 | `r` | Reset device (DTR/RTS) |
-| `s` | Open ELF path selector |
 | `Tab` | Open / close filter popup |
 | `Space` | Toggle filter item (inside popup) |
 | `Ctrl-A` | Toggle all filter items (inside popup) |
