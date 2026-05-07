@@ -34,7 +34,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     render_status_bar(frame, outer[2], app);
 
     if app.is_quit_confirm_open() {
-        render_quit_confirm_popup(frame, frame.area(), app);
+        render_quit_confirm_popup(frame, frame.area());
     } else if app.is_erase_confirm_open() {
         render_erase_confirm_popup(frame, frame.area());
     } else if app.is_elf_selector_open() {
@@ -168,7 +168,7 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(block, area);
 
     if let Some(info) = app.device_info() {
-        let mut lines = vec![
+        let board_lines = [
             Line::from(vec![
                 Span::styled("Board: ", Style::default().fg(Color::DarkGray)),
                 Span::raw(info.chip().to_owned()),
@@ -182,27 +182,30 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw(info.mac_address().to_owned()),
             ]),
         ];
-
-        if !info.partitions().is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "Partitions:",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for p in info.partitions() {
-                lines.push(Line::from(format!(
-                    "{:<8} {}/{:<8} 0x{:06X}  {}",
-                    p.name(),
-                    p.partition_type(),
-                    p.subtype(),
-                    p.offset(),
-                    format_bytes(p.size()),
-                )));
-            }
-        }
-
+        let partition_lines: Vec<Line> = if info.partitions().is_empty() {
+            vec![]
+        } else {
+            std::iter::once(Line::from(""))
+                .chain(std::iter::once(Line::from(Span::styled(
+                    "Partitions:",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
+                ))))
+                .chain(info.partitions().iter().map(|p| {
+                    Line::from(format!(
+                        "{:<8} {}/{:<8} 0x{:06X}  {}",
+                        p.name(),
+                        p.partition_type(),
+                        p.subtype(),
+                        p.offset(),
+                        format_bytes(p.size()),
+                    ))
+                }))
+                .collect()
+        };
+        let lines: Vec<Line> =
+            board_lines.into_iter().chain(partition_lines).collect();
         frame.render_widget(Paragraph::new(lines), inner);
     } else {
         frame.render_widget(
@@ -281,7 +284,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                 );
             }
         }
-        flash::State::Idle => {
+        flash::State::Idle | flash::State::Reconnecting => {
             let content = app.status_msg().unwrap_or("");
             let style = if content.is_empty() {
                 Style::default().fg(Color::DarkGray)
@@ -303,7 +306,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     Rect::new(x, y, width.min(area.width), height.min(area.height))
 }
 
-fn render_quit_confirm_popup(frame: &mut Frame, area: Rect, app: &App) {
+fn render_quit_confirm_popup(frame: &mut Frame, area: Rect) {
     let popup = centered_rect(52, 7, area);
     frame.render_widget(Clear, popup);
 
@@ -314,15 +317,10 @@ fn render_quit_confirm_popup(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let warning = if app.is_flashing() {
-        "Flash in progress. Quitting may corrupt firmware."
-    } else {
-        "Are you sure you want to quit?"
-    };
     let text = vec![
         Line::from(""),
         Line::from(Span::styled(
-            warning,
+            "Are you sure you want to quit?",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -747,6 +745,14 @@ mod tests {
         let mut app = App::new(Some("COM1".into()));
         app.set_flash_state(crate::flash::State::Erasing);
         app.set_status("Operation already in progress.".into());
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_flash_state_reconnecting_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Reconnecting);
+        app.set_status("Flash complete. Reconnecting...".into());
         render(&app);
     }
 

@@ -22,6 +22,8 @@ pub(crate) enum State {
     },
     /// An erase operation is in progress.
     Erasing,
+    /// Flash or erase completed; waiting for the device to reconnect.
+    Reconnecting,
 }
 
 /// Information about the connected ESP32 device.
@@ -113,30 +115,50 @@ pub(crate) struct PartitionEntry {
 
 impl PartitionEntry {
     /// Returns the partition name.
+    ///
+    /// # Returns
+    ///
+    /// The partition name as a string slice (e.g. `"nvs"` or `"factory"`).
     #[must_use]
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
 
-    /// Returns the partition type string (e.g. `"app"` or `"data"`).
+    /// Returns the partition type string.
+    ///
+    /// # Returns
+    ///
+    /// A string like `"app"` or `"data"`.
     #[must_use]
     pub(crate) fn partition_type(&self) -> &str {
         &self.partition_type
     }
 
-    /// Returns the partition subtype string (e.g. `"factory"` or `"nvs"`).
+    /// Returns the partition subtype string.
+    ///
+    /// # Returns
+    ///
+    /// A string like `"factory"` or `"nvs"`.
     #[must_use]
     pub(crate) fn subtype(&self) -> &str {
         &self.subtype
     }
 
     /// Returns the partition byte offset in flash.
+    ///
+    /// # Returns
+    ///
+    /// The byte offset from the start of flash (e.g. `0x010000`).
     #[must_use]
     pub(crate) fn offset(&self) -> u32 {
         self.offset
     }
 
     /// Returns the partition size in bytes.
+    ///
+    /// # Returns
+    ///
+    /// The partition size in bytes (e.g. `1048576` for 1 MB).
     #[must_use]
     pub(crate) fn size(&self) -> u32 {
         self.size

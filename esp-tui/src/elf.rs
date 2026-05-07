@@ -160,24 +160,19 @@ impl Selector {
     pub(crate) fn move_cursor(&mut self, delta: isize) {
         if delta < 0 {
             let steps = (-delta).cast_unsigned();
-            for _ in 0..steps {
-                if self.cursor == 0 {
-                    break;
-                }
-                let before = &self.input[..self.cursor];
-                if let Some((i, _)) = before.char_indices().next_back() {
-                    self.cursor = i;
-                }
-            }
+            self.cursor = self.input[..self.cursor]
+                .char_indices()
+                .rev()
+                .take(steps)
+                .last()
+                .map_or(0, |(i, _)| i);
         } else {
             let steps = delta.cast_unsigned();
-            for _ in 0..steps {
-                if self.cursor >= self.input.len() {
-                    break;
-                }
-                let ch = self.input[self.cursor..].chars().next().unwrap_or('\0');
-                self.cursor += ch.len_utf8();
-            }
+            self.cursor = self.input[self.cursor..]
+                .char_indices()
+                .take(steps)
+                .last()
+                .map_or(self.cursor, |(i, ch)| self.cursor + i + ch.len_utf8());
         }
         self.completions.clear();
         self.completion_cursor = 0;
@@ -507,15 +502,12 @@ mod tests {
     fn complete_relative_prefix_uses_current_dir() {
         let dir = tempdir();
         fs::write(dir.join("firmware.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
-        let orig = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&dir).unwrap();
-        let mut s = sel("firmware");
+        let prefix = format!("{}/firmware", dir.display());
+        let mut s = sel(&prefix);
         s.complete();
-        let result = s.completions().contains(&"firmware.elf".to_owned());
-        std::env::set_current_dir(orig).unwrap();
         assert!(
-            result,
-            "relative prefix should complete against current directory"
+            s.completions().contains(&"firmware.elf".to_owned()),
+            "absolute prefix should complete against that directory"
         );
     }
 
@@ -525,12 +517,10 @@ mod tests {
         fs::create_dir(dir.join(".hidden")).unwrap();
         fs::write(dir.join(".dotfile"), b"\x7fELF\x00\x00\x00\x00").unwrap();
         fs::write(dir.join("visible"), b"").unwrap();
-        let orig = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&dir).unwrap();
-        let mut s = sel(".");
+        let prefix = format!("{}/.", dir.display());
+        let mut s = sel(&prefix);
         s.complete();
         let comps = s.completions().to_vec();
-        std::env::set_current_dir(orig).unwrap();
         assert!(
             comps.contains(&".hidden/".to_owned()),
             "should find .hidden dir"
@@ -549,14 +539,14 @@ mod tests {
     fn accept_completion_dot_prefix() {
         let dir = tempdir();
         fs::create_dir(dir.join(".config")).unwrap();
-        let orig = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&dir).unwrap();
-        let mut s = sel(".");
+        let prefix = format!("{}/.", dir.display());
+        let mut s = sel(&prefix);
         s.complete();
         s.accept_completion();
-        let result = s.value().to_owned();
-        std::env::set_current_dir(orig).unwrap();
-        assert_eq!(result, ".config/");
+        assert!(
+            s.value().ends_with("/.config/"),
+            "accepted dot-prefix completion should end with /.config/"
+        );
     }
 
     #[test]

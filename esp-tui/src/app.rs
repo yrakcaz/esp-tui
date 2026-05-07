@@ -509,6 +509,11 @@ impl App {
         self.port_selector.as_mut()
     }
 
+    #[cfg(test)]
+    pub(crate) fn elf_selector_mut(&mut self) -> Option<&mut elf::Selector> {
+        self.elf_selector.as_mut()
+    }
+
     /// Sets the connected port name and clears the port selector.
     ///
     /// # Arguments
@@ -648,16 +653,19 @@ impl App {
         &self.flash_state
     }
 
-    /// Returns `true` while a flash or erase operation is in progress.
+    /// Returns `true` while a flash or erase operation is in progress or the
+    /// device is reconnecting after one.
     ///
     /// # Returns
     ///
-    /// `true` if state is `Flashing` or `Erasing`, `false` otherwise.
+    /// `true` if state is `Flashing`, `Erasing`, or `Reconnecting`.
     #[must_use]
     pub(crate) fn is_flashing(&self) -> bool {
         matches!(
             self.flash_state,
-            flash::State::Flashing { .. } | flash::State::Erasing
+            flash::State::Flashing { .. }
+                | flash::State::Erasing
+                | flash::State::Reconnecting
         )
     }
 
@@ -711,10 +719,6 @@ impl App {
     }
 
     /// Returns `true` if the quit confirm dialog is open, `false` otherwise.
-    ///
-    /// # Returns
-    ///
-    /// `true` if the quit confirm dialog is open, `false` otherwise.
     #[must_use]
     pub(crate) fn is_quit_confirm_open(&self) -> bool {
         matches!(self.confirm, ConfirmDialog::Quit)
@@ -958,7 +962,7 @@ fn confirm_elf_path(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
     }
 }
 
-fn start_flash(app: &mut App, _tx: &mpsc::UnboundedSender<event::Message>) {
+fn start_flash(app: &mut App) {
     if app.port_name().is_none() {
         app.set_status("No port connected.".into());
     } else if app.is_flashing() {
@@ -1090,7 +1094,7 @@ fn handle_action(
                 }));
             }
         }
-        Action::Flash => start_flash(app, tx),
+        Action::Flash => start_flash(app),
     }
 }
 
@@ -1119,11 +1123,13 @@ fn handle_event_message(
             app.set_port(port);
             app.set_port_cmd(cmd_tx);
             app.set_source_shutdown(src_tx);
+            app.set_flash_state(flash::State::Idle);
             app.set_status(status);
         }
         event::Message::ConnectError(msg) => {
             app.set_status(msg);
             app.disconnect();
+            app.set_flash_state(flash::State::Idle);
         }
         event::Message::Tick => app.tick(),
         event::Message::PortsDetected { current, previous } => {
@@ -1141,20 +1147,17 @@ fn handle_event_message(
             });
         }
         event::Message::FlashDone(result) => {
-            app.set_flash_state(flash::State::Idle);
             match result {
                 Ok(()) => {
                     app.set_status("Flash complete. Reconnecting...".into());
-                    if let Some(port) = app.port_name().map(str::to_owned) {
-                        begin_reconnect(&port, baud, tx);
-                    }
                 }
                 Err(e) => {
                     app.set_status(format!("Flash failed: {e}"));
-                    if let Some(port) = app.port_name().map(str::to_owned) {
-                        begin_reconnect(&port, baud, tx);
-                    }
                 }
+            }
+            app.set_flash_state(flash::State::Reconnecting);
+            if let Some(port) = app.port_name().map(str::to_owned) {
+                begin_reconnect(&port, baud, tx);
             }
         }
         event::Message::DeviceInfo(result) => {
@@ -1163,7 +1166,6 @@ fn handle_event_message(
             }
         }
         event::Message::EraseDone(result) => {
-            app.set_flash_state(flash::State::Idle);
             match result {
                 Ok(()) => {
                     app.set_status("Erase complete.".into());
@@ -1172,6 +1174,9 @@ fn handle_event_message(
                     app.set_status(format!("Erase failed: {e}"));
                 }
             }
+            // The device was disconnected before the erase; reconnect is always
+            // attempted to restore the serial link, same as after flash.
+            app.set_flash_state(flash::State::Reconnecting);
             if let Some(port) = app.port_name().map(str::to_owned) {
                 begin_reconnect(&port, baud, tx);
             }
@@ -1284,8 +1289,11 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc;
 
-    use super::{handle_action, handle_ports_detected, Action, App, BUFFER_SIZE};
-    use crate::log;
+    use super::{
+        handle_action, handle_event_message, handle_ports_detected, Action, App,
+        BUFFER_SIZE, DEFAULT_BAUD,
+    };
+    use crate::{flash, log};
 
     fn make_tx() -> mpsc::UnboundedSender<crate::event::Message> {
         let (tx, _) = mpsc::unbounded_channel();
@@ -1294,6 +1302,15 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    fn unique_temp_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "{name}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ))
     }
 
     fn ctrl(code: KeyCode) -> KeyEvent {
@@ -2129,17 +2146,46 @@ mod tests {
     }
 
     #[test]
-    fn connect_error_preserves_existing_connection() {
+    fn connect_success_while_reconnecting_clears_flash_state() {
+        let (src_tx, _src_rx) = tokio::sync::watch::channel(false);
+        let (cmd_tx, _cmd_rx) = std::sync::mpsc::channel();
         let mut app = App::new(Some("COM1".into()));
-        let error_msg = "failed to open COM2: resource busy".to_owned();
-        app.set_status(error_msg.clone());
-
-        assert_eq!(
-            app.port_name(),
-            Some("COM1"),
-            "existing port must survive a ConnectError"
+        app.set_flash_state(crate::flash::State::Reconnecting);
+        assert!(app.is_flashing());
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::ConnectSuccess {
+                port: "COM1".into(),
+                cmd_tx,
+                src_tx,
+            },
+            DEFAULT_BAUD,
+            &tx,
         );
-        assert_eq!(app.status_msg(), Some(error_msg.as_str()));
+        assert!(
+            !app.is_flashing(),
+            "ConnectSuccess must clear Reconnecting state"
+        );
+        assert_eq!(app.port_name(), Some("COM1"));
+    }
+
+    #[test]
+    fn connect_error_clears_port_and_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::ConnectError("failed: resource busy".into()),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(
+            app.port_name().is_none(),
+            "ConnectError must clear port_name via disconnect"
+        );
+        assert_eq!(app.status_msg(), Some("failed: resource busy"));
+        assert!(!app.is_flashing(), "Reconnecting state must be cleared");
     }
 
     #[test]
@@ -2296,11 +2342,11 @@ mod tests {
 
     #[test]
     fn handle_action_confirm_elf_path_no_port_sets_status() {
-        let path = std::env::temp_dir().join("esp-tui-test-elf-no-port");
+        let path = unique_temp_path("esp-tui-test-elf-no-port");
         std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
         let mut app = App::new(None);
         app.open_elf_selector(None);
-        if let Some(s) = app.elf_selector.as_mut() {
+        if let Some(s) = app.elf_selector_mut() {
             for ch in path.to_str().unwrap().chars() {
                 s.push_char(ch);
             }
@@ -2312,7 +2358,7 @@ mod tests {
 
     #[test]
     fn handle_action_confirm_elf_path_already_flashing_sets_status() {
-        let path = std::env::temp_dir().join("esp-tui-test-elf-flashing");
+        let path = unique_temp_path("esp-tui-test-elf-flashing");
         std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
         let mut app = App::new(Some("COM1".into()));
         app.set_flash_state(crate::flash::State::Flashing {
@@ -2321,7 +2367,7 @@ mod tests {
             total: 0,
         });
         app.open_elf_selector(None);
-        if let Some(s) = app.elf_selector.as_mut() {
+        if let Some(s) = app.elf_selector_mut() {
             for ch in path.to_str().unwrap().chars() {
                 s.push_char(ch);
             }
@@ -2341,11 +2387,11 @@ mod tests {
 
     #[test]
     fn handle_action_confirm_elf_path_valid() {
-        let path = std::env::temp_dir().join("esp-tui-test-elf");
+        let path = unique_temp_path("esp-tui-test-elf");
         std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
         let mut app = App::new(None);
         app.open_elf_selector(None);
-        if let Some(s) = app.elf_selector.as_mut() {
+        if let Some(s) = app.elf_selector_mut() {
             for ch in path.to_str().unwrap().chars() {
                 s.push_char(ch);
             }
@@ -2361,7 +2407,7 @@ mod tests {
     fn handle_action_confirm_elf_path_nonexistent_stays_open() {
         let mut app = App::new(None);
         app.open_elf_selector(None);
-        if let Some(s) = app.elf_selector.as_mut() {
+        if let Some(s) = app.elf_selector_mut() {
             for ch in "/nonexistent/path.elf".chars() {
                 s.push_char(ch);
             }
@@ -2377,7 +2423,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let mut app = App::new(None);
         app.open_elf_selector(None);
-        if let Some(s) = app.elf_selector.as_mut() {
+        if let Some(s) = app.elf_selector_mut() {
             for ch in dir.to_str().unwrap().chars() {
                 s.push_char(ch);
             }
@@ -2390,11 +2436,11 @@ mod tests {
 
     #[test]
     fn handle_action_confirm_elf_path_non_elf_rejected() {
-        let path = std::env::temp_dir().join("esp-tui-test-non-elf");
+        let path = unique_temp_path("esp-tui-test-non-elf");
         std::fs::write(&path, b"not an elf file").unwrap();
         let mut app = App::new(None);
         app.open_elf_selector(None);
-        if let Some(s) = app.elf_selector.as_mut() {
+        if let Some(s) = app.elf_selector_mut() {
             for ch in path.to_str().unwrap().chars() {
                 s.push_char(ch);
             }
@@ -2417,6 +2463,8 @@ mod tests {
         });
         assert!(app.is_flashing());
         app.set_flash_state(crate::flash::State::Erasing);
+        assert!(app.is_flashing());
+        app.set_flash_state(crate::flash::State::Reconnecting);
         assert!(app.is_flashing());
         app.set_flash_state(crate::flash::State::Idle);
         assert!(!app.is_flashing());
@@ -2511,5 +2559,89 @@ mod tests {
         handle_action(&mut app, Action::Flash, &make_tx());
         assert!(!app.is_elf_selector_open());
         assert_eq!(app.status_msg(), Some("Operation already in progress."));
+    }
+
+    #[test]
+    fn flash_done_ok_sets_reconnecting_and_status() {
+        let mut app = App::new(None);
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::FlashDone(Ok(())),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(matches!(app.flash_state(), flash::State::Reconnecting));
+        assert_eq!(app.status_msg(), Some("Flash complete. Reconnecting..."));
+    }
+
+    #[test]
+    fn flash_done_err_sets_reconnecting_and_error_status() {
+        let mut app = App::new(None);
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::FlashDone(Err(anyhow::anyhow!("write error"))),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(matches!(app.flash_state(), flash::State::Reconnecting));
+        assert!(app.status_msg().unwrap_or("").contains("Flash failed"));
+    }
+
+    #[test]
+    fn erase_done_ok_sets_reconnecting() {
+        let mut app = App::new(None);
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::EraseDone(Ok(())),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(matches!(app.flash_state(), flash::State::Reconnecting));
+        assert_eq!(app.status_msg(), Some("Erase complete."));
+    }
+
+    #[test]
+    fn erase_done_err_sets_reconnecting_and_status() {
+        let mut app = App::new(None);
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::EraseDone(Err(anyhow::anyhow!("erase error"))),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(matches!(app.flash_state(), flash::State::Reconnecting));
+        assert!(app.status_msg().unwrap_or("").contains("Erase failed"));
+    }
+
+    #[test]
+    fn device_info_ok_stores_info() {
+        let mut app = App::new(None);
+        let tx = make_tx();
+        let info =
+            flash::DeviceInfo::new("ESP32-S3", "4MB", "AA:BB:CC:DD:EE:FF", vec![]);
+        handle_event_message(
+            &mut app,
+            crate::event::Message::DeviceInfo(Ok(info)),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(app.device_info().is_some());
+    }
+
+    #[test]
+    fn device_info_err_is_ignored() {
+        let mut app = App::new(None);
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::DeviceInfo(Err(anyhow::anyhow!("probe failed"))),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(app.device_info().is_none());
     }
 }
