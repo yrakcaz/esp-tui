@@ -182,10 +182,18 @@ impl App {
             return match key.code {
                 KeyCode::Esc => Action::CloseElfSelector,
                 KeyCode::Enter => {
+                    let was_cycling = self
+                        .elf_selector
+                        .as_ref()
+                        .is_some_and(|s| !s.completions().is_empty());
                     if let Some(s) = self.elf_selector.as_mut() {
                         s.accept_completion();
                     }
-                    Action::ConfirmElfPath
+                    if was_cycling {
+                        Action::None
+                    } else {
+                        Action::ConfirmElfPath
+                    }
                 }
                 KeyCode::Tab => {
                     if let Some(s) = self.elf_selector.as_mut() {
@@ -2225,6 +2233,28 @@ mod tests {
     fn handle_key_elf_selector_enter_confirms() {
         let mut app = App::new(None);
         app.open_elf_selector(None);
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), Action::ConfirmElfPath);
+    }
+
+    #[test]
+    fn handle_key_elf_selector_enter_while_cycling_accepts_not_confirms() {
+        let dir = std::env::temp_dir().join(format!(
+            "esp-tui-app-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos())
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("fw_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        std::fs::write(dir.join("fw_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        for ch in format!("{}/fw", dir.display()).chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), Action::None);
         assert_eq!(app.handle_key(key(KeyCode::Enter)), Action::ConfirmElfPath);
     }
 
