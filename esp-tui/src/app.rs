@@ -31,10 +31,6 @@ struct Args {
     #[arg(long)]
     demo: bool,
 
-    /// Path to the ELF firmware file to flash.
-    #[arg(long)]
-    elf: Option<PathBuf>,
-
     /// Serial baud rate.
     #[arg(long, short = 'b')]
     baud: Option<u32>,
@@ -1088,9 +1084,6 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
     let baud = args.baud.unwrap_or(DEFAULT_BAUD);
     let mut app = App::new(None);
     app.set_baud(baud);
-    if let Some(path) = args.elf {
-        app.set_elf_path(path);
-    }
 
     if args.demo {
         app.set_demo();
