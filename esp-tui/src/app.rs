@@ -186,22 +186,20 @@ impl App {
             return match key.code {
                 KeyCode::Esc => Action::CloseElfSelector,
                 KeyCode::Enter => {
-                    if self
-                        .elf_selector
-                        .as_ref()
-                        .is_some_and(|s| !s.completions().is_empty())
-                    {
-                        if let Some(s) = self.elf_selector.as_mut() {
-                            s.accept_completion();
-                        }
-                        Action::None
-                    } else {
-                        Action::ConfirmElfPath
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.accept_completion();
                     }
+                    Action::ConfirmElfPath
                 }
                 KeyCode::Tab => {
                     if let Some(s) = self.elf_selector.as_mut() {
                         s.tab_complete();
+                    }
+                    Action::None
+                }
+                KeyCode::BackTab => {
+                    if let Some(s) = self.elf_selector.as_mut() {
+                        s.cycle_completion_back();
                     }
                     Action::None
                 }
@@ -2235,6 +2233,13 @@ mod tests {
         let mut app = App::new(None);
         app.open_elf_selector(None);
         assert_eq!(app.handle_key(key(KeyCode::Enter)), Action::ConfirmElfPath);
+    }
+
+    #[test]
+    fn handle_key_elf_selector_back_tab_noop_when_no_completions() {
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        assert_eq!(app.handle_key(key(KeyCode::BackTab)), Action::None);
     }
 
     #[test]

@@ -228,7 +228,23 @@ impl Selector {
         self.completion_cursor = 0;
     }
 
-    /// Navigates the completion list cursor by `delta`, clamped to bounds.
+    fn apply_highlighted_completion(&mut self) {
+        let Some(completion) = self.completions.get(self.completion_cursor) else {
+            return;
+        };
+        let parent = if self.input.ends_with('/') {
+            self.input.as_str()
+        } else if let Some(slash) = self.input.rfind('/') {
+            &self.input[..=slash]
+        } else {
+            ""
+        };
+        self.input = format!("{parent}{completion}");
+        self.cursor = self.input.len();
+    }
+
+    /// Navigates the completion list cursor by `delta`, clamped to bounds,
+    /// and writes the newly highlighted completion into the input.
     ///
     /// # Arguments
     ///
@@ -241,48 +257,58 @@ impl Selector {
             .completion_cursor
             .saturating_add_signed(delta)
             .min(self.completions.len() - 1);
+        self.apply_highlighted_completion();
     }
 
     /// Advances the completion cursor by one, wrapping around to the first
-    /// entry after the last. No-op when the list is empty.
+    /// entry after the last, and writes the newly highlighted completion into
+    /// the input. No-op when the list is empty.
     pub(crate) fn cycle_completion(&mut self) {
         if self.completions.is_empty() {
             return;
         }
         self.completion_cursor =
             (self.completion_cursor + 1) % self.completions.len();
+        self.apply_highlighted_completion();
     }
 
-    /// Accepts the currently highlighted completion, replacing the filename
-    /// portion of the input.
-    pub(crate) fn accept_completion(&mut self) {
-        let Some(completion) = self.completions.get(self.completion_cursor) else {
+    /// Moves the completion cursor back by one, wrapping to the last entry,
+    /// and writes the newly highlighted completion into the input. No-op
+    /// when the list is empty.
+    pub(crate) fn cycle_completion_back(&mut self) {
+        if self.completions.is_empty() {
             return;
-        };
+        }
+        self.completion_cursor = self
+            .completion_cursor
+            .checked_sub(1)
+            .unwrap_or(self.completions.len() - 1);
+        self.apply_highlighted_completion();
+    }
 
-        let parent = if self.input.ends_with('/') {
-            self.input.as_str()
-        } else if let Some(slash) = self.input.rfind('/') {
-            &self.input[..=slash]
-        } else {
-            ""
-        };
-
-        self.input = format!("{parent}{completion}");
-        self.cursor = self.input.len();
+    /// Dismisses the completion menu, keeping the currently written input.
+    ///
+    /// If the input has not yet been updated by live cycling, writes the
+    /// highlighted entry first. No-op when the list is empty.
+    pub(crate) fn accept_completion(&mut self) {
+        if self.completions.is_empty() {
+            return;
+        }
+        self.apply_highlighted_completion();
         self.completions.clear();
         self.completion_cursor = 0;
     }
 
-    /// Performs bash-like tab completion.
+    /// Performs zsh-style menu tab completion.
     ///
     /// When no completions are loaded, computes them from the filesystem:
     /// - Single result: auto-accepts it; if the result is a directory (ends
     ///   with `/`), immediately computes completions for that directory.
-    /// - Multiple results: extends the input to the longest common prefix of
-    ///   all completions (bash-style partial fill).
+    /// - Multiple results: extends the input to the longest common prefix,
+    ///   then writes the first entry into the input and shows the menu.
     ///
-    /// When completions are already showing, cycles to the next entry.
+    /// When the menu is already showing, cycles to the next entry and writes
+    /// it into the input immediately.
     pub(crate) fn tab_complete(&mut self) {
         if self.completions.is_empty() {
             self.complete();
@@ -294,7 +320,11 @@ impl Selector {
                         self.complete();
                     }
                 }
-                _ => self.extend_to_common_prefix(),
+                _ => {
+                    self.extend_to_common_prefix();
+                    self.completion_cursor = 0;
+                    self.apply_highlighted_completion();
+                }
             }
         } else {
             self.cycle_completion();
@@ -688,8 +718,9 @@ mod tests {
         let prefix = format!("{}/a", dir.display());
         let mut s = sel(&prefix);
         s.tab_complete();
-        assert_eq!(s.value(), format!("{}/app_", dir.display()));
+        assert_eq!(s.value(), format!("{}/app_a.elf", dir.display()));
         assert_eq!(s.completions().len(), 2);
+        assert_eq!(s.completion_cursor(), 0);
     }
 
     #[test]
@@ -701,9 +732,10 @@ mod tests {
         let prefix = format!("{}/app", dir.display());
         let mut s = sel(&prefix);
         s.tab_complete();
-        let first = s.completion_cursor();
+        assert_eq!(s.value(), format!("{}/app_a.elf", dir.display()));
         s.tab_complete();
-        assert_ne!(s.completion_cursor(), first);
+        assert_eq!(s.completion_cursor(), 1);
+        assert_eq!(s.value(), format!("{}/app_b.elf", dir.display()));
     }
 
     #[test]
@@ -827,6 +859,62 @@ mod tests {
         s.completions = vec!["foobar".into()];
         s.kill_word_back();
         assert!(s.completions().is_empty());
+    }
+
+    #[test]
+    fn tab_complete_cycling_writes_input_live() {
+        let dir = tempdir();
+        fs::write(dir.join("app_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        fs::write(dir.join("app_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+
+        let prefix = format!("{}/a", dir.display());
+        let mut s = sel(&prefix);
+        s.tab_complete();
+        assert_eq!(s.value(), format!("{}/app_a.elf", dir.display()));
+        s.tab_complete();
+        assert_eq!(s.value(), format!("{}/app_b.elf", dir.display()));
+        s.tab_complete();
+        assert_eq!(s.value(), format!("{}/app_a.elf", dir.display()));
+    }
+
+    #[test]
+    fn cycle_completion_back_wraps_and_writes_input() {
+        let dir = tempdir();
+        fs::write(dir.join("app_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        fs::write(dir.join("app_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+
+        let prefix = format!("{}/a", dir.display());
+        let mut s = sel(&prefix);
+        s.tab_complete();
+        s.cycle_completion_back();
+        assert_eq!(s.completion_cursor(), 1);
+        assert_eq!(s.value(), format!("{}/app_b.elf", dir.display()));
+        s.cycle_completion_back();
+        assert_eq!(s.completion_cursor(), 0);
+        assert_eq!(s.value(), format!("{}/app_a.elf", dir.display()));
+    }
+
+    #[test]
+    fn cycle_completion_back_noop_when_empty() {
+        let mut s = Selector::new(None);
+        s.cycle_completion_back();
+        assert_eq!(s.completion_cursor(), 0);
+        assert_eq!(s.value(), "");
+    }
+
+    #[test]
+    fn move_completion_writes_input_live() {
+        let dir = tempdir();
+        fs::write(dir.join("app_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        fs::write(dir.join("app_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+
+        let prefix = format!("{}/a", dir.display());
+        let mut s = sel(&prefix);
+        s.tab_complete();
+        s.move_completion(1);
+        assert_eq!(s.value(), format!("{}/app_b.elf", dir.display()));
+        s.move_completion(-1);
+        assert_eq!(s.value(), format!("{}/app_a.elf", dir.display()));
     }
 
     fn tempdir() -> std::path::PathBuf {
