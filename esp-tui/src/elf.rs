@@ -30,6 +30,9 @@ pub(crate) struct Selector {
     cursor: usize,
     completions: Vec<String>,
     completion_cursor: usize,
+    /// The parent prefix captured when completions were last computed, so that
+    /// cycling always replaces the last segment rather than appending to it.
+    completion_parent: String,
 }
 
 impl Selector {
@@ -47,6 +50,7 @@ impl Selector {
             cursor,
             completions: Vec::new(),
             completion_cursor: 0,
+            completion_parent: String::new(),
         }
     }
 
@@ -60,6 +64,7 @@ impl Selector {
         self.cursor += ch.len_utf8();
         self.completions.clear();
         self.completion_cursor = 0;
+        self.completion_parent.clear();
     }
 
     /// Removes the character before the cursor and clears completions.
@@ -80,6 +85,7 @@ impl Selector {
         self.cursor = 0;
         self.completions.clear();
         self.completion_cursor = 0;
+        self.completion_parent.clear();
     }
 
     /// Moves the text cursor to the end of the input and clears completions.
@@ -87,6 +93,7 @@ impl Selector {
         self.cursor = self.input.len();
         self.completions.clear();
         self.completion_cursor = 0;
+        self.completion_parent.clear();
     }
 
     /// Clears the entire input text, resets the cursor, and clears
@@ -96,6 +103,7 @@ impl Selector {
         self.cursor = 0;
         self.completions.clear();
         self.completion_cursor = 0;
+        self.completion_parent.clear();
     }
 
     /// Deletes the character under the cursor (forward delete) and clears
@@ -114,6 +122,7 @@ impl Selector {
         self.input.truncate(self.cursor);
         self.completions.clear();
         self.completion_cursor = 0;
+        self.completion_parent.clear();
     }
 
     /// Deletes from the start of the input to the cursor and clears
@@ -123,6 +132,7 @@ impl Selector {
         self.cursor = 0;
         self.completions.clear();
         self.completion_cursor = 0;
+        self.completion_parent.clear();
     }
 
     /// Deletes the word immediately before the cursor, stopping at `/`
@@ -138,6 +148,7 @@ impl Selector {
         self.cursor = word_start;
         self.completions.clear();
         self.completion_cursor = 0;
+        self.completion_parent.clear();
     }
 
     /// Moves the text cursor left or right, clamped to the input bounds.
@@ -169,6 +180,7 @@ impl Selector {
         }
         self.completions.clear();
         self.completion_cursor = 0;
+        self.completion_parent.clear();
     }
 
     /// Returns the current input string.
@@ -226,20 +238,18 @@ impl Selector {
         completions.sort();
         self.completions = completions;
         self.completion_cursor = 0;
+        self.completion_parent = if parent_str == "." {
+            String::new()
+        } else {
+            parent_str.to_owned()
+        };
     }
 
     fn apply_highlighted_completion(&mut self) {
         let Some(completion) = self.completions.get(self.completion_cursor) else {
             return;
         };
-        let parent = if self.input.ends_with('/') {
-            self.input.as_str()
-        } else if let Some(slash) = self.input.rfind('/') {
-            &self.input[..=slash]
-        } else {
-            ""
-        };
-        self.input = format!("{parent}{completion}");
+        self.input = format!("{}{completion}", self.completion_parent);
         self.cursor = self.input.len();
     }
 
@@ -297,6 +307,7 @@ impl Selector {
         self.apply_highlighted_completion();
         self.completions.clear();
         self.completion_cursor = 0;
+        self.completion_parent.clear();
     }
 
     /// Performs zsh-style menu tab completion.
@@ -915,6 +926,31 @@ mod tests {
         assert_eq!(s.value(), format!("{}/app_b.elf", dir.display()));
         s.move_completion(-1);
         assert_eq!(s.value(), format!("{}/app_a.elf", dir.display()));
+    }
+
+    #[test]
+    fn tab_complete_cycling_dirs_replaces_not_appends() {
+        let dir = tempdir();
+        fs::create_dir(dir.join("alpha")).unwrap();
+        fs::create_dir(dir.join("beta")).unwrap();
+
+        let prefix = dir.display().to_string() + "/";
+        let mut s = sel(&prefix);
+        s.tab_complete();
+        let first = s.value().to_owned();
+        assert!(
+            first == format!("{}/alpha/", dir.display())
+                || first == format!("{}/beta/", dir.display())
+        );
+        s.tab_complete();
+        let second = s.value().to_owned();
+        assert_ne!(first, second);
+        assert!(
+            second == format!("{}/alpha/", dir.display())
+                || second == format!("{}/beta/", dir.display())
+        );
+        s.tab_complete();
+        assert_eq!(s.value(), first);
     }
 
     fn tempdir() -> std::path::PathBuf {
