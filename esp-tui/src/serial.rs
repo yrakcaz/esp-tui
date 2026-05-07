@@ -117,7 +117,7 @@ impl Port {
                     .is_ok();
                 if connected {
                     let mut reader = std::io::BufReader::new(port);
-                    let mut line = String::new();
+                    let mut buf: Vec<u8> = Vec::new();
 
                     loop {
                         if *shutdown.borrow() {
@@ -130,16 +130,18 @@ impl Port {
                                 ));
                             }
                         }
-                        match reader.read_line(&mut line) {
+                        match reader.read_until(b'\n', &mut buf) {
                             Ok(0) => {
                                 let _ = tx.send(crate::event::Message::Disconnected);
                                 break;
                             }
                             Ok(_) => {
-                                let trimmed = line.trim_end().to_owned();
-                                line.clear();
+                                let line = String::from_utf8_lossy(&buf)
+                                    .trim_end()
+                                    .to_owned();
+                                buf.clear();
                                 if tx
-                                    .send(crate::event::Message::Serial(trimmed))
+                                    .send(crate::event::Message::Serial(line))
                                     .is_err()
                                 {
                                     break;
