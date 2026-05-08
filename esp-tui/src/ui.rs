@@ -722,7 +722,7 @@ mod tests {
             current: 0,
             total: 0,
         });
-        app.set_status("Waiting for flash to complete...".into());
+        app.set_status("Waiting for flash to complete...");
         render(&app);
     }
 
@@ -737,7 +737,7 @@ mod tests {
     fn draw_with_flash_state_erasing_and_status_overlay_does_not_panic() {
         let mut app = App::new(Some("COM1".into()));
         app.set_flash_state(crate::flash::State::Erasing);
-        app.set_status("Operation already in progress.".into());
+        app.set_status("Operation already in progress.");
         render(&app);
     }
 
@@ -745,7 +745,7 @@ mod tests {
     fn draw_with_flash_state_reconnecting_does_not_panic() {
         let mut app = App::new(Some("COM1".into()));
         app.set_flash_state(crate::flash::State::Reconnecting);
-        app.set_status("Flash complete. Reconnecting...".into());
+        app.set_status("Flash complete. Reconnecting...");
         render(&app);
     }
 

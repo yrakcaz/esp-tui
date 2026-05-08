@@ -86,6 +86,25 @@ esp-tui --port /dev/ttyUSB0      # connect to a specific port
 | `q` / `Esc` | Exit scroll mode, or quit |
 | `Ctrl-C` | Quit |
 
+**ELF path selector** (active while the `f` popup is open)
+
+| Key | Action |
+|---|---|
+| `Tab` | Tab-complete: auto-accept single match, extend to common prefix for multiple |
+| `Shift-Tab` | Cycle completions backward |
+| `↑` / `↓` | Move through completion list |
+| `←` / `→` | Move cursor left / right |
+| `Enter` | Accept highlighted completion, or confirm path if no menu is open |
+| `Esc` | Close selector without saving |
+| `Backspace` | Delete character before cursor |
+| `Ctrl-A` | Move cursor to start of input |
+| `Ctrl-E` | Move cursor to end of input |
+| `Ctrl-D` | Delete character under cursor |
+| `Ctrl-K` | Delete from cursor to end of input |
+| `Ctrl-U` | Delete from start of input to cursor |
+| `Ctrl-W` | Delete word before cursor (stops at `/`) |
+| `Ctrl-L` | Clear entire input |
+
 ---
 
 ## Roadmap

@@ -93,7 +93,10 @@ impl State {
     /// * `delta` - Positive to move down, negative to move up.
     pub(crate) fn move_cursor(&mut self, delta: isize) {
         let total = LEVELS.len() + self.known_tags.len();
-        self.cursor = self.cursor.saturating_add_signed(delta).min(total - 1);
+        self.cursor = self
+            .cursor
+            .saturating_add_signed(delta)
+            .min(total.saturating_sub(1));
     }
 
     /// Toggles all items: hides everything if all are currently visible,

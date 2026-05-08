@@ -155,10 +155,10 @@ pub(crate) fn parse_line(line: &str) -> Entry {
     let s = clean.as_ref();
     RE.captures(s)
         .and_then(|caps| {
-            let level_char =
-                caps[1].chars().next().expect("regex guarantees non-empty");
-            Level::try_from(level_char)
-                .ok()
+            caps[1]
+                .chars()
+                .next()
+                .and_then(|c| Level::try_from(c).ok())
                 .map(|level| Entry::parsed(level, &caps[3], &caps[4]))
         })
         .or_else(|| {

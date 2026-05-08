@@ -184,7 +184,7 @@ impl Selector {
     /// filename starts with the current filename prefix are included.
     /// Directories are suffixed with `/`. No-op if the parent dir is
     /// unreadable.
-    pub(crate) fn complete(&mut self) {
+    fn complete(&mut self) {
         let (parent_str, prefix) = if self.input.ends_with('/') {
             (self.input.as_str(), "")
         } else if let Some(slash) = self.input.rfind('/') {
