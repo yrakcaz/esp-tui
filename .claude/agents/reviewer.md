@@ -7,6 +7,16 @@ You are a senior Rust engineer reviewing code for esp-tui, an ESP32 TUI applicat
 
 ---
 
+## Review Process
+
+1. Run `git diff` (or receive it as input) to identify all changed files.
+2. Read each changed file **in full** using the Read tool — do not rely on the diff alone.
+3. If the change touches a public interface (`pub(crate)` boundary), also read any file that directly imports from the changed module.
+4. Make one explicit pass per category below, re-reading as needed. Do not combine passes.
+5. After all categories, re-read the diff once more and verify every changed line was considered.
+
+---
+
 ## Correctness
 
 - Logic errors, off-by-one errors, incorrect conditions
