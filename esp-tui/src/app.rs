@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Context;
@@ -13,10 +14,11 @@ use ratatui::Terminal;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{interval, Duration};
 
-use crate::{demo, event, filter, log, serial, ui};
+use crate::{demo, elf, event, filter, flash, log, port, serial, ui};
 
 const BUFFER_SIZE: usize = 10_000;
 const STATUS_TTL_SECS: u64 = 3;
+const DEFAULT_BAUD: u32 = 115_200;
 
 #[derive(Parser)]
 #[command(name = "esp-tui", about = "ESP32 developer TUI")]
@@ -28,6 +30,10 @@ struct Args {
     /// Run in demo mode with synthetic log output (no hardware required).
     #[arg(long)]
     demo: bool,
+
+    /// Serial baud rate.
+    #[arg(long, short = 'b')]
+    baud: Option<u32>,
 }
 
 /// Outcome of a keypress that requires I/O, returned to the event loop to act on.
@@ -45,79 +51,24 @@ pub(crate) enum Action {
     ScanPorts,
     /// Connect to the given port name (emitted by the port selector popup).
     ConnectPort(String),
+    /// Start flashing the selected ELF to the connected device.
+    Flash,
+    /// Open the erase confirmation prompt.
+    ErasePrompt,
+    /// Confirm the erase and start the operation.
+    ConfirmErase,
+    /// Close the ELF path selector popup without saving.
+    CloseElfSelector,
+    /// Confirm the ELF path currently typed in the selector.
+    ConfirmElfPath,
+    /// Open the quit confirmation prompt.
+    QuitPrompt,
 }
 
-/// State for the port selection popup shown at startup when multiple ports are
-/// detected.
-pub(crate) struct PortSelector {
-    ports: Vec<String>,
-    cursor: usize,
-}
-
-impl PortSelector {
-    /// Creates a new port selector with the given list of candidate ports.
-    ///
-    /// # Arguments
-    ///
-    /// * `ports` - Non-empty list of port names to select from.
-    #[must_use]
-    pub(crate) fn new(ports: Vec<String>) -> Self {
-        Self { ports, cursor: 0 }
-    }
-
-    /// Returns all candidate port names.
-    ///
-    /// # Returns
-    ///
-    /// A slice of port name strings in selection order.
-    #[must_use]
-    pub(crate) fn ports(&self) -> &[String] {
-        &self.ports
-    }
-
-    /// Returns the current cursor index.
-    ///
-    /// # Returns
-    ///
-    /// Zero-based index into the port list.
-    #[must_use]
-    pub(crate) fn cursor(&self) -> usize {
-        self.cursor
-    }
-
-    /// Moves the cursor by `delta`, clamped to the port list bounds.
-    ///
-    /// # Arguments
-    ///
-    /// * `delta` - Positive to move down, negative to move up.
-    pub(crate) fn move_cursor(&mut self, delta: isize) {
-        let len = self.ports.len();
-        if len > 0 {
-            self.cursor = self.cursor.saturating_add_signed(delta).min(len - 1);
-        }
-    }
-
-    /// Returns the currently selected port name.
-    ///
-    /// # Returns
-    ///
-    /// The port name at the current cursor, or an empty string if the list is
-    /// empty.
-    #[must_use]
-    pub(crate) fn selected(&self) -> &str {
-        self.ports.get(self.cursor).map_or("", String::as_str)
-    }
-
-    /// Replaces the candidate port list and clamps the cursor to the new
-    /// bounds.
-    ///
-    /// # Arguments
-    ///
-    /// * `ports` - Updated list of available ports.
-    pub(crate) fn update_ports(&mut self, ports: Vec<String>) {
-        self.cursor = self.cursor.min(ports.len().saturating_sub(1));
-        self.ports = ports;
-    }
+enum ConfirmDialog {
+    None,
+    Quit,
+    Erase,
 }
 
 /// Central application state.
@@ -130,8 +81,14 @@ pub(crate) struct App {
     source_shutdown_tx: Option<watch::Sender<bool>>,
     status_msg: Option<(String, Instant)>,
     running: bool,
-    port_selector: Option<PortSelector>,
+    port_selector: Option<port::Selector>,
     demo: bool,
+    flash_state: flash::State,
+    device_info: Option<flash::DeviceInfo>,
+    confirm: ConfirmDialog,
+    elf_path: Option<PathBuf>,
+    elf_selector: Option<elf::Selector>,
+    baud: u32,
 }
 
 impl App {
@@ -158,6 +115,12 @@ impl App {
             running: true,
             port_selector: None,
             demo: false,
+            flash_state: flash::State::Idle,
+            device_info: None,
+            confirm: ConfirmDialog::None,
+            elf_path: None,
+            elf_selector: None,
+            baud: DEFAULT_BAUD,
         }
     }
 
@@ -193,89 +156,241 @@ impl App {
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Action {
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
             Action::Quit
+        } else if matches!(self.confirm, ConfirmDialog::Quit) {
+            self.handle_key_quit_confirm(key)
+        } else if matches!(self.confirm, ConfirmDialog::Erase) {
+            self.handle_key_erase_confirm(key)
+        } else if self.elf_selector.is_some() {
+            self.handle_key_elf_selector(key)
         } else if self.port_selector.is_some() {
-            match key.code {
-                KeyCode::Up => {
-                    if let Some(s) = self.port_selector.as_mut() {
-                        s.move_cursor(-1);
-                    }
-                    Action::None
-                }
-                KeyCode::Down => {
-                    if let Some(s) = self.port_selector.as_mut() {
-                        s.move_cursor(1);
-                    }
-                    Action::None
-                }
-                KeyCode::Enter => {
-                    self.port_selector.take().map_or(Action::None, |s| {
-                        Action::ConnectPort(s.selected().to_owned())
-                    })
-                }
-                KeyCode::Char('q' | 'c') | KeyCode::Esc => {
-                    self.port_selector = None;
-                    Action::None
-                }
-                _ => Action::None,
-            }
+            self.handle_key_port_selector(key)
         } else if self.filter.is_popup_open() {
-            match key.code {
-                KeyCode::Up => self.filter.move_cursor(-1),
-                KeyCode::Down => self.filter.move_cursor(1),
-                KeyCode::Char(' ') => self.filter.toggle_at_cursor(),
-                KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
-                    self.filter.toggle_all();
-                }
-                KeyCode::Tab | KeyCode::Esc | KeyCode::Char('q') => {
-                    self.filter.toggle_popup();
-                }
-                _ => {}
-            }
+            self.handle_key_filter_popup(key);
             Action::None
         } else {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc if self.scroll > 0 => {
-                    self.scroll = 0;
-                    Action::None
-                }
-                KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
-                KeyCode::Char('d') => Action::Disconnect,
-                KeyCode::Char('r') => Action::ResetDevice,
-                KeyCode::Char('f') => {
-                    self.set_status("Flash: not implemented (Phase 2)".into());
-                    Action::None
-                }
-                KeyCode::Char('e') => {
-                    self.set_status("Erase: not implemented (Phase 2)".into());
-                    Action::None
-                }
-                KeyCode::Char('c') => Action::ScanPorts,
-                KeyCode::Tab => {
-                    self.filter.toggle_popup();
-                    Action::None
-                }
-                KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
-                    self.clear_log();
-                    Action::None
-                }
-                KeyCode::Up => {
-                    self.scroll = self.scroll.saturating_add(1);
-                    Action::None
-                }
-                KeyCode::Down => {
-                    self.scroll = self.scroll.saturating_sub(1);
-                    Action::None
-                }
-                KeyCode::PageUp => {
-                    self.scroll = self.scroll.saturating_add(10);
-                    Action::None
-                }
-                KeyCode::PageDown => {
-                    self.scroll = self.scroll.saturating_sub(10);
-                    Action::None
-                }
-                _ => Action::None,
+            self.handle_key_normal(key)
+        }
+    }
+
+    fn handle_key_quit_confirm(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Char('y') => Action::Quit,
+            KeyCode::Char('n' | 'q') | KeyCode::Esc => {
+                self.close_quit_confirm();
+                Action::None
             }
+            _ => Action::None,
+        }
+    }
+
+    fn handle_key_erase_confirm(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Char('y') => Action::ConfirmErase,
+            KeyCode::Char('n' | 'q' | 'e') | KeyCode::Esc => {
+                self.confirm = ConfirmDialog::None;
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn handle_key_elf_selector(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc => Action::CloseElfSelector,
+            KeyCode::Enter => {
+                let was_cycling = self
+                    .elf_selector
+                    .as_ref()
+                    .is_some_and(|s| !s.completions().is_empty());
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.accept_completion();
+                }
+                if was_cycling {
+                    Action::None
+                } else {
+                    Action::ConfirmElfPath
+                }
+            }
+            KeyCode::Tab => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.tab_complete();
+                }
+                Action::None
+            }
+            KeyCode::BackTab => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.cycle_completion_back();
+                }
+                Action::None
+            }
+            KeyCode::Up => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.move_completion(-1);
+                }
+                Action::None
+            }
+            KeyCode::Down => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.move_completion(1);
+                }
+                Action::None
+            }
+            KeyCode::Left => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.move_cursor(-1);
+                }
+                Action::None
+            }
+            KeyCode::Right => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.move_cursor(1);
+                }
+                Action::None
+            }
+            KeyCode::Backspace => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.backspace();
+                }
+                Action::None
+            }
+            _ if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.handle_key_elf_selector_ctrl(key)
+            }
+            KeyCode::Char(ch) => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.push_char(ch);
+                }
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn handle_key_elf_selector_ctrl(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Char('a') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.move_cursor_to_start();
+                }
+                Action::None
+            }
+            KeyCode::Char('e') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.move_cursor_to_end();
+                }
+                Action::None
+            }
+            KeyCode::Char('l') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.clear_input();
+                }
+                Action::None
+            }
+            KeyCode::Char('d') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.delete_forward();
+                }
+                Action::None
+            }
+            KeyCode::Char('k') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.kill_to_end();
+                }
+                Action::None
+            }
+            KeyCode::Char('u') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.kill_to_start();
+                }
+                Action::None
+            }
+            KeyCode::Char('w') => {
+                if let Some(s) = self.elf_selector.as_mut() {
+                    s.kill_word_back();
+                }
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn handle_key_port_selector(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Up => {
+                if let Some(s) = self.port_selector.as_mut() {
+                    s.move_cursor(-1);
+                }
+                Action::None
+            }
+            KeyCode::Down => {
+                if let Some(s) = self.port_selector.as_mut() {
+                    s.move_cursor(1);
+                }
+                Action::None
+            }
+            KeyCode::Enter => self.port_selector.take().map_or(Action::None, |s| {
+                Action::ConnectPort(s.selected().to_owned())
+            }),
+            KeyCode::Char('q' | 'c') | KeyCode::Esc => {
+                self.port_selector = None;
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn handle_key_filter_popup(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up => self.filter.move_cursor(-1),
+            KeyCode::Down => self.filter.move_cursor(1),
+            KeyCode::Char(' ') => self.filter.toggle_at_cursor(),
+            KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
+                self.filter.toggle_all();
+            }
+            KeyCode::Tab | KeyCode::Esc | KeyCode::Char('q') => {
+                self.filter.toggle_popup();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_normal(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc if self.scroll > 0 => {
+                self.scroll = 0;
+                Action::None
+            }
+            KeyCode::Char('q') | KeyCode::Esc => Action::QuitPrompt,
+            KeyCode::Char('d') => Action::Disconnect,
+            KeyCode::Char('r') => Action::ResetDevice,
+            KeyCode::Char('f') => Action::Flash,
+            KeyCode::Char('e') => Action::ErasePrompt,
+            KeyCode::Char('c') => Action::ScanPorts,
+            KeyCode::Tab => {
+                self.filter.toggle_popup();
+                Action::None
+            }
+            KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
+                self.clear_log();
+                Action::None
+            }
+            KeyCode::Up => {
+                self.scroll = self.scroll.saturating_add(1);
+                Action::None
+            }
+            KeyCode::Down => {
+                self.scroll = self.scroll.saturating_sub(1);
+                Action::None
+            }
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_add(10);
+                Action::None
+            }
+            KeyCode::PageDown => {
+                self.scroll = self.scroll.saturating_sub(10);
+                Action::None
+            }
+            _ => Action::None,
         }
     }
 
@@ -376,10 +491,10 @@ impl App {
     ///
     /// # Returns
     ///
-    /// `Some` with a reference to the active [`PortSelector`], or `None` if no
-    /// selector is open.
+    /// `Some` with a reference to the active [`port::Selector`], or `None` if
+    /// no selector is open.
     #[must_use]
-    pub(crate) fn port_selector(&self) -> Option<&PortSelector> {
+    pub(crate) fn port_selector(&self) -> Option<&port::Selector> {
         self.port_selector.as_ref()
     }
 
@@ -387,11 +502,16 @@ impl App {
     ///
     /// # Returns
     ///
-    /// `Some` with a mutable reference to the active [`PortSelector`], or
+    /// `Some` with a mutable reference to the active [`port::Selector`], or
     /// `None` if no selector is open.
     #[cfg(test)]
-    pub(crate) fn port_selector_mut(&mut self) -> Option<&mut PortSelector> {
+    pub(crate) fn port_selector_mut(&mut self) -> Option<&mut port::Selector> {
         self.port_selector.as_mut()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn elf_selector_mut(&mut self) -> Option<&mut elf::Selector> {
+        self.elf_selector.as_mut()
     }
 
     /// Sets the connected port name and clears the port selector.
@@ -457,13 +577,13 @@ impl App {
     ///
     /// * `ports` - Non-empty list of port names to present for selection.
     pub(crate) fn open_port_selector(&mut self, ports: Vec<String>) {
-        self.port_selector = Some(PortSelector::new(ports));
+        self.port_selector = Some(port::Selector::new(ports));
     }
 
     /// Updates the open port selector with a refreshed port list.
     ///
-    /// Closes the selector when `ports` is empty; otherwise replaces the
-    /// list and clamps the cursor.
+    /// Closes the selector when `ports` is empty; otherwise replaces the list
+    /// and clamps the cursor.
     ///
     /// # Arguments
     ///
@@ -522,11 +642,202 @@ impl App {
     pub(crate) fn set_demo(&mut self) {
         self.demo = true;
     }
+
+    /// Returns the current flash operation state.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the current [`flash::State`].
+    #[must_use]
+    pub(crate) fn flash_state(&self) -> &flash::State {
+        &self.flash_state
+    }
+
+    /// Returns `true` while a flash or erase operation is in progress or the
+    /// device is reconnecting after one.
+    ///
+    /// # Returns
+    ///
+    /// `true` if state is `Flashing`, `Erasing`, or `Reconnecting`.
+    #[must_use]
+    pub(crate) fn is_flashing(&self) -> bool {
+        matches!(
+            self.flash_state,
+            flash::State::Flashing { .. }
+                | flash::State::Erasing
+                | flash::State::Reconnecting
+        )
+    }
+
+    /// Updates the flash operation state.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - The new [`flash::State`].
+    pub(crate) fn set_flash_state(&mut self, state: flash::State) {
+        self.flash_state = state;
+    }
+
+    /// Returns the device info received after the last successful connection.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with a reference to [`flash::DeviceInfo`], or `None` if no info
+    /// has been received.
+    #[must_use]
+    pub(crate) fn device_info(&self) -> Option<&flash::DeviceInfo> {
+        self.device_info.as_ref()
+    }
+
+    /// Stores device info received from the probe task.
+    ///
+    /// # Arguments
+    ///
+    /// * `info` - The [`flash::DeviceInfo`] returned by the probe.
+    pub(crate) fn set_device_info(&mut self, info: flash::DeviceInfo) {
+        self.device_info = Some(info);
+    }
+
+    /// Returns `true` while the erase confirmation prompt is visible.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the erase confirm dialog is open, `false` otherwise.
+    #[must_use]
+    pub(crate) fn is_erase_confirm_open(&self) -> bool {
+        matches!(self.confirm, ConfirmDialog::Erase)
+    }
+
+    /// Opens the erase confirmation prompt.
+    pub(crate) fn open_erase_confirm(&mut self) {
+        self.confirm = ConfirmDialog::Erase;
+    }
+
+    /// Closes the erase confirmation prompt.
+    pub(crate) fn close_erase_confirm(&mut self) {
+        self.confirm = ConfirmDialog::None;
+    }
+
+    /// Returns `true` if the quit confirm dialog is open, `false` otherwise.
+    #[must_use]
+    pub(crate) fn is_quit_confirm_open(&self) -> bool {
+        matches!(self.confirm, ConfirmDialog::Quit)
+    }
+
+    /// Opens the quit confirmation prompt.
+    pub(crate) fn open_quit_confirm(&mut self) {
+        self.confirm = ConfirmDialog::Quit;
+    }
+
+    /// Closes the quit confirmation prompt.
+    pub(crate) fn close_quit_confirm(&mut self) {
+        self.confirm = ConfirmDialog::None;
+    }
+
+    /// Returns the currently selected ELF path, if any.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with a reference to the path, or `None` if not set.
+    #[must_use]
+    pub(crate) fn elf_path(&self) -> Option<&Path> {
+        self.elf_path.as_deref()
+    }
+
+    /// Sets the ELF path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to the ELF firmware file.
+    pub(crate) fn set_elf_path(&mut self, path: PathBuf) {
+        self.elf_path = Some(path);
+    }
+
+    /// Returns the configured baud rate.
+    ///
+    /// # Returns
+    ///
+    /// The serial baud rate in bits per second.
+    #[must_use]
+    pub(crate) fn baud(&self) -> u32 {
+        self.baud
+    }
+
+    /// Sets the baud rate.
+    ///
+    /// # Arguments
+    ///
+    /// * `baud` - The baud rate in bits per second.
+    pub(crate) fn set_baud(&mut self, baud: u32) {
+        self.baud = baud;
+    }
+
+    /// Opens the ELF path selector popup, optionally pre-filling the input.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefill` - If `Some`, the input is pre-populated with this path.
+    pub(crate) fn open_elf_selector(&mut self, prefill: Option<&Path>) {
+        self.elf_selector = Some(elf::Selector::new(prefill));
+    }
+
+    /// Closes the ELF path selector popup.
+    pub(crate) fn close_elf_selector(&mut self) {
+        self.elf_selector = None;
+    }
+
+    /// Returns `true` while the ELF path selector popup is visible.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the ELF selector is open, `false` otherwise.
+    #[must_use]
+    pub(crate) fn is_elf_selector_open(&self) -> bool {
+        self.elf_selector.is_some()
+    }
+
+    /// Returns a shared reference to the ELF selector, if open.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with a reference to the [`elf::Selector`], or `None`.
+    #[must_use]
+    pub(crate) fn elf_selector(&self) -> Option<&elf::Selector> {
+        self.elf_selector.as_ref()
+    }
 }
 
-fn begin_connect(port: &str, tx: &mpsc::UnboundedSender<event::Message>) {
+fn begin_connect(port: &str, baud: u32, tx: &mpsc::UnboundedSender<event::Message>) {
     let (src_tx, src_rx) = watch::channel(false);
-    serial::Port::new(port).spawn(tx.clone(), src_rx, src_tx);
+    let port_name = port.to_owned();
+    let tx_task = tx.clone();
+    drop(tokio::task::spawn_blocking(move || {
+        serial::Port::new(&port_name, baud)
+            .connect_and_read(&tx_task, &src_rx, src_tx);
+    }));
+}
+
+// After flash/erase the chip is already reset by espflash and device info was
+// collected during the operation. Probing again would re-enter the ROM
+// bootloader, so this function skips the probe and goes straight to the
+// firmware-mode reset and serial reader.
+fn begin_reconnect(
+    port: &str,
+    baud: u32,
+    tx: &mpsc::UnboundedSender<event::Message>,
+) {
+    let (src_tx, src_rx) = watch::channel(false);
+    let port_name = port.to_owned();
+    let tx_task = tx.clone();
+    drop(tokio::task::spawn_blocking(move || {
+        // Wait for the chip to finish its espflash-initiated reset and for any
+        // USB re-enumeration to settle before asserting our own reset.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        serial::reset_to_run(&port_name, baud);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        serial::Port::new(&port_name, baud)
+            .connect_and_read(&tx_task, &src_rx, src_tx);
+    }));
 }
 
 fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
@@ -534,15 +845,22 @@ fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
 }
 
 fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
-    match serial::detect_esp_ports() {
-        Err(e) => app.set_status(format!("Port scan failed: {e}")),
-        Ok(ports) if ports.is_empty() => {
-            app.set_status("No devices detected.".into());
+    if app.is_flashing() {
+        app.set_status("Operation already in progress.".into());
+    } else {
+        match serial::detect_esp_ports() {
+            Err(e) => app.set_status(format!("Port scan failed: {e}")),
+            Ok(ports) if ports.is_empty() => {
+                app.set_status("No devices detected.".into());
+            }
+            Ok(mut ports) if ports.len() == 1 => {
+                let port = ports.remove(0);
+                app.set_status(format!("Connecting to {port}..."));
+                app.set_port(port.clone());
+                begin_connect(&port, app.baud(), tx);
+            }
+            Ok(ports) => app.open_port_selector(ports),
         }
-        Ok(mut ports) if ports.len() == 1 => {
-            begin_connect(&ports.remove(0), tx);
-        }
-        Ok(ports) => app.open_port_selector(ports),
     }
 }
 
@@ -552,7 +870,7 @@ fn handle_ports_detected(
     previous: &[String],
     tx: &mpsc::UnboundedSender<event::Message>,
 ) {
-    if !app.is_demo() {
+    if !app.is_demo() && !app.is_flashing() {
         if app.port_name().is_none() {
             if app.port_selector().is_some() {
                 match current.len() {
@@ -562,14 +880,21 @@ fn handle_ports_detected(
                     }
                     1 => {
                         app.close_port_selector();
-                        begin_connect(&current[0], tx);
+                        app.set_status(format!("Connecting to {}...", current[0]));
+                        app.set_port(current[0].clone());
+                        begin_connect(&current[0], app.baud(), tx);
                     }
                     _ => app.refresh_port_selector(current),
                 }
             } else {
                 match current.len() {
                     0 => {}
-                    1 => begin_connect(&current.remove(0), tx),
+                    1 => {
+                        let port = current.remove(0);
+                        app.set_status(format!("Connecting to {port}..."));
+                        app.set_port(port.clone());
+                        begin_connect(&port, app.baud(), tx);
+                    }
                     _ => app.open_port_selector(current),
                 }
             }
@@ -618,6 +943,69 @@ fn spawn_port_poller(
     });
 }
 
+fn confirm_elf_path(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
+    let value = app
+        .elf_selector()
+        .map(|s| s.value().to_owned())
+        .unwrap_or_default();
+    let path = PathBuf::from(&value);
+    if path.is_dir() {
+        app.set_status("Path is a directory.".into());
+    } else if !path.is_file() {
+        app.set_status("Path not found.".into());
+    } else if !elf::is_elf_file(&path) {
+        app.set_status("Not a valid ELF file.".into());
+    } else {
+        app.set_elf_path(path);
+        app.close_elf_selector();
+        do_flash(app, tx);
+    }
+}
+
+fn start_flash(app: &mut App) {
+    if app.port_name().is_none() {
+        app.set_status("No port connected.".into());
+    } else if app.is_flashing() {
+        app.set_status("Operation already in progress.".into());
+    } else {
+        let prefill = app.elf_path().map(Path::to_path_buf);
+        app.open_elf_selector(prefill.as_deref());
+    }
+}
+
+fn do_flash(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
+    if app.is_flashing() {
+        app.set_status("Flash already in progress.".into());
+    } else {
+        match (
+            app.port_name().map(str::to_owned),
+            app.elf_path().map(Path::to_path_buf),
+        ) {
+            (None, _) => app.set_status("No port connected.".into()),
+            (_, None) => {}
+            (Some(port), Some(elf_path)) => {
+                let baud = app.baud();
+                app.shutdown_source();
+                app.set_flash_state(flash::State::Flashing {
+                    addr: 0,
+                    current: 0,
+                    total: 0,
+                });
+                let tx_task = tx.clone();
+                drop(std::thread::spawn(move || {
+                    // The serial reader has a 100ms read timeout; wait long
+                    // enough for it to observe the shutdown signal and release
+                    // the port fd.
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    let result =
+                        flash::flash_elf(&port, baud, &elf_path, tx_task.clone());
+                    let _ = tx_task.send(event::Message::FlashDone(result));
+                }));
+            }
+        }
+    }
+}
+
 fn handle_action(
     app: &mut App,
     action: Action,
@@ -626,34 +1014,173 @@ fn handle_action(
     match action {
         Action::None => {}
         Action::Quit => app.quit(),
+        Action::QuitPrompt => {
+            if app.is_flashing() {
+                app.set_status("Operation already in progress.".into());
+            } else {
+                app.open_quit_confirm();
+            }
+        }
         Action::Disconnect => {
-            if app.port_name().is_some() {
+            if app.is_flashing() {
+                app.set_status("Operation already in progress.".into());
+            } else if app.port_name().is_some() {
                 app.disconnect();
                 app.set_status("Disconnected.".into());
             } else {
                 app.set_status("Not connected.".into());
             }
         }
+        Action::CloseElfSelector => app.close_elf_selector(),
+        Action::ConfirmElfPath => confirm_elf_path(app, tx),
         // All actions below touch real hardware. New hardware actions must go
         // after this arm so demo mode blocks them automatically.
         _ if app.is_demo() => {
             app.set_status("Not available in demo mode.".into());
         }
-        Action::ResetDevice => match app.port_cmd_tx() {
-            Some(cmd_tx) => {
-                if cmd_tx.send(serial::PortCommand::Reset).is_err() {
-                    app.set_status("Reset failed: port disconnected.".into());
-                } else {
-                    app.set_status("Reset sent.".into());
+        Action::ResetDevice => {
+            if app.is_flashing() {
+                app.set_status("Operation already in progress.".into());
+            } else {
+                match app.port_cmd_tx() {
+                    Some(cmd_tx) => {
+                        if cmd_tx.send(serial::PortCommand::Reset).is_err() {
+                            app.set_status(
+                                "Reset failed: port disconnected.".into(),
+                            );
+                        } else {
+                            app.set_status("Reset sent.".into());
+                        }
+                    }
+                    None if app.port_name().is_some() => {
+                        app.set_status("Reset not supported.".into());
+                    }
+                    None => app.set_status("No port connected.".into()),
                 }
             }
-            None if app.port_name().is_some() => {
-                app.set_status("Reset not supported.".into());
-            }
-            None => app.set_status("No port connected.".into()),
-        },
+        }
         Action::ScanPorts => apply_scan(app, tx),
-        Action::ConnectPort(port) => begin_connect(&port, tx),
+        Action::ConnectPort(port) => {
+            if app.is_flashing() {
+                app.set_status("Operation already in progress.".into());
+            } else {
+                app.set_status(format!("Connecting to {port}..."));
+                app.set_port(port.clone());
+                begin_connect(&port, app.baud(), tx);
+            }
+        }
+        Action::ErasePrompt => {
+            if app.port_name().is_none() {
+                app.set_status("No port connected.".into());
+            } else if app.is_flashing() {
+                app.set_status("Operation already in progress.".into());
+            } else {
+                app.open_erase_confirm();
+            }
+        }
+        Action::ConfirmErase => {
+            app.close_erase_confirm();
+            if let Some(port) = app.port_name().map(str::to_owned) {
+                let baud = app.baud();
+                app.shutdown_source();
+                app.set_flash_state(flash::State::Erasing);
+                let tx_task = tx.clone();
+                drop(std::thread::spawn(move || {
+                    // The serial reader has a 100ms read timeout; wait long enough for
+                    // it to observe the shutdown signal and release the port fd.
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    let result = flash::erase_flash(&port, baud);
+                    let _ = tx_task.send(event::Message::EraseDone(result));
+                }));
+            }
+        }
+        Action::Flash => start_flash(app),
+    }
+}
+
+fn handle_event_message(
+    app: &mut App,
+    msg: event::Message,
+    baud: u32,
+    tx: &mpsc::UnboundedSender<event::Message>,
+) {
+    match msg {
+        event::Message::Key(key) => {
+            let action = app.handle_key(key);
+            handle_action(app, action, tx);
+        }
+        event::Message::Serial(line) => app.push_line(&line),
+        event::Message::Disconnected => {
+            app.disconnect();
+            app.set_status("Disconnected.".into());
+        }
+        event::Message::ConnectSuccess {
+            port,
+            cmd_tx,
+            src_tx,
+        } => {
+            let status = format!("Connected to {port}.");
+            app.set_port(port);
+            app.set_port_cmd(cmd_tx);
+            app.set_source_shutdown(src_tx);
+            app.set_flash_state(flash::State::Idle);
+            app.set_status(status);
+        }
+        event::Message::ConnectError(msg) => {
+            app.set_status(msg);
+            app.disconnect();
+            app.set_flash_state(flash::State::Idle);
+        }
+        event::Message::Tick => app.tick(),
+        event::Message::PortsDetected { current, previous } => {
+            handle_ports_detected(app, current, &previous, tx);
+        }
+        event::Message::FlashProgress {
+            addr,
+            current,
+            total,
+        } => {
+            app.set_flash_state(flash::State::Flashing {
+                addr,
+                current,
+                total,
+            });
+        }
+        event::Message::FlashDone(result) => {
+            match result {
+                Ok(()) => {
+                    app.set_status("Flash complete. Reconnecting...".into());
+                }
+                Err(e) => {
+                    app.set_status(format!("Flash failed: {e}"));
+                }
+            }
+            app.set_flash_state(flash::State::Reconnecting);
+            if let Some(port) = app.port_name().map(str::to_owned) {
+                begin_reconnect(&port, baud, tx);
+            }
+        }
+        event::Message::DeviceInfo(result) => {
+            if let Ok(info) = result {
+                app.set_device_info(info);
+            }
+        }
+        event::Message::EraseDone(result) => {
+            match result {
+                Ok(()) => {
+                    app.set_status("Erase complete.".into());
+                }
+                Err(e) => {
+                    app.set_status(format!("Erase failed: {e}"));
+                }
+            }
+            // The device was disconnected before the erase; reconnect is always
+            // attempted to restore the serial link, same as after flash.
+            app.set_flash_state(flash::State::Reconnecting);
+            if let Some(port) = app.port_name().map(str::to_owned) {
+                begin_reconnect(&port, baud, tx);
+            }
+        }
     }
 }
 
@@ -665,12 +1192,15 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<event::Message>();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    let baud = args.baud.unwrap_or(DEFAULT_BAUD);
     let mut app = App::new(None);
+    app.set_baud(baud);
 
     if args.demo {
         app.set_demo();
         let (src_tx, src_rx) = watch::channel(false);
         demo::spawn(tx.clone(), src_rx);
+        demo::spawn_device_info(tx.clone());
         app.set_port("demo".into());
         app.set_source_shutdown(src_tx);
         app.set_status("Connected to demo.".into());
@@ -678,7 +1208,12 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
         let mut ports = resolve_ports(args.port)?;
         match ports.len() {
             0 => {}
-            1 => begin_connect(&ports.remove(0), &tx),
+            1 => {
+                let port = ports.remove(0);
+                app.set_status(format!("Connecting to {port}..."));
+                app.set_port(port.clone());
+                begin_connect(&port, baud, &tx);
+            }
             _ => app.open_port_selector(ports),
         }
         spawn_port_poller(tx.clone(), shutdown_rx.clone());
@@ -715,35 +1250,7 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
             _ = tick.tick() => event::Message::Tick,
         };
 
-        match msg {
-            event::Message::Key(key) => {
-                let action = app.handle_key(key);
-                handle_action(&mut app, action, &tx);
-            }
-            event::Message::Serial(line) => app.push_line(&line),
-            event::Message::Disconnected => {
-                app.disconnect();
-                app.set_status("Disconnected.".into());
-            }
-            event::Message::ConnectSuccess {
-                port,
-                cmd_tx,
-                src_tx,
-            } => {
-                let status = format!("Connected to {port}.");
-                app.set_port(port);
-                app.set_port_cmd(cmd_tx);
-                app.set_source_shutdown(src_tx);
-                app.set_status(status);
-            }
-            event::Message::ConnectError(msg) => {
-                app.set_status(msg);
-            }
-            event::Message::Tick => app.tick(),
-            event::Message::PortsDetected { current, previous } => {
-                handle_ports_detected(&mut app, current, &previous, &tx);
-            }
-        }
+        handle_event_message(&mut app, msg, baud, &tx);
 
         if !app.is_running() {
             break;
@@ -780,13 +1287,13 @@ pub(crate) async fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
     use tokio::sync::mpsc;
 
     use super::{
-        handle_action, handle_ports_detected, Action, App, PortSelector, BUFFER_SIZE,
+        handle_action, handle_event_message, handle_ports_detected, Action, App,
+        BUFFER_SIZE, DEFAULT_BAUD,
     };
-    use crate::log;
+    use crate::{flash, log};
 
     fn make_tx() -> mpsc::UnboundedSender<crate::event::Message> {
         let (tx, _) = mpsc::unbounded_channel();
@@ -797,66 +1304,17 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::empty())
     }
 
+    fn unique_temp_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "{name}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ))
+    }
+
     fn ctrl(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::CONTROL)
-    }
-
-    #[test]
-    fn port_selector_initial_cursor() {
-        let sel = PortSelector::new(vec!["COM1".into(), "COM2".into()]);
-        assert_eq!(sel.cursor(), 0);
-        assert_eq!(sel.selected(), "COM1");
-    }
-
-    #[test]
-    fn port_selector_move_cursor_navigation() {
-        let mut sel =
-            PortSelector::new(vec!["COM1".into(), "COM2".into(), "COM3".into()]);
-        sel.move_cursor(1);
-        assert_eq!(sel.cursor(), 1);
-        assert_eq!(sel.selected(), "COM2");
-        sel.move_cursor(-1);
-        assert_eq!(sel.cursor(), 0);
-    }
-
-    #[test]
-    fn port_selector_move_cursor_clamps() {
-        let mut sel = PortSelector::new(vec!["COM1".into(), "COM2".into()]);
-        sel.move_cursor(-10);
-        assert_eq!(sel.cursor(), 0);
-        sel.move_cursor(100);
-        assert_eq!(sel.cursor(), 1);
-    }
-
-    #[test]
-    fn port_selector_move_cursor_empty_list() {
-        let mut sel = PortSelector::new(vec![]);
-        sel.move_cursor(1);
-        assert_eq!(sel.cursor(), 0);
-    }
-
-    #[test]
-    fn port_selector_selected_empty() {
-        let sel = PortSelector::new(vec![]);
-        assert_eq!(sel.selected(), "");
-    }
-
-    #[test]
-    fn port_selector_update_ports_replaces_list_and_clamps_cursor() {
-        let mut sel =
-            PortSelector::new(vec!["COM1".into(), "COM2".into(), "COM3".into()]);
-        sel.move_cursor(2);
-        sel.update_ports(vec!["COM4".into()]);
-        assert_eq!(sel.ports(), &["COM4"]);
-        assert_eq!(sel.cursor(), 0);
-    }
-
-    #[test]
-    fn port_selector_update_ports_empty_resets_cursor() {
-        let mut sel = PortSelector::new(vec!["COM1".into()]);
-        sel.update_ports(vec![]);
-        assert_eq!(sel.cursor(), 0);
-        assert!(sel.ports().is_empty());
     }
 
     #[test]
@@ -868,6 +1326,10 @@ mod tests {
         assert!(app.status_msg().is_none());
         assert!(app.port_selector().is_none());
         assert!(!app.is_demo(), "new App must not start in demo mode");
+        assert!(!app.is_flashing());
+        assert!(app.device_info().is_none());
+        assert!(!app.is_erase_confirm_open());
+        assert!(app.elf_path().is_none());
     }
 
     #[test]
@@ -1070,9 +1532,9 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_q_quits() {
+    fn handle_key_q_opens_quit_confirm() {
         let mut app = App::new(None);
-        assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::Quit);
+        assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::QuitPrompt);
     }
 
     #[test]
@@ -1093,9 +1555,47 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_esc_quits_when_not_scrolled() {
+    fn handle_key_esc_opens_quit_confirm_when_not_scrolled() {
         let mut app = App::new(None);
-        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::Quit);
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::QuitPrompt);
+    }
+
+    #[test]
+    fn handle_key_quit_confirm_y_quits() {
+        let mut app = App::new(None);
+        app.open_quit_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Char('y'))), Action::Quit);
+    }
+
+    #[test]
+    fn handle_key_quit_confirm_n_closes() {
+        let mut app = App::new(None);
+        app.open_quit_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Char('n'))), Action::None);
+        assert!(!app.is_quit_confirm_open());
+    }
+
+    #[test]
+    fn handle_key_quit_confirm_q_closes() {
+        let mut app = App::new(None);
+        app.open_quit_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::None);
+        assert!(!app.is_quit_confirm_open());
+    }
+
+    #[test]
+    fn handle_key_quit_confirm_esc_closes() {
+        let mut app = App::new(None);
+        app.open_quit_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::None);
+        assert!(!app.is_quit_confirm_open());
+    }
+
+    #[test]
+    fn handle_key_ctrl_c_quits_with_quit_confirm_open() {
+        let mut app = App::new(None);
+        app.open_quit_confirm();
+        assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
     }
 
     #[test]
@@ -1125,17 +1625,21 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_f_sets_status_and_returns_none() {
+    fn handle_key_f_returns_flash_action() {
         let mut app = App::new(None);
-        assert_eq!(app.handle_key(key(KeyCode::Char('f'))), Action::None);
-        assert!(app.status_msg().is_some());
+        assert_eq!(app.handle_key(key(KeyCode::Char('f'))), Action::Flash);
     }
 
     #[test]
-    fn handle_key_e_sets_status_and_returns_none() {
+    fn handle_key_e_returns_erase_prompt_action() {
         let mut app = App::new(None);
-        assert_eq!(app.handle_key(key(KeyCode::Char('e'))), Action::None);
-        assert!(app.status_msg().is_some());
+        assert_eq!(app.handle_key(key(KeyCode::Char('e'))), Action::ErasePrompt);
+    }
+
+    #[test]
+    fn handle_key_s_is_noop() {
+        let mut app = App::new(None);
+        assert_eq!(app.handle_key(key(KeyCode::Char('s'))), Action::None);
     }
 
     #[test]
@@ -1295,7 +1799,7 @@ mod tests {
         app.push_line("E (1) tag: error");
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.scroll(), 1);
-        app.filter_mut().move_cursor(2); // Info is at index 2
+        app.filter_mut().move_cursor(2);
         app.filter_mut().toggle_at_cursor();
         app.push_line("I (1) tag: info filtered");
         assert_eq!(app.scroll(), 1);
@@ -1476,10 +1980,75 @@ mod tests {
     }
 
     #[test]
+    fn handle_ports_detected_is_noop_while_flashing() {
+        let mut app = App::new(None);
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_ports_detected(
+            &mut app,
+            vec!["/dev/ttyUSB0".into()],
+            &[],
+            &make_tx(),
+        );
+        assert!(app.port_selector().is_none());
+        assert!(app.port_name().is_none());
+    }
+
+    #[test]
     fn handle_action_quit() {
         let mut app = App::new(None);
         handle_action(&mut app, Action::Quit, &make_tx());
         assert!(!app.is_running());
+    }
+
+    #[test]
+    fn handle_action_quit_while_flashing_quits_immediately() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::Quit, &make_tx());
+        assert!(!app.is_running());
+    }
+
+    #[test]
+    fn handle_action_quit_prompt_while_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::QuitPrompt, &make_tx());
+        assert!(!app.is_quit_confirm_open());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+    }
+
+    #[test]
+    fn handle_action_quit_prompt_while_erasing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Erasing);
+        handle_action(&mut app, Action::QuitPrompt, &make_tx());
+        assert!(!app.is_quit_confirm_open());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+    }
+
+    #[test]
+    fn scan_ports_while_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::ScanPorts, &make_tx());
+        assert!(app.port_selector().is_none());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
     }
 
     #[test]
@@ -1498,10 +2067,56 @@ mod tests {
     }
 
     #[test]
+    fn handle_action_disconnect_while_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::Disconnect, &make_tx());
+        assert!(app.port_name().is_some());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+    }
+
+    #[test]
+    fn handle_action_connect_port_while_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::ConnectPort("COM2".into()), &make_tx());
+        assert_eq!(app.port_name(), Some("COM1"));
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+    }
+
+    #[test]
     fn handle_action_reset_no_port() {
         let mut app = App::new(None);
         handle_action(&mut app, Action::ResetDevice, &make_tx());
         assert_eq!(app.status_msg(), Some("No port connected."));
+    }
+
+    #[test]
+    fn handle_action_reset_while_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::ResetDevice, &make_tx());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+    }
+
+    #[test]
+    fn handle_action_reset_while_erasing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Erasing);
+        handle_action(&mut app, Action::ResetDevice, &make_tx());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
     }
 
     #[test]
@@ -1521,37 +2136,62 @@ mod tests {
         let mut app = App::new(Some("COM1".into()));
         app.set_source_shutdown(old_src_tx);
 
-        let status = "Connected to COM2.".to_owned();
         app.set_port("COM2".into());
         app.set_port_cmd(cmd_tx);
         app.set_source_shutdown(new_src_tx);
-        app.set_status(status);
+        app.set_status("Connected to COM2.".into());
 
         assert_eq!(app.port_name(), Some("COM2"));
         assert_eq!(app.status_msg(), Some("Connected to COM2."));
     }
 
     #[test]
-    fn connect_error_preserves_existing_connection() {
+    fn connect_success_while_reconnecting_clears_flash_state() {
+        let (src_tx, _src_rx) = tokio::sync::watch::channel(false);
+        let (cmd_tx, _cmd_rx) = std::sync::mpsc::channel();
         let mut app = App::new(Some("COM1".into()));
-        let error_msg = "failed to open COM2: resource busy".to_owned();
-        app.set_status(error_msg.clone());
-
-        assert_eq!(
-            app.port_name(),
-            Some("COM1"),
-            "existing port must survive a ConnectError"
+        app.set_flash_state(crate::flash::State::Reconnecting);
+        assert!(app.is_flashing());
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::ConnectSuccess {
+                port: "COM1".into(),
+                cmd_tx,
+                src_tx,
+            },
+            DEFAULT_BAUD,
+            &tx,
         );
-        assert_eq!(app.status_msg(), Some(error_msg.as_str()));
+        assert!(
+            !app.is_flashing(),
+            "ConnectSuccess must clear Reconnecting state"
+        );
+        assert_eq!(app.port_name(), Some("COM1"));
+    }
+
+    #[test]
+    fn connect_error_clears_port_and_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::ConnectError("failed: resource busy".into()),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(
+            app.port_name().is_none(),
+            "ConnectError must clear port_name via disconnect"
+        );
+        assert_eq!(app.status_msg(), Some("failed: resource busy"));
+        assert!(!app.is_flashing(), "Reconnecting state must be cleared");
     }
 
     #[test]
     fn handle_action_scan_ports_leaves_app_in_consistent_state() {
         let mut app = App::new(None);
         handle_action(&mut app, Action::ScanPorts, &make_tx());
-        // After a scan, exactly one of these must be true: a status message
-        // was set (no ports or error), a port was connected, or the selector
-        // is open (multiple ports found).
         assert!(
             app.status_msg().is_some()
                 || app.port_name().is_some()
@@ -1570,14 +2210,8 @@ mod tests {
             Some("Not available in demo mode."),
             "ScanPorts must be blocked in demo mode"
         );
-        assert!(
-            app.port_name().is_none(),
-            "port_name must not be set by ScanPorts in demo mode"
-        );
-        assert!(
-            app.port_selector().is_none(),
-            "port selector must not open from ScanPorts in demo mode"
-        );
+        assert!(app.port_name().is_none());
+        assert!(app.port_selector().is_none());
     }
 
     #[test]
@@ -1595,11 +2229,7 @@ mod tests {
             Some("Not available in demo mode."),
             "ConnectPort must be blocked in demo mode"
         );
-        assert_eq!(
-            app.port_name(),
-            Some("demo"),
-            "port_name must remain 'demo' after blocked ConnectPort"
-        );
+        assert_eq!(app.port_name(), Some("demo"));
     }
 
     #[test]
@@ -1607,10 +2237,411 @@ mod tests {
         let mut app = App::new(None);
         app.set_demo();
         handle_action(&mut app, Action::ResetDevice, &make_tx());
+        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
+    }
+
+    #[test]
+    fn handle_key_erase_confirm_y_confirms() {
+        let mut app = App::new(None);
+        app.open_erase_confirm();
         assert_eq!(
-            app.status_msg(),
-            Some("Not available in demo mode."),
-            "ResetDevice must be blocked in demo mode"
+            app.handle_key(key(KeyCode::Char('y'))),
+            Action::ConfirmErase
         );
+    }
+
+    #[test]
+    fn handle_key_erase_confirm_n_closes() {
+        let mut app = App::new(None);
+        app.open_erase_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Char('n'))), Action::None);
+        assert!(!app.is_erase_confirm_open());
+    }
+
+    #[test]
+    fn handle_key_erase_confirm_esc_closes() {
+        let mut app = App::new(None);
+        app.open_erase_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::None);
+        assert!(!app.is_erase_confirm_open());
+    }
+
+    #[test]
+    fn handle_key_erase_confirm_e_closes() {
+        let mut app = App::new(None);
+        app.open_erase_confirm();
+        assert_eq!(app.handle_key(key(KeyCode::Char('e'))), Action::None);
+        assert!(!app.is_erase_confirm_open());
+    }
+
+    #[test]
+    fn handle_key_ctrl_c_quits_with_erase_confirm_open() {
+        let mut app = App::new(None);
+        app.open_erase_confirm();
+        assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
+    }
+
+    #[test]
+    fn handle_key_elf_selector_char_updates_input() {
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.elf_selector().unwrap().value(), "/t");
+    }
+
+    #[test]
+    fn handle_key_elf_selector_esc_closes() {
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::CloseElfSelector);
+    }
+
+    #[test]
+    fn handle_key_elf_selector_enter_confirms() {
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), Action::ConfirmElfPath);
+    }
+
+    #[test]
+    fn handle_key_elf_selector_enter_while_cycling_accepts_not_confirms() {
+        let dir = std::env::temp_dir().join(format!(
+            "esp-tui-app-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos())
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("fw_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        std::fs::write(dir.join("fw_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        for ch in format!("{}/fw", dir.display()).chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), Action::None);
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), Action::ConfirmElfPath);
+    }
+
+    #[test]
+    fn handle_key_elf_selector_back_tab_noop_when_no_completions() {
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        assert_eq!(app.handle_key(key(KeyCode::BackTab)), Action::None);
+    }
+
+    #[test]
+    fn handle_action_flash_always_opens_selector() {
+        let mut app = App::new(Some("COM1".into()));
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert!(app.is_elf_selector_open());
+    }
+
+    #[test]
+    fn handle_action_confirm_elf_path_no_port_sets_status() {
+        let path = unique_temp_path("esp-tui-test-elf-no-port");
+        std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        if let Some(s) = app.elf_selector_mut() {
+            for ch in path.to_str().unwrap().chars() {
+                s.push_char(ch);
+            }
+        }
+        handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
+        assert_eq!(app.status_msg(), Some("No port connected."));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn handle_action_confirm_elf_path_already_flashing_sets_status() {
+        let path = unique_temp_path("esp-tui-test-elf-flashing");
+        std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        app.open_elf_selector(None);
+        if let Some(s) = app.elf_selector_mut() {
+            for ch in path.to_str().unwrap().chars() {
+                s.push_char(ch);
+            }
+        }
+        handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
+        assert_eq!(app.status_msg(), Some("Flash already in progress."));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn handle_action_flash_demo_is_noop() {
+        let mut app = App::new(None);
+        app.set_demo();
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
+    }
+
+    #[test]
+    fn handle_action_confirm_elf_path_valid() {
+        let path = unique_temp_path("esp-tui-test-elf");
+        std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        if let Some(s) = app.elf_selector_mut() {
+            for ch in path.to_str().unwrap().chars() {
+                s.push_char(ch);
+            }
+        }
+        handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
+        assert_eq!(app.elf_path(), Some(path.as_path()));
+        assert!(!app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("No port connected."));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn handle_action_confirm_elf_path_nonexistent_stays_open() {
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        if let Some(s) = app.elf_selector_mut() {
+            for ch in "/nonexistent/path.elf".chars() {
+                s.push_char(ch);
+            }
+        }
+        handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
+        assert!(app.elf_path().is_none());
+        assert!(app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("Path not found."));
+    }
+
+    #[test]
+    fn handle_action_confirm_elf_path_directory_rejected() {
+        let dir = std::env::temp_dir();
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        if let Some(s) = app.elf_selector_mut() {
+            for ch in dir.to_str().unwrap().chars() {
+                s.push_char(ch);
+            }
+        }
+        handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
+        assert!(app.elf_path().is_none());
+        assert!(app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("Path is a directory."));
+    }
+
+    #[test]
+    fn handle_action_confirm_elf_path_non_elf_rejected() {
+        let path = unique_temp_path("esp-tui-test-non-elf");
+        std::fs::write(&path, b"not an elf file").unwrap();
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        if let Some(s) = app.elf_selector_mut() {
+            for ch in path.to_str().unwrap().chars() {
+                s.push_char(ch);
+            }
+        }
+        handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
+        assert!(app.elf_path().is_none());
+        assert!(app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("Not a valid ELF file."));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn is_flashing_reflects_state() {
+        let mut app = App::new(None);
+        assert!(!app.is_flashing());
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 100,
+        });
+        assert!(app.is_flashing());
+        app.set_flash_state(crate::flash::State::Erasing);
+        assert!(app.is_flashing());
+        app.set_flash_state(crate::flash::State::Reconnecting);
+        assert!(app.is_flashing());
+        app.set_flash_state(crate::flash::State::Idle);
+        assert!(!app.is_flashing());
+    }
+
+    #[test]
+    fn handle_action_erase_prompt_no_port_sets_status() {
+        let mut app = App::new(None);
+        handle_action(&mut app, Action::ErasePrompt, &make_tx());
+        assert_eq!(app.status_msg(), Some("No port connected."));
+        assert!(!app.is_erase_confirm_open());
+    }
+
+    #[test]
+    fn handle_action_erase_prompt_while_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::ErasePrompt, &make_tx());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+        assert!(!app.is_erase_confirm_open());
+    }
+
+    #[test]
+    fn handle_action_erase_prompt_connected_opens_confirm() {
+        let mut app = App::new(Some("COM1".into()));
+        handle_action(&mut app, Action::ErasePrompt, &make_tx());
+        assert!(app.is_erase_confirm_open());
+    }
+
+    #[test]
+    fn handle_action_flash_no_port_sets_status_and_does_not_open_selector() {
+        let mut app = App::new(None);
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert!(!app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("No port connected."));
+    }
+
+    #[test]
+    fn handle_action_flash_opens_selector_prefilled_when_elf_set() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_elf_path(std::path::PathBuf::from("/tmp/firmware.elf"));
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert!(app.is_elf_selector_open());
+        assert_eq!(app.elf_selector().unwrap().value(), "/tmp/firmware.elf");
+    }
+
+    #[test]
+    fn handle_action_close_elf_selector_closes() {
+        let mut app = App::new(None);
+        app.open_elf_selector(None);
+        handle_action(&mut app, Action::CloseElfSelector, &make_tx());
+        assert!(!app.is_elf_selector_open());
+    }
+
+    #[test]
+    fn demo_erase_is_noop() {
+        let mut app = App::new(None);
+        app.set_demo();
+        handle_action(&mut app, Action::ErasePrompt, &make_tx());
+        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
+    }
+
+    #[test]
+    fn demo_flash_is_noop() {
+        let mut app = App::new(None);
+        app.set_demo();
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
+    }
+
+    #[test]
+    fn handle_action_flash_while_flashing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Flashing {
+            addr: 0,
+            current: 0,
+            total: 0,
+        });
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert!(!app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+    }
+
+    #[test]
+    fn handle_action_flash_while_erasing_sets_status() {
+        let mut app = App::new(Some("COM1".into()));
+        app.set_flash_state(crate::flash::State::Erasing);
+        handle_action(&mut app, Action::Flash, &make_tx());
+        assert!(!app.is_elf_selector_open());
+        assert_eq!(app.status_msg(), Some("Operation already in progress."));
+    }
+
+    #[test]
+    fn flash_done_ok_sets_reconnecting_and_status() {
+        let mut app = App::new(None);
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::FlashDone(Ok(())),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(matches!(app.flash_state(), flash::State::Reconnecting));
+        assert_eq!(app.status_msg(), Some("Flash complete. Reconnecting..."));
+    }
+
+    #[test]
+    fn flash_done_err_sets_reconnecting_and_error_status() {
+        let mut app = App::new(None);
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::FlashDone(Err(anyhow::anyhow!("write error"))),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(matches!(app.flash_state(), flash::State::Reconnecting));
+        assert!(app.status_msg().unwrap_or("").contains("Flash failed"));
+    }
+
+    #[test]
+    fn erase_done_ok_sets_reconnecting() {
+        let mut app = App::new(None);
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::EraseDone(Ok(())),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(matches!(app.flash_state(), flash::State::Reconnecting));
+        assert_eq!(app.status_msg(), Some("Erase complete."));
+    }
+
+    #[test]
+    fn erase_done_err_sets_reconnecting_and_status() {
+        let mut app = App::new(None);
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::EraseDone(Err(anyhow::anyhow!("erase error"))),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(matches!(app.flash_state(), flash::State::Reconnecting));
+        assert!(app.status_msg().unwrap_or("").contains("Erase failed"));
+    }
+
+    #[test]
+    fn device_info_ok_stores_info() {
+        let mut app = App::new(None);
+        let tx = make_tx();
+        let info =
+            flash::DeviceInfo::new("ESP32-S3", "4MB", "AA:BB:CC:DD:EE:FF", vec![]);
+        handle_event_message(
+            &mut app,
+            crate::event::Message::DeviceInfo(Ok(info)),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(app.device_info().is_some());
+    }
+
+    #[test]
+    fn device_info_err_is_ignored() {
+        let mut app = App::new(None);
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::DeviceInfo(Err(anyhow::anyhow!("probe failed"))),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        assert!(app.device_info().is_none());
     }
 }

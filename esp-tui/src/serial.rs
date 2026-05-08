@@ -4,8 +4,6 @@ use std::sync::mpsc;
 use anyhow::Context;
 use serialport::SerialPortInfo;
 
-const BAUD_RATE: u32 = 115_200;
-
 const ESP_USB_VIDS: &[u16] = &[
     0x10C4, // Silicon Labs CP210x
     0x0403, // FTDI
@@ -63,49 +61,45 @@ pub(crate) enum PortCommand {
 /// A serial port connection that emits log lines.
 pub(crate) struct Port {
     name: String,
+    baud: u32,
 }
 
 impl Port {
-    /// Creates a new serial port source for the given port name.
+    /// Creates a new serial port source for the given port name and baud rate.
     ///
     /// # Arguments
     ///
     /// * `name` - The system port name (e.g. `/dev/ttyUSB0`).
+    /// * `baud` - The baud rate to use.
     #[must_use]
-    pub(crate) fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into() }
+    pub(crate) fn new(name: impl Into<String>, baud: u32) -> Self {
+        Self {
+            name: name.into(),
+            baud,
+        }
     }
 
-    /// Spawns a blocking task that opens the serial port and reads lines,
-    /// forwarding them as [`crate::event::Message::Serial`] events.
+    /// Opens the serial port and reads lines until shutdown or I/O error.
     ///
-    /// On a successful open the task sends
-    /// [`crate::event::Message::ConnectSuccess`] (carrying the command sender
-    /// and source shutdown handle) before entering the read loop, so the
-    /// caller's existing connection is only replaced once the new one is
-    /// confirmed live. On failure it sends
-    /// [`crate::event::Message::ConnectError`] and exits.
+    /// Sends [`crate::event::Message::ConnectSuccess`] on successful open, or
+    /// [`crate::event::Message::ConnectError`] on failure.
     ///
     /// # Arguments
     ///
     /// * `tx` - Channel sender for forwarding events to the main loop.
-    /// * `shutdown` - Watch receiver; the task exits when the value becomes
+    /// * `shutdown` - Watch receiver; the method returns when the value becomes
     ///   `true`.
-    /// * `src_tx` - Shutdown sender for this source; passed back to the event
-    ///   loop via [`crate::event::Message::ConnectSuccess`] so the loop can
-    ///   store it and kill this task later.
-    pub(crate) fn spawn(
+    /// * `src_tx` - Shutdown sender passed back via `ConnectSuccess`.
+    pub(crate) fn connect_and_read(
         self,
-        tx: tokio::sync::mpsc::UnboundedSender<crate::event::Message>,
-        shutdown: tokio::sync::watch::Receiver<bool>,
+        tx: &tokio::sync::mpsc::UnboundedSender<crate::event::Message>,
+        shutdown: &tokio::sync::watch::Receiver<bool>,
         src_tx: tokio::sync::watch::Sender<bool>,
     ) {
         let (cmd_tx, cmd_rx) = mpsc::channel::<PortCommand>();
-        drop(tokio::task::spawn_blocking(move || match serialport::new(
-            &self.name, BAUD_RATE,
-        )
-        .timeout(std::time::Duration::from_millis(100))
-        .open()
+        match serialport::new(&self.name, self.baud)
+            .timeout(std::time::Duration::from_millis(100))
+            .open()
         {
             Err(e) => {
                 let _ = tx.send(crate::event::Message::ConnectError(format!(
@@ -123,7 +117,7 @@ impl Port {
                     .is_ok();
                 if connected {
                     let mut reader = std::io::BufReader::new(port);
-                    let mut line = String::new();
+                    let mut buf: Vec<u8> = Vec::new();
 
                     loop {
                         if *shutdown.borrow() {
@@ -136,16 +130,18 @@ impl Port {
                                 ));
                             }
                         }
-                        match reader.read_line(&mut line) {
+                        match reader.read_until(b'\n', &mut buf) {
                             Ok(0) => {
                                 let _ = tx.send(crate::event::Message::Disconnected);
                                 break;
                             }
                             Ok(_) => {
-                                let trimmed = line.trim_end().to_owned();
-                                line.clear();
+                                let line = String::from_utf8_lossy(&buf)
+                                    .trim_end()
+                                    .to_owned();
+                                buf.clear();
                                 if tx
-                                    .send(crate::event::Message::Serial(trimmed))
+                                    .send(crate::event::Message::Serial(line))
                                     .is_err()
                                 {
                                     break;
@@ -160,7 +156,7 @@ impl Port {
                     }
                 }
             }
-        }));
+        }
     }
 }
 
@@ -175,6 +171,30 @@ fn reset_via_handle(
     port.write_request_to_send(false)
         .context("failed to release RTS/EN")?;
     Ok(())
+}
+
+/// Pulses EN with BOOT (IO0) deasserted so the chip runs firmware rather than
+/// re-entering the ROM bootloader.
+///
+/// espflash's `DefaultReset` drives DTR high (IO0/BOOT low) to enter ROM
+/// bootloader mode before a flash or erase operation. After the operation
+/// completes, this function drives DTR low first so the subsequent EN pulse
+/// boots into firmware rather than ROM bootloader mode.
+///
+/// Errors are swallowed; the caller discovers port availability through the
+/// subsequent `connect_and_read` attempt.
+///
+/// # Arguments
+///
+/// * `name` - System port name (e.g. `/dev/ttyUSB0`).
+/// * `baud` - Baud rate used to open the port.
+pub(crate) fn reset_to_run(name: &str, baud: u32) {
+    if let Ok(mut port) = serialport::new(name, baud)
+        .timeout(std::time::Duration::from_millis(100))
+        .open()
+    {
+        let _ = reset_via_handle(&mut port);
+    }
 }
 
 #[cfg(test)]

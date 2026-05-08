@@ -18,14 +18,13 @@
 
 ## Phase 2: Flash Integration
 
-- [ ] espflash library integration (not subprocess)
-- [ ] Flash progress bar rendered in bottom pane during flash
-- [ ] Board info display on connect (chip type, revision, flash size, MAC)
-- [ ] Partition table viewer popup
-- [ ] `--elf <path>` CLI flag
-- [ ] `--port`, `--baud`, and `--elf` CLI flags
-- [ ] Port auto-reconnect after reset/flash cycle
-- [ ] Erase flash with confirmation prompt
+- [x] espflash library integration (not subprocess)
+- [x] Flash progress bar rendered in bottom pane during flash
+- [x] Board info display on connect (chip type, revision, flash size, MAC)
+- [x] `--baud` CLI flag; `--port` was already present
+- [x] Port auto-reconnect after reset/flash cycle
+- [x] Erase flash with confirmation prompt
+- [x] ELF path selector popup with tab-completion (`f` keybinding)
 
 ## Phase 3: Agent + System Inspector
 
@@ -37,12 +36,14 @@
 - [ ] Define a `Source` trait to unify `serial::Port` and the agent telemetry stream behind a common interface
 - [ ] Host-side COBS demuxer (splits agent frames from plain log lines)
 - [ ] System Inspector pane: heap gauges, per-core CPU bars, task list
+- [ ] Partition table viewer: read via agent using `esp_partition_find`/`esp_partition_get` and stream in `TelemetryFrame`; display in Inspector pane
 - [ ] Agent detection / graceful absence ("agent not detected" prompt)
 - [ ] In-TUI agent install flow (`[A]` keybinding)
 - [ ] `esp-tui agent install` CLI subcommand
 - [ ] Pane focus: introduce a `FocusedPane` enum so scroll and resize operations target the active pane; review and reassign conflicting keybindings (e.g. `Tab` currently opens the filter popup) at that time
 - [ ] Per-pane independent scrolling once Inspector has scrollable content
 - [ ] Per-pane independent resizing (adjust split ratio with keybindings)
+- [ ] Split `app.rs`: move `run_inner`, `begin_connect`, `spawn_port_poller`, `handle_ports_detected`, and `apply_scan` into a new `runner.rs`; `app.rs` becomes a pure state container. The seam already exists but the split is not worth the churn until agent state grows the file further.
 
 ## Phase 4: Polish
 
