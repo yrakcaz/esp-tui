@@ -14,7 +14,7 @@ use ratatui::Terminal;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{interval, Duration};
 
-use crate::{demo, elf, event, filter, flash, log, port, serial, ui};
+use crate::{elf, event, filter, flash, log, port, serial, ui};
 
 const BUFFER_SIZE: usize = 10_000;
 const STATUS_TTL_SECS: u64 = 3;
@@ -27,17 +27,13 @@ struct Args {
     #[arg(long, short)]
     port: Option<String>,
 
-    /// Run in demo mode with synthetic log output (no hardware required).
-    #[arg(long)]
-    demo: bool,
-
     /// Serial baud rate.
     #[arg(long, short = 'b')]
     baud: Option<u32>,
 }
 
 /// Outcome of a keypress that requires I/O, returned to the event loop to act on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     /// No I/O required; state was updated in place or key was ignored.
     None,
@@ -82,7 +78,6 @@ pub(crate) struct App {
     status_msg: Option<(String, Instant)>,
     running: bool,
     port_selector: Option<port::Selector>,
-    demo: bool,
     flash_state: flash::State,
     device_info: Option<flash::DeviceInfo>,
     confirm: ConfirmDialog,
@@ -114,7 +109,6 @@ impl App {
             status_msg: None,
             running: true,
             port_selector: None,
-            demo: false,
             flash_state: flash::State::Idle,
             device_info: None,
             confirm: ConfirmDialog::None,
@@ -267,51 +261,20 @@ impl App {
     }
 
     fn handle_key_elf_selector_ctrl(&mut self, key: KeyEvent) -> Action {
-        match key.code {
-            KeyCode::Char('a') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.move_cursor_to_start();
-                }
-                Action::None
-            }
-            KeyCode::Char('e') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.move_cursor_to_end();
-                }
-                Action::None
-            }
-            KeyCode::Char('l') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.clear_input();
-                }
-                Action::None
-            }
-            KeyCode::Char('d') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.delete_forward();
-                }
-                Action::None
-            }
-            KeyCode::Char('k') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.kill_to_end();
-                }
-                Action::None
-            }
-            KeyCode::Char('u') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.kill_to_start();
-                }
-                Action::None
-            }
-            KeyCode::Char('w') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.kill_word_back();
-                }
-                Action::None
-            }
-            _ => Action::None,
+        let op: Option<fn(&mut elf::Selector)> = match key.code {
+            KeyCode::Char('a') => Some(elf::Selector::move_cursor_to_start),
+            KeyCode::Char('e') => Some(elf::Selector::move_cursor_to_end),
+            KeyCode::Char('l') => Some(elf::Selector::clear_input),
+            KeyCode::Char('d') => Some(elf::Selector::delete_forward),
+            KeyCode::Char('k') => Some(elf::Selector::kill_to_end),
+            KeyCode::Char('u') => Some(elf::Selector::kill_to_start),
+            KeyCode::Char('w') => Some(elf::Selector::kill_word_back),
+            _ => None,
+        };
+        if let (Some(f), Some(s)) = (op, self.elf_selector.as_mut()) {
+            f(s);
         }
+        Action::None
     }
 
     fn handle_key_port_selector(&mut self, key: KeyEvent) -> Action {
@@ -399,8 +362,8 @@ impl App {
     /// # Arguments
     ///
     /// * `msg` - The message to display in the status bar.
-    pub(crate) fn set_status(&mut self, msg: String) {
-        self.status_msg = Some((msg, Instant::now()));
+    pub(crate) fn set_status(&mut self, msg: impl Into<String>) {
+        self.status_msg = Some((msg.into(), Instant::now()));
     }
 
     /// Returns whether the application event loop should keep running.
@@ -476,15 +439,19 @@ impl App {
     /// A `Vec` of references to visible entries, oldest first.
     #[must_use]
     pub(crate) fn visible_entries(&self, height: usize) -> Vec<&log::Entry> {
-        let visible: Vec<&log::Entry> = self
+        let total = self
             .log_buffer
             .iter()
             .filter(|e| self.filter.is_visible(e))
-            .collect();
-        let total = visible.len();
+            .count();
         let skip = self.scroll.min(total.saturating_sub(height));
         let start = total.saturating_sub(height).saturating_sub(skip);
-        visible[start..total.min(start + height)].to_vec()
+        self.log_buffer
+            .iter()
+            .filter(|e| self.filter.is_visible(e))
+            .skip(start)
+            .take(height)
+            .collect()
     }
 
     /// Returns a shared reference to the port selector, if active.
@@ -509,6 +476,12 @@ impl App {
         self.port_selector.as_mut()
     }
 
+    /// Returns a mutable reference to the ELF selector, if open.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with a mutable reference to the active [`elf::Selector`], or
+    /// `None` if no selector is open.
     #[cfg(test)]
     pub(crate) fn elf_selector_mut(&mut self) -> Option<&mut elf::Selector> {
         self.elf_selector.as_mut()
@@ -626,21 +599,6 @@ impl App {
         self.shutdown_source();
         self.port_name = None;
         self.port_cmd_tx = None;
-    }
-
-    /// Returns `true` when the application is running in demo mode.
-    ///
-    /// # Returns
-    ///
-    /// `true` if demo mode is active, `false` otherwise.
-    #[must_use]
-    pub(crate) fn is_demo(&self) -> bool {
-        self.demo
-    }
-
-    /// Puts the application into demo mode, sealing it from real hardware.
-    pub(crate) fn set_demo(&mut self) {
-        self.demo = true;
     }
 
     /// Returns the current flash operation state.
@@ -811,10 +769,10 @@ fn begin_connect(port: &str, baud: u32, tx: &mpsc::UnboundedSender<event::Messag
     let (src_tx, src_rx) = watch::channel(false);
     let port_name = port.to_owned();
     let tx_task = tx.clone();
-    drop(tokio::task::spawn_blocking(move || {
+    let _handle = tokio::task::spawn_blocking(move || {
         serial::Port::new(&port_name, baud)
             .connect_and_read(&tx_task, &src_rx, src_tx);
-    }));
+    });
 }
 
 // After flash/erase the chip is already reset by espflash and device info was
@@ -829,7 +787,7 @@ fn begin_reconnect(
     let (src_tx, src_rx) = watch::channel(false);
     let port_name = port.to_owned();
     let tx_task = tx.clone();
-    drop(tokio::task::spawn_blocking(move || {
+    let _handle = tokio::task::spawn_blocking(move || {
         // Wait for the chip to finish its espflash-initiated reset and for any
         // USB re-enumeration to settle before asserting our own reset.
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -837,7 +795,7 @@ fn begin_reconnect(
         std::thread::sleep(std::time::Duration::from_millis(500));
         serial::Port::new(&port_name, baud)
             .connect_and_read(&tx_task, &src_rx, src_tx);
-    }));
+    });
 }
 
 fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
@@ -846,18 +804,18 @@ fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
 
 fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
     if app.is_flashing() {
-        app.set_status("Operation already in progress.".into());
+        app.set_status("Operation already in progress.");
     } else {
         match serial::detect_esp_ports() {
             Err(e) => app.set_status(format!("Port scan failed: {e}")),
             Ok(ports) if ports.is_empty() => {
-                app.set_status("No devices detected.".into());
+                app.set_status("No devices detected.");
             }
             Ok(mut ports) if ports.len() == 1 => {
                 let port = ports.remove(0);
                 app.set_status(format!("Connecting to {port}..."));
-                app.set_port(port.clone());
                 begin_connect(&port, app.baud(), tx);
+                app.set_port(port);
             }
             Ok(ports) => app.open_port_selector(ports),
         }
@@ -870,19 +828,20 @@ fn handle_ports_detected(
     previous: &[String],
     tx: &mpsc::UnboundedSender<event::Message>,
 ) {
-    if !app.is_demo() && !app.is_flashing() {
+    if !app.is_flashing() {
         if app.port_name().is_none() {
             if app.port_selector().is_some() {
                 match current.len() {
                     0 => {
                         app.close_port_selector();
-                        app.set_status("No devices detected.".into());
+                        app.set_status("No devices detected.");
                     }
                     1 => {
                         app.close_port_selector();
-                        app.set_status(format!("Connecting to {}...", current[0]));
-                        app.set_port(current[0].clone());
-                        begin_connect(&current[0], app.baud(), tx);
+                        let port = current.remove(0);
+                        app.set_status(format!("Connecting to {port}..."));
+                        begin_connect(&port, app.baud(), tx);
+                        app.set_port(port);
                     }
                     _ => app.refresh_port_selector(current),
                 }
@@ -892,8 +851,8 @@ fn handle_ports_detected(
                     1 => {
                         let port = current.remove(0);
                         app.set_status(format!("Connecting to {port}..."));
-                        app.set_port(port.clone());
                         begin_connect(&port, app.baud(), tx);
+                        app.set_port(port);
                     }
                     _ => app.open_port_selector(current),
                 }
@@ -904,7 +863,7 @@ fn handle_ports_detected(
                 .is_some_and(|n| current.iter().any(|p| p.as_str() == n));
             let has_new_port = current.iter().any(|p| !previous.contains(p));
             if has_new_port && connected_present {
-                app.set_status("New device detected. Press [c] to connect.".into());
+                app.set_status("New device detected. Press [c] to connect.");
             }
         }
     }
@@ -950,11 +909,11 @@ fn confirm_elf_path(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
         .unwrap_or_default();
     let path = PathBuf::from(&value);
     if path.is_dir() {
-        app.set_status("Path is a directory.".into());
+        app.set_status("Path is a directory.");
     } else if !path.is_file() {
-        app.set_status("Path not found.".into());
+        app.set_status("Path not found.");
     } else if !elf::is_elf_file(&path) {
-        app.set_status("Not a valid ELF file.".into());
+        app.set_status("Not a valid ELF file.");
     } else {
         app.set_elf_path(path);
         app.close_elf_selector();
@@ -964,43 +923,64 @@ fn confirm_elf_path(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
 
 fn start_flash(app: &mut App) {
     if app.port_name().is_none() {
-        app.set_status("No port connected.".into());
+        app.set_status("No port connected.");
     } else if app.is_flashing() {
-        app.set_status("Operation already in progress.".into());
+        app.set_status("Operation already in progress.");
     } else {
         let prefill = app.elf_path().map(Path::to_path_buf);
         app.open_elf_selector(prefill.as_deref());
     }
 }
 
+// The serial reader has a 100ms read timeout; the 200ms delay lets it observe
+// the shutdown signal and release the port fd before the operation begins.
+fn spawn_hardware_op<F>(
+    app: &mut App,
+    state: flash::State,
+    tx: &mpsc::UnboundedSender<event::Message>,
+    op: F,
+) where
+    F: FnOnce() -> event::Message + Send + 'static,
+{
+    app.shutdown_source();
+    app.set_flash_state(state);
+    let tx_task = tx.clone();
+    let _ = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let _ = tx_task.send(op());
+    });
+}
+
 fn do_flash(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
     if app.is_flashing() {
-        app.set_status("Flash already in progress.".into());
+        app.set_status("Flash already in progress.");
     } else {
         match (
             app.port_name().map(str::to_owned),
             app.elf_path().map(Path::to_path_buf),
         ) {
-            (None, _) => app.set_status("No port connected.".into()),
+            (None, _) => app.set_status("No port connected."),
             (_, None) => {}
             (Some(port), Some(elf_path)) => {
                 let baud = app.baud();
-                app.shutdown_source();
-                app.set_flash_state(flash::State::Flashing {
-                    addr: 0,
-                    current: 0,
-                    total: 0,
-                });
-                let tx_task = tx.clone();
-                drop(std::thread::spawn(move || {
-                    // The serial reader has a 100ms read timeout; wait long
-                    // enough for it to observe the shutdown signal and release
-                    // the port fd.
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                    let result =
-                        flash::flash_elf(&port, baud, &elf_path, tx_task.clone());
-                    let _ = tx_task.send(event::Message::FlashDone(result));
-                }));
+                let tx_progress = tx.clone();
+                spawn_hardware_op(
+                    app,
+                    flash::State::Flashing {
+                        addr: 0,
+                        current: 0,
+                        total: 0,
+                    },
+                    tx,
+                    move || {
+                        event::Message::FlashDone(flash::flash_elf(
+                            &port,
+                            baud,
+                            &elf_path,
+                            tx_progress,
+                        ))
+                    },
+                );
             }
         }
     }
@@ -1016,64 +996,57 @@ fn handle_action(
         Action::Quit => app.quit(),
         Action::QuitPrompt => {
             if app.is_flashing() {
-                app.set_status("Operation already in progress.".into());
+                app.set_status("Operation already in progress.");
             } else {
                 app.open_quit_confirm();
             }
         }
         Action::Disconnect => {
             if app.is_flashing() {
-                app.set_status("Operation already in progress.".into());
+                app.set_status("Operation already in progress.");
             } else if app.port_name().is_some() {
                 app.disconnect();
-                app.set_status("Disconnected.".into());
+                app.set_status("Disconnected.");
             } else {
-                app.set_status("Not connected.".into());
+                app.set_status("Not connected.");
             }
         }
         Action::CloseElfSelector => app.close_elf_selector(),
         Action::ConfirmElfPath => confirm_elf_path(app, tx),
-        // All actions below touch real hardware. New hardware actions must go
-        // after this arm so demo mode blocks them automatically.
-        _ if app.is_demo() => {
-            app.set_status("Not available in demo mode.".into());
-        }
         Action::ResetDevice => {
             if app.is_flashing() {
-                app.set_status("Operation already in progress.".into());
+                app.set_status("Operation already in progress.");
             } else {
                 match app.port_cmd_tx() {
                     Some(cmd_tx) => {
                         if cmd_tx.send(serial::PortCommand::Reset).is_err() {
-                            app.set_status(
-                                "Reset failed: port disconnected.".into(),
-                            );
+                            app.set_status("Reset failed: port disconnected.");
                         } else {
-                            app.set_status("Reset sent.".into());
+                            app.set_status("Reset sent.");
                         }
                     }
                     None if app.port_name().is_some() => {
-                        app.set_status("Reset not supported.".into());
+                        app.set_status("Reset not supported.");
                     }
-                    None => app.set_status("No port connected.".into()),
+                    None => app.set_status("No port connected."),
                 }
             }
         }
         Action::ScanPorts => apply_scan(app, tx),
         Action::ConnectPort(port) => {
             if app.is_flashing() {
-                app.set_status("Operation already in progress.".into());
+                app.set_status("Operation already in progress.");
             } else {
                 app.set_status(format!("Connecting to {port}..."));
-                app.set_port(port.clone());
                 begin_connect(&port, app.baud(), tx);
+                app.set_port(port);
             }
         }
         Action::ErasePrompt => {
             if app.port_name().is_none() {
-                app.set_status("No port connected.".into());
+                app.set_status("No port connected.");
             } else if app.is_flashing() {
-                app.set_status("Operation already in progress.".into());
+                app.set_status("Operation already in progress.");
             } else {
                 app.open_erase_confirm();
             }
@@ -1082,16 +1055,9 @@ fn handle_action(
             app.close_erase_confirm();
             if let Some(port) = app.port_name().map(str::to_owned) {
                 let baud = app.baud();
-                app.shutdown_source();
-                app.set_flash_state(flash::State::Erasing);
-                let tx_task = tx.clone();
-                drop(std::thread::spawn(move || {
-                    // The serial reader has a 100ms read timeout; wait long enough for
-                    // it to observe the shutdown signal and release the port fd.
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                    let result = flash::erase_flash(&port, baud);
-                    let _ = tx_task.send(event::Message::EraseDone(result));
-                }));
+                spawn_hardware_op(app, flash::State::Erasing, tx, move || {
+                    event::Message::EraseDone(flash::erase_flash(&port, baud))
+                });
             }
         }
         Action::Flash => start_flash(app),
@@ -1112,7 +1078,7 @@ fn handle_event_message(
         event::Message::Serial(line) => app.push_line(&line),
         event::Message::Disconnected => {
             app.disconnect();
-            app.set_status("Disconnected.".into());
+            app.set_status("Disconnected.");
         }
         event::Message::ConnectSuccess {
             port,
@@ -1149,7 +1115,7 @@ fn handle_event_message(
         event::Message::FlashDone(result) => {
             match result {
                 Ok(()) => {
-                    app.set_status("Flash complete. Reconnecting...".into());
+                    app.set_status("Flash complete. Reconnecting...");
                 }
                 Err(e) => {
                     app.set_status(format!("Flash failed: {e}"));
@@ -1168,7 +1134,7 @@ fn handle_event_message(
         event::Message::EraseDone(result) => {
             match result {
                 Ok(()) => {
-                    app.set_status("Erase complete.".into());
+                    app.set_status("Erase complete.");
                 }
                 Err(e) => {
                     app.set_status(format!("Erase failed: {e}"));
@@ -1196,28 +1162,18 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
     let mut app = App::new(None);
     app.set_baud(baud);
 
-    if args.demo {
-        app.set_demo();
-        let (src_tx, src_rx) = watch::channel(false);
-        demo::spawn(tx.clone(), src_rx);
-        demo::spawn_device_info(tx.clone());
-        app.set_port("demo".into());
-        app.set_source_shutdown(src_tx);
-        app.set_status("Connected to demo.".into());
-    } else {
-        let mut ports = resolve_ports(args.port)?;
-        match ports.len() {
-            0 => {}
-            1 => {
-                let port = ports.remove(0);
-                app.set_status(format!("Connecting to {port}..."));
-                app.set_port(port.clone());
-                begin_connect(&port, baud, &tx);
-            }
-            _ => app.open_port_selector(ports),
+    let mut ports = resolve_ports(args.port)?;
+    match ports.len() {
+        0 => {}
+        1 => {
+            let port = ports.remove(0);
+            app.set_status(format!("Connecting to {port}..."));
+            begin_connect(&port, baud, &tx);
+            app.set_port(port);
         }
-        spawn_port_poller(tx.clone(), shutdown_rx.clone());
+        _ => app.open_port_selector(ports),
     }
+    spawn_port_poller(tx.clone(), shutdown_rx.clone());
 
     let mut tick = interval(Duration::from_millis(250));
 
@@ -1325,7 +1281,6 @@ mod tests {
         assert_eq!(app.scroll(), 0);
         assert!(app.status_msg().is_none());
         assert!(app.port_selector().is_none());
-        assert!(!app.is_demo(), "new App must not start in demo mode");
         assert!(!app.is_flashing());
         assert!(app.device_info().is_none());
         assert!(!app.is_erase_confirm_open());
@@ -1348,7 +1303,7 @@ mod tests {
     #[test]
     fn app_set_status_and_read() {
         let mut app = App::new(None);
-        app.set_status("hello".into());
+        app.set_status("hello");
         assert_eq!(app.status_msg(), Some("hello"));
     }
 
@@ -1362,7 +1317,7 @@ mod tests {
     #[test]
     fn tick_recent_status_is_preserved() {
         let mut app = App::new(None);
-        app.set_status("hello".into());
+        app.set_status("hello");
         app.tick();
         assert_eq!(app.status_msg(), Some("hello"));
     }
@@ -1956,30 +1911,6 @@ mod tests {
     }
 
     #[test]
-    fn handle_ports_detected_is_noop_in_demo_mode() {
-        let mut app = App::new(None);
-        app.set_demo();
-        handle_ports_detected(
-            &mut app,
-            vec!["/dev/ttyUSB0".into()],
-            &[],
-            &make_tx(),
-        );
-        assert!(
-            app.port_name().is_none(),
-            "PortsDetected must not connect a port in demo mode"
-        );
-        assert!(
-            app.port_selector().is_none(),
-            "PortsDetected must not open port selector in demo mode"
-        );
-        assert!(
-            app.status_msg().is_none(),
-            "PortsDetected must not set status in demo mode"
-        );
-    }
-
-    #[test]
     fn handle_ports_detected_is_noop_while_flashing() {
         let mut app = App::new(None);
         app.set_flash_state(crate::flash::State::Flashing {
@@ -2139,7 +2070,7 @@ mod tests {
         app.set_port("COM2".into());
         app.set_port_cmd(cmd_tx);
         app.set_source_shutdown(new_src_tx);
-        app.set_status("Connected to COM2.".into());
+        app.set_status("Connected to COM2.");
 
         assert_eq!(app.port_name(), Some("COM2"));
         assert_eq!(app.status_msg(), Some("Connected to COM2."));
@@ -2198,46 +2129,6 @@ mod tests {
                 || app.port_selector().is_some(),
             "scan_ports must produce an observable state change"
         );
-    }
-
-    #[test]
-    fn demo_scan_ports_is_noop() {
-        let mut app = App::new(None);
-        app.set_demo();
-        handle_action(&mut app, Action::ScanPorts, &make_tx());
-        assert_eq!(
-            app.status_msg(),
-            Some("Not available in demo mode."),
-            "ScanPorts must be blocked in demo mode"
-        );
-        assert!(app.port_name().is_none());
-        assert!(app.port_selector().is_none());
-    }
-
-    #[test]
-    fn demo_connect_port_is_noop() {
-        let mut app = App::new(None);
-        app.set_demo();
-        app.set_port("demo".into());
-        handle_action(
-            &mut app,
-            Action::ConnectPort("/dev/ttyUSB0".into()),
-            &make_tx(),
-        );
-        assert_eq!(
-            app.status_msg(),
-            Some("Not available in demo mode."),
-            "ConnectPort must be blocked in demo mode"
-        );
-        assert_eq!(app.port_name(), Some("demo"));
-    }
-
-    #[test]
-    fn demo_reset_is_noop() {
-        let mut app = App::new(None);
-        app.set_demo();
-        handle_action(&mut app, Action::ResetDevice, &make_tx());
-        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
     }
 
     #[test]
@@ -2378,14 +2269,6 @@ mod tests {
     }
 
     #[test]
-    fn handle_action_flash_demo_is_noop() {
-        let mut app = App::new(None);
-        app.set_demo();
-        handle_action(&mut app, Action::Flash, &make_tx());
-        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
-    }
-
-    #[test]
     fn handle_action_confirm_elf_path_valid() {
         let path = unique_temp_path("esp-tui-test-elf");
         std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
@@ -2521,22 +2404,6 @@ mod tests {
         app.open_elf_selector(None);
         handle_action(&mut app, Action::CloseElfSelector, &make_tx());
         assert!(!app.is_elf_selector_open());
-    }
-
-    #[test]
-    fn demo_erase_is_noop() {
-        let mut app = App::new(None);
-        app.set_demo();
-        handle_action(&mut app, Action::ErasePrompt, &make_tx());
-        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
-    }
-
-    #[test]
-    fn demo_flash_is_noop() {
-        let mut app = App::new(None);
-        app.set_demo();
-        handle_action(&mut app, Action::Flash, &make_tx());
-        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
     }
 
     #[test]

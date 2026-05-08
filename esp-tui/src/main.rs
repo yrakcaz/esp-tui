@@ -1,5 +1,4 @@
 mod app;
-mod demo;
 mod elf;
 mod event;
 mod filter;

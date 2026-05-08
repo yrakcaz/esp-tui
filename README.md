@@ -19,7 +19,6 @@ Works with any ESP32 firmware: C, C++, Rust, Arduino.
 - Port auto-detection: connects automatically when one ESP32 is found, opens a
   selector popup when multiple are present
 - Hardware reset via DTR/RTS (`r`)
-- `--demo` flag: synthetic log output for UI development without hardware
 - `Ctrl-L` to clear the log on demand
 
 **Phase 2 (current)**
@@ -57,7 +56,6 @@ esp-tui [OPTIONS]
 Options:
   -p, --port <PORT>  Serial port to connect to
   -b, --baud <BAUD>  Serial baud rate (default: 115200)
-      --demo         Run in demo mode with synthetic log output (no hardware required)
   -h, --help         Print help
 ```
 
@@ -66,7 +64,6 @@ Options:
 ```
 esp-tui                          # auto-detect port
 esp-tui --port /dev/ttyUSB0      # connect to a specific port
-esp-tui --demo                   # run without hardware
 ```
 
 ---
@@ -88,6 +85,25 @@ esp-tui --demo                   # run without hardware
 | `Ctrl-L` | Clear log buffer |
 | `q` / `Esc` | Exit scroll mode, or quit |
 | `Ctrl-C` | Quit |
+
+**ELF path selector** (active while the `f` popup is open)
+
+| Key | Action |
+|---|---|
+| `Tab` | Tab-complete: auto-accept single match, extend to common prefix for multiple |
+| `Shift-Tab` | Cycle completions backward |
+| `↑` / `↓` | Move through completion list |
+| `←` / `→` | Move cursor left / right |
+| `Enter` | Accept highlighted completion, or confirm path if no menu is open |
+| `Esc` | Close selector without saving |
+| `Backspace` | Delete character before cursor |
+| `Ctrl-A` | Move cursor to start of input |
+| `Ctrl-E` | Move cursor to end of input |
+| `Ctrl-D` | Delete character under cursor |
+| `Ctrl-K` | Delete from cursor to end of input |
+| `Ctrl-U` | Delete from start of input to cursor |
+| `Ctrl-W` | Delete word before cursor (stops at `/`) |
+| `Ctrl-L` | Clear entire input |
 
 ---
 

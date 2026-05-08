@@ -56,14 +56,15 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - Tag-based filtering
 - `r` reset (DTR/RTS), `f` flash stub (Phase 2), `e` erase stub (Phase 2), `c` connect/scan
 - Port auto-detection
-- `--demo` flag: synthetic log output for UI dev without hardware
 
 ### Phase 2: Flash Integration
 - espflash library integration
 - Flash progress bar in bottom pane
-- Board info display on connect
-- Partition table viewer popup
-- ELF path configuration (`--elf`, `esp-tui.toml`)
+- Board info display on connect (chip type, revision, flash size, MAC)
+- ELF path selector popup with filesystem tab-completion
+- Full-flash erase with confirmation prompt
+- Port auto-reconnect after flash or erase
+- `--baud` CLI flag
 
 ### Phase 3: Agent + System Inspector
 - `esp-tui-agent` crate (FreeRTOS task, heap/CPU/task sampling, COBS framing)

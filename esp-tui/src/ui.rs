@@ -171,15 +171,15 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App) {
         let board_lines = [
             Line::from(vec![
                 Span::styled("Board: ", Style::default().fg(Color::DarkGray)),
-                Span::raw(info.chip().to_owned()),
+                Span::raw(info.chip()),
             ]),
             Line::from(vec![
                 Span::styled("Flash: ", Style::default().fg(Color::DarkGray)),
-                Span::raw(info.flash_size().to_owned()),
+                Span::raw(info.flash_size()),
             ]),
             Line::from(vec![
                 Span::styled("MAC: ", Style::default().fg(Color::DarkGray)),
-                Span::raw(info.mac_address().to_owned()),
+                Span::raw(info.mac_address()),
             ]),
         ];
         let partition_lines: Vec<Line> = if info.partitions().is_empty() {
@@ -623,13 +623,6 @@ mod tests {
     }
 
     #[test]
-    fn draw_demo_app_does_not_panic() {
-        let mut app = App::new(None);
-        app.set_demo();
-        render(&app);
-    }
-
-    #[test]
     fn draw_with_log_entries_does_not_panic() {
         let mut app = App::new(Some("COM1".into()));
         app.push_line("I (1) wifi: Connected");
@@ -729,7 +722,7 @@ mod tests {
             current: 0,
             total: 0,
         });
-        app.set_status("Waiting for flash to complete...".into());
+        app.set_status("Waiting for flash to complete...");
         render(&app);
     }
 
@@ -744,7 +737,7 @@ mod tests {
     fn draw_with_flash_state_erasing_and_status_overlay_does_not_panic() {
         let mut app = App::new(Some("COM1".into()));
         app.set_flash_state(crate::flash::State::Erasing);
-        app.set_status("Operation already in progress.".into());
+        app.set_status("Operation already in progress.");
         render(&app);
     }
 
@@ -752,7 +745,7 @@ mod tests {
     fn draw_with_flash_state_reconnecting_does_not_panic() {
         let mut app = App::new(Some("COM1".into()));
         app.set_flash_state(crate::flash::State::Reconnecting);
-        app.set_status("Flash complete. Reconnecting...".into());
+        app.set_status("Flash complete. Reconnecting...");
         render(&app);
     }
 
