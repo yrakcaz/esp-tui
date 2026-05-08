@@ -261,51 +261,20 @@ impl App {
     }
 
     fn handle_key_elf_selector_ctrl(&mut self, key: KeyEvent) -> Action {
-        match key.code {
-            KeyCode::Char('a') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.move_cursor_to_start();
-                }
-                Action::None
-            }
-            KeyCode::Char('e') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.move_cursor_to_end();
-                }
-                Action::None
-            }
-            KeyCode::Char('l') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.clear_input();
-                }
-                Action::None
-            }
-            KeyCode::Char('d') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.delete_forward();
-                }
-                Action::None
-            }
-            KeyCode::Char('k') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.kill_to_end();
-                }
-                Action::None
-            }
-            KeyCode::Char('u') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.kill_to_start();
-                }
-                Action::None
-            }
-            KeyCode::Char('w') => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.kill_word_back();
-                }
-                Action::None
-            }
-            _ => Action::None,
+        let op: Option<fn(&mut elf::Selector)> = match key.code {
+            KeyCode::Char('a') => Some(elf::Selector::move_cursor_to_start),
+            KeyCode::Char('e') => Some(elf::Selector::move_cursor_to_end),
+            KeyCode::Char('l') => Some(elf::Selector::clear_input),
+            KeyCode::Char('d') => Some(elf::Selector::delete_forward),
+            KeyCode::Char('k') => Some(elf::Selector::kill_to_end),
+            KeyCode::Char('u') => Some(elf::Selector::kill_to_start),
+            KeyCode::Char('w') => Some(elf::Selector::kill_word_back),
+            _ => None,
+        };
+        if let (Some(f), Some(s)) = (op, self.elf_selector.as_mut()) {
+            f(s);
         }
+        Action::None
     }
 
     fn handle_key_port_selector(&mut self, key: KeyEvent) -> Action {
@@ -952,6 +921,25 @@ fn start_flash(app: &mut App) {
     }
 }
 
+// The serial reader has a 100ms read timeout; the 200ms delay lets it observe
+// the shutdown signal and release the port fd before the operation begins.
+fn spawn_hardware_op<F>(
+    app: &mut App,
+    state: flash::State,
+    tx: &mpsc::UnboundedSender<event::Message>,
+    op: F,
+) where
+    F: FnOnce() -> event::Message + Send + 'static,
+{
+    app.shutdown_source();
+    app.set_flash_state(state);
+    let tx_task = tx.clone();
+    drop(std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let _ = tx_task.send(op());
+    }));
+}
+
 fn do_flash(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
     if app.is_flashing() {
         app.set_status("Flash already in progress.".into());
@@ -964,22 +952,24 @@ fn do_flash(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
             (_, None) => {}
             (Some(port), Some(elf_path)) => {
                 let baud = app.baud();
-                app.shutdown_source();
-                app.set_flash_state(flash::State::Flashing {
-                    addr: 0,
-                    current: 0,
-                    total: 0,
-                });
-                let tx_task = tx.clone();
-                drop(std::thread::spawn(move || {
-                    // The serial reader has a 100ms read timeout; wait long
-                    // enough for it to observe the shutdown signal and release
-                    // the port fd.
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                    let result =
-                        flash::flash_elf(&port, baud, &elf_path, tx_task.clone());
-                    let _ = tx_task.send(event::Message::FlashDone(result));
-                }));
+                let tx_progress = tx.clone();
+                spawn_hardware_op(
+                    app,
+                    flash::State::Flashing {
+                        addr: 0,
+                        current: 0,
+                        total: 0,
+                    },
+                    tx,
+                    move || {
+                        event::Message::FlashDone(flash::flash_elf(
+                            &port,
+                            baud,
+                            &elf_path,
+                            tx_progress,
+                        ))
+                    },
+                );
             }
         }
     }
@@ -1056,16 +1046,9 @@ fn handle_action(
             app.close_erase_confirm();
             if let Some(port) = app.port_name().map(str::to_owned) {
                 let baud = app.baud();
-                app.shutdown_source();
-                app.set_flash_state(flash::State::Erasing);
-                let tx_task = tx.clone();
-                drop(std::thread::spawn(move || {
-                    // The serial reader has a 100ms read timeout; wait long enough for
-                    // it to observe the shutdown signal and release the port fd.
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                    let result = flash::erase_flash(&port, baud);
-                    let _ = tx_task.send(event::Message::EraseDone(result));
-                }));
+                spawn_hardware_op(app, flash::State::Erasing, tx, move || {
+                    event::Message::EraseDone(flash::erase_flash(&port, baud))
+                });
             }
         }
         Action::Flash => start_flash(app),

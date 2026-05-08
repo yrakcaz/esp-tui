@@ -54,6 +54,12 @@ impl Selector {
         }
     }
 
+    fn clear_completions(&mut self) {
+        self.completions.clear();
+        self.completion_cursor = 0;
+        self.completion_parent.clear();
+    }
+
     /// Appends a character at the cursor position and clears completions.
     ///
     /// # Arguments
@@ -62,9 +68,7 @@ impl Selector {
     pub(crate) fn push_char(&mut self, ch: char) {
         self.input.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
-        self.completions.clear();
-        self.completion_cursor = 0;
-        self.completion_parent.clear();
+        self.clear_completions();
     }
 
     /// Removes the character before the cursor and clears completions.
@@ -74,9 +78,7 @@ impl Selector {
             let char_start = before.char_indices().next_back().map_or(0, |(i, _)| i);
             self.input.drain(char_start..self.cursor);
             self.cursor = char_start;
-            self.completions.clear();
-            self.completion_cursor = 0;
-            self.completion_parent.clear();
+            self.clear_completions();
         }
     }
 
@@ -84,17 +86,13 @@ impl Selector {
     /// completions.
     pub(crate) fn move_cursor_to_start(&mut self) {
         self.cursor = 0;
-        self.completions.clear();
-        self.completion_cursor = 0;
-        self.completion_parent.clear();
+        self.clear_completions();
     }
 
     /// Moves the text cursor to the end of the input and clears completions.
     pub(crate) fn move_cursor_to_end(&mut self) {
         self.cursor = self.input.len();
-        self.completions.clear();
-        self.completion_cursor = 0;
-        self.completion_parent.clear();
+        self.clear_completions();
     }
 
     /// Clears the entire input text, resets the cursor, and clears
@@ -102,9 +100,7 @@ impl Selector {
     pub(crate) fn clear_input(&mut self) {
         self.input.clear();
         self.cursor = 0;
-        self.completions.clear();
-        self.completion_cursor = 0;
-        self.completion_parent.clear();
+        self.clear_completions();
     }
 
     /// Deletes the character under the cursor (forward delete) and clears
@@ -113,18 +109,14 @@ impl Selector {
         if self.cursor < self.input.len() {
             let ch = self.input[self.cursor..].chars().next().unwrap_or('\0');
             self.input.drain(self.cursor..self.cursor + ch.len_utf8());
-            self.completions.clear();
-            self.completion_cursor = 0;
-            self.completion_parent.clear();
+            self.clear_completions();
         }
     }
 
     /// Deletes from the cursor to the end of the input and clears completions.
     pub(crate) fn kill_to_end(&mut self) {
         self.input.truncate(self.cursor);
-        self.completions.clear();
-        self.completion_cursor = 0;
-        self.completion_parent.clear();
+        self.clear_completions();
     }
 
     /// Deletes from the start of the input to the cursor and clears
@@ -132,9 +124,7 @@ impl Selector {
     pub(crate) fn kill_to_start(&mut self) {
         self.input.drain(..self.cursor);
         self.cursor = 0;
-        self.completions.clear();
-        self.completion_cursor = 0;
-        self.completion_parent.clear();
+        self.clear_completions();
     }
 
     /// Deletes the word immediately before the cursor, stopping at `/`
@@ -146,9 +136,7 @@ impl Selector {
             let word_start = trimmed.rfind('/').map_or(0, |i| i + 1);
             self.input.drain(word_start..self.cursor);
             self.cursor = word_start;
-            self.completions.clear();
-            self.completion_cursor = 0;
-            self.completion_parent.clear();
+            self.clear_completions();
         }
     }
 
@@ -174,9 +162,7 @@ impl Selector {
                 .last()
                 .map_or(self.cursor, |(i, ch)| self.cursor + i + ch.len_utf8());
         }
-        self.completions.clear();
-        self.completion_cursor = 0;
-        self.completion_parent.clear();
+        self.clear_completions();
     }
 
     /// Returns the current input string.
@@ -290,9 +276,7 @@ impl Selector {
     pub(crate) fn accept_completion(&mut self) {
         if !self.completions.is_empty() {
             self.apply_highlighted_completion();
-            self.completions.clear();
-            self.completion_cursor = 0;
-            self.completion_parent.clear();
+            self.clear_completions();
         }
     }
 

@@ -171,15 +171,15 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App) {
         let board_lines = [
             Line::from(vec![
                 Span::styled("Board: ", Style::default().fg(Color::DarkGray)),
-                Span::raw(info.chip().to_owned()),
+                Span::raw(info.chip()),
             ]),
             Line::from(vec![
                 Span::styled("Flash: ", Style::default().fg(Color::DarkGray)),
-                Span::raw(info.flash_size().to_owned()),
+                Span::raw(info.flash_size()),
             ]),
             Line::from(vec![
                 Span::styled("MAC: ", Style::default().fg(Color::DarkGray)),
-                Span::raw(info.mac_address().to_owned()),
+                Span::raw(info.mac_address()),
             ]),
         ];
         let partition_lines: Vec<Line> = if info.partitions().is_empty() {
