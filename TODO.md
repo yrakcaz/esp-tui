@@ -13,7 +13,6 @@
 - [x] `r`: send reset via DTR/RTS
 - [x] `f` / `e` / `c`: stub keybindings (Phase 2)
 - [x] Port auto-detection: scan for ESP32 devices, selector if multiple found
-- [x] `--demo` flag: emit synthetic ESP-IDF log lines without hardware
 - [x] `q` / `Ctrl-C` exits cleanly, restores terminal
 
 ## Phase 2: Flash Integration

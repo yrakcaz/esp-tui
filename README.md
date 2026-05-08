@@ -19,7 +19,6 @@ Works with any ESP32 firmware: C, C++, Rust, Arduino.
 - Port auto-detection: connects automatically when one ESP32 is found, opens a
   selector popup when multiple are present
 - Hardware reset via DTR/RTS (`r`)
-- `--demo` flag: synthetic log output for UI development without hardware
 - `Ctrl-L` to clear the log on demand
 
 **Phase 2 (current)**
@@ -57,7 +56,6 @@ esp-tui [OPTIONS]
 Options:
   -p, --port <PORT>  Serial port to connect to
   -b, --baud <BAUD>  Serial baud rate (default: 115200)
-      --demo         Run in demo mode with synthetic log output (no hardware required)
   -h, --help         Print help
 ```
 
@@ -66,7 +64,6 @@ Options:
 ```
 esp-tui                          # auto-detect port
 esp-tui --port /dev/ttyUSB0      # connect to a specific port
-esp-tui --demo                   # run without hardware
 ```
 
 ---

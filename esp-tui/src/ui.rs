@@ -623,13 +623,6 @@ mod tests {
     }
 
     #[test]
-    fn draw_demo_app_does_not_panic() {
-        let mut app = App::new(None);
-        app.set_demo();
-        render(&app);
-    }
-
-    #[test]
     fn draw_with_log_entries_does_not_panic() {
         let mut app = App::new(Some("COM1".into()));
         app.push_line("I (1) wifi: Connected");

@@ -14,7 +14,7 @@ use ratatui::Terminal;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{interval, Duration};
 
-use crate::{demo, elf, event, filter, flash, log, port, serial, ui};
+use crate::{elf, event, filter, flash, log, port, serial, ui};
 
 const BUFFER_SIZE: usize = 10_000;
 const STATUS_TTL_SECS: u64 = 3;
@@ -26,10 +26,6 @@ struct Args {
     /// Serial port to connect to.
     #[arg(long, short)]
     port: Option<String>,
-
-    /// Run in demo mode with synthetic log output (no hardware required).
-    #[arg(long)]
-    demo: bool,
 
     /// Serial baud rate.
     #[arg(long, short = 'b')]
@@ -82,7 +78,6 @@ pub(crate) struct App {
     status_msg: Option<(String, Instant)>,
     running: bool,
     port_selector: Option<port::Selector>,
-    demo: bool,
     flash_state: flash::State,
     device_info: Option<flash::DeviceInfo>,
     confirm: ConfirmDialog,
@@ -114,7 +109,6 @@ impl App {
             status_msg: None,
             running: true,
             port_selector: None,
-            demo: false,
             flash_state: flash::State::Idle,
             device_info: None,
             confirm: ConfirmDialog::None,
@@ -628,21 +622,6 @@ impl App {
         self.port_cmd_tx = None;
     }
 
-    /// Returns `true` when the application is running in demo mode.
-    ///
-    /// # Returns
-    ///
-    /// `true` if demo mode is active, `false` otherwise.
-    #[must_use]
-    pub(crate) fn is_demo(&self) -> bool {
-        self.demo
-    }
-
-    /// Puts the application into demo mode, sealing it from real hardware.
-    pub(crate) fn set_demo(&mut self) {
-        self.demo = true;
-    }
-
     /// Returns the current flash operation state.
     ///
     /// # Returns
@@ -870,7 +849,7 @@ fn handle_ports_detected(
     previous: &[String],
     tx: &mpsc::UnboundedSender<event::Message>,
 ) {
-    if !app.is_demo() && !app.is_flashing() {
+    if !app.is_flashing() {
         if app.port_name().is_none() {
             if app.port_selector().is_some() {
                 match current.len() {
@@ -1033,11 +1012,6 @@ fn handle_action(
         }
         Action::CloseElfSelector => app.close_elf_selector(),
         Action::ConfirmElfPath => confirm_elf_path(app, tx),
-        // All actions below touch real hardware. New hardware actions must go
-        // after this arm so demo mode blocks them automatically.
-        _ if app.is_demo() => {
-            app.set_status("Not available in demo mode.".into());
-        }
         Action::ResetDevice => {
             if app.is_flashing() {
                 app.set_status("Operation already in progress.".into());
@@ -1196,28 +1170,18 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
     let mut app = App::new(None);
     app.set_baud(baud);
 
-    if args.demo {
-        app.set_demo();
-        let (src_tx, src_rx) = watch::channel(false);
-        demo::spawn(tx.clone(), src_rx);
-        demo::spawn_device_info(tx.clone());
-        app.set_port("demo".into());
-        app.set_source_shutdown(src_tx);
-        app.set_status("Connected to demo.".into());
-    } else {
-        let mut ports = resolve_ports(args.port)?;
-        match ports.len() {
-            0 => {}
-            1 => {
-                let port = ports.remove(0);
-                app.set_status(format!("Connecting to {port}..."));
-                app.set_port(port.clone());
-                begin_connect(&port, baud, &tx);
-            }
-            _ => app.open_port_selector(ports),
+    let mut ports = resolve_ports(args.port)?;
+    match ports.len() {
+        0 => {}
+        1 => {
+            let port = ports.remove(0);
+            app.set_status(format!("Connecting to {port}..."));
+            app.set_port(port.clone());
+            begin_connect(&port, baud, &tx);
         }
-        spawn_port_poller(tx.clone(), shutdown_rx.clone());
+        _ => app.open_port_selector(ports),
     }
+    spawn_port_poller(tx.clone(), shutdown_rx.clone());
 
     let mut tick = interval(Duration::from_millis(250));
 
@@ -1325,7 +1289,6 @@ mod tests {
         assert_eq!(app.scroll(), 0);
         assert!(app.status_msg().is_none());
         assert!(app.port_selector().is_none());
-        assert!(!app.is_demo(), "new App must not start in demo mode");
         assert!(!app.is_flashing());
         assert!(app.device_info().is_none());
         assert!(!app.is_erase_confirm_open());
@@ -1956,30 +1919,6 @@ mod tests {
     }
 
     #[test]
-    fn handle_ports_detected_is_noop_in_demo_mode() {
-        let mut app = App::new(None);
-        app.set_demo();
-        handle_ports_detected(
-            &mut app,
-            vec!["/dev/ttyUSB0".into()],
-            &[],
-            &make_tx(),
-        );
-        assert!(
-            app.port_name().is_none(),
-            "PortsDetected must not connect a port in demo mode"
-        );
-        assert!(
-            app.port_selector().is_none(),
-            "PortsDetected must not open port selector in demo mode"
-        );
-        assert!(
-            app.status_msg().is_none(),
-            "PortsDetected must not set status in demo mode"
-        );
-    }
-
-    #[test]
     fn handle_ports_detected_is_noop_while_flashing() {
         let mut app = App::new(None);
         app.set_flash_state(crate::flash::State::Flashing {
@@ -2201,46 +2140,6 @@ mod tests {
     }
 
     #[test]
-    fn demo_scan_ports_is_noop() {
-        let mut app = App::new(None);
-        app.set_demo();
-        handle_action(&mut app, Action::ScanPorts, &make_tx());
-        assert_eq!(
-            app.status_msg(),
-            Some("Not available in demo mode."),
-            "ScanPorts must be blocked in demo mode"
-        );
-        assert!(app.port_name().is_none());
-        assert!(app.port_selector().is_none());
-    }
-
-    #[test]
-    fn demo_connect_port_is_noop() {
-        let mut app = App::new(None);
-        app.set_demo();
-        app.set_port("demo".into());
-        handle_action(
-            &mut app,
-            Action::ConnectPort("/dev/ttyUSB0".into()),
-            &make_tx(),
-        );
-        assert_eq!(
-            app.status_msg(),
-            Some("Not available in demo mode."),
-            "ConnectPort must be blocked in demo mode"
-        );
-        assert_eq!(app.port_name(), Some("demo"));
-    }
-
-    #[test]
-    fn demo_reset_is_noop() {
-        let mut app = App::new(None);
-        app.set_demo();
-        handle_action(&mut app, Action::ResetDevice, &make_tx());
-        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
-    }
-
-    #[test]
     fn handle_key_erase_confirm_y_confirms() {
         let mut app = App::new(None);
         app.open_erase_confirm();
@@ -2375,14 +2274,6 @@ mod tests {
         handle_action(&mut app, Action::ConfirmElfPath, &make_tx());
         assert_eq!(app.status_msg(), Some("Flash already in progress."));
         std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn handle_action_flash_demo_is_noop() {
-        let mut app = App::new(None);
-        app.set_demo();
-        handle_action(&mut app, Action::Flash, &make_tx());
-        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
     }
 
     #[test]
@@ -2521,22 +2412,6 @@ mod tests {
         app.open_elf_selector(None);
         handle_action(&mut app, Action::CloseElfSelector, &make_tx());
         assert!(!app.is_elf_selector_open());
-    }
-
-    #[test]
-    fn demo_erase_is_noop() {
-        let mut app = App::new(None);
-        app.set_demo();
-        handle_action(&mut app, Action::ErasePrompt, &make_tx());
-        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
-    }
-
-    #[test]
-    fn demo_flash_is_noop() {
-        let mut app = App::new(None);
-        app.set_demo();
-        handle_action(&mut app, Action::Flash, &make_tx());
-        assert_eq!(app.status_msg(), Some("Not available in demo mode."));
     }
 
     #[test]
