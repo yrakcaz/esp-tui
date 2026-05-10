@@ -1,5 +1,6 @@
 [workspace]
-members = ["esp-tui"]
+members = ["esp-tui", "esp-agent", "xtask"]
+default-members = ["esp-tui"]
 resolver = "2"
 
 [workspace.lints.clippy]

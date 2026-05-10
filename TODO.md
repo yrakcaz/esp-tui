@@ -27,24 +27,25 @@
 
 ## Phase 3: Agent + System Inspector
 
-- [ ] `esp-tui-agent` crate: FreeRTOS task, heap/CPU/task sampling
-- [ ] COBS framing with magic header `0xAE 0x73`
-- [ ] `postcard` serialization of `TelemetryFrame`
-- [ ] C ABI: `esp_tui_agent_start()` via `#[no_mangle] extern "C"`
-- [ ] Pre-compiled `.a` variants for all chip targets, bundled via `include_bytes!`
-- [ ] Define a `Source` trait to unify `serial::Port` and the agent telemetry stream behind a common interface
-- [ ] Host-side COBS demuxer (splits agent frames from plain log lines)
+- [x] `esp-agent` crate: FreeRTOS task, heap/CPU/WiFi/NVS/task sampling
+- [x] Human-readable VERBOSE log lines (tag `esp_agent`); no binary encoding
+- [x] C ABI: `esp_agent_configure(uart_num, interval_ms)` for optional config override
+- [x] `.init_array` constructor always included; auto-starts task with defaults
+- [x] `cargo xtask build-agent`: cross-compiles `.a` for all five ESP32 targets
+- [ ] Host-side `esp_agent` tag detection and telemetry parsing
 - [ ] System Inspector pane: heap gauges, per-core CPU bars, task list
-- [ ] Partition table viewer: read via agent using `esp_partition_find`/`esp_partition_get` and stream in `TelemetryFrame`; display in Inspector pane
+- [ ] Partition table viewer in Inspector pane
 - [ ] Agent detection / graceful absence ("agent not detected" prompt)
-- [ ] In-TUI agent install flow (`[A]` keybinding)
-- [ ] `esp-tui agent install` CLI subcommand
+- [ ] `esp-tui agent install` CLI subcommand (deliver pre-built `.a` to user project)
 - [ ] Pane focus: introduce a `FocusedPane` enum so scroll and resize operations target the active pane; review and reassign conflicting keybindings (e.g. `Tab` currently opens the filter popup) at that time
 - [ ] Per-pane independent scrolling once Inspector has scrollable content
 - [ ] Per-pane independent resizing (adjust split ratio with keybindings)
 - [ ] Split `app.rs`: move `run_inner`, `begin_connect`, `spawn_port_poller`, `handle_ports_detected`, and `apply_scan` into a new `runner.rs`; `app.rs` becomes a pure state container. The seam already exists but the split is not worth the churn until agent state grows the file further.
 
 ## Phase 4: Polish
+
+- [ ] Revisit build system: once a release mechanism is in place (pre-built `.a` assets on GitHub Releases), evaluate whether `cargo xtask build-agent` is still the right developer-facing entry point, whether CI artifact caching is worth adding, and whether any of the current workarounds (`crate-type = ["lib", "staticlib"]`, `target_os` guards, `load_esp_env` parsing) can be simplified
+
 
 - [ ] On macOS, filter `cu.*` entries from port detection: only `tty.*` devices should appear in the selector and auto-connect logic, since `cu.*` is not the correct interface for ESP32 serial communication
 - [ ] Panic/backtrace decoder: addr2line + ELF symbol resolution
@@ -64,6 +65,8 @@
 
 - [x] Make the repo public
 - [x] Add CI and license badges to README
+- [ ] Consider extracting `esp-agent` into its own repo once it has independent users
+- [ ] CI release workflow for `esp-agent`: matrix build all targets on tag push, publish `.a` files as GitHub Release assets
 - [ ] Publish `esp-tui` to crates.io
 - [ ] Add crates.io version badge to README
 - [ ] Pre-built binaries via GitHub Releases (Linux x86_64, macOS x86_64/ARM64)

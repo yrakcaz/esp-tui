@@ -5,11 +5,15 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  host:
     runs-on: ubuntu-latest
 
     steps:
@@ -31,7 +35,29 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Run Clippy
-        run: cargo clippy --all-targets
+        run: cargo clippy --all-targets --workspace
 
       - name: Run Tests
-        run: RUST_BACKTRACE=1 cargo test --all-targets --verbose
+        run: RUST_BACKTRACE=1 cargo test --all-targets --workspace --verbose
+
+  cross:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev binutils
+
+      - name: Install Xtensa toolchain
+        uses: esp-rs/xtensa-toolchain@7d76121a71da5b9f0b4c2e3c969c3a09b2261cc4  # v1
+        with:
+          default: true
+          buildtargets: esp32,esp32s2,esp32s3
+
+      - name: Add RISC-V bare-metal targets
+        run: rustup target add riscv32imc-unknown-none-elf riscv32imac-unknown-none-elf
+
+      - name: Build agent for all targets
+        run: cargo xtask build-agent
