@@ -51,10 +51,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libudev-dev binutils
 
       - name: Install Xtensa toolchain
-        uses: esp-rs/xtensa-toolchain@7d76121a71da5b9f0b4c2e3c969c3a09b2261cc4  # v1
-        with:
-          default: true
-          buildtargets: esp32,esp32s2,esp32s3
+        run: cargo install espup && espup install
 
       - name: Add RISC-V bare-metal targets
         run: rustup target add riscv32imc-unknown-none-elf riscv32imac-unknown-none-elf
