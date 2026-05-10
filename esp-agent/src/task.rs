@@ -14,7 +14,8 @@ use crate::fmt::{
 };
 
 #[used]
-#[link_section = ".init_array"]
+#[cfg_attr(target_arch = "xtensa", link_section = ".ctors")]
+#[cfg_attr(target_arch = "riscv32", link_section = ".init_array")]
 static _ESP_AGENT_CTOR: extern "C" fn() = _esp_agent_ctor;
 
 extern "C" fn _esp_agent_ctor() {
