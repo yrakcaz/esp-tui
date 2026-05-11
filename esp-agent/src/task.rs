@@ -25,7 +25,7 @@ extern "C" fn _esp_agent_ctor() {
         ffi::xTaskCreatePinnedToCore(
             agent_task_fn,
             c"esp_agent".as_ptr(),
-            4096,
+            8192,
             core::ptr::null_mut(),
             1,
             core::ptr::null_mut(),
