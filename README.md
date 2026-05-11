@@ -35,7 +35,7 @@ Works with any ESP32 firmware: C, C++, Rust, Arduino.
 - `esp-agent`: a zero-dependency `no_std` static library you link into ESP32 firmware
 - Auto-starts a FreeRTOS task on boot via an `.init_array` constructor; no changes to `app_main` required
 - Emits heap, CPU, WiFi RSSI, NVS, and task-list telemetry as ESP-IDF VERBOSE log lines (tag `esp_agent`); parsed by esp-tui to populate the System Inspector pane, and readable in any serial monitor
-- Optional override via `esp_agent_configure(uart_num, interval_ms)` for custom port or interval
+- Optional override via `esp_agent_configure(interval_ms)` for custom sampling interval
 - Builds a `.a` for all five ESP32 targets via `cargo xtask build-agent` (ESP32, S2, S3, C3/C2, C6/H2)
 - System Inspector pane with live heap gauges, per-core CPU bars, task table, and partition viewer (in progress)
 
@@ -169,21 +169,17 @@ C/C++: pass the archive to your linker:
 -L target/<triple>/release -lesp_agent
 ```
 
-Rust (pre-built `.a`): emit the linker directives from a `build.rs`:
+Rust: emit the linker directives from a `build.rs`, then force the linker to include the constructor symbol:
 
 ```rust
 fn main() {
-    println!("cargo:rustc-link-search=target/<triple>/release");
+    println!("cargo:rustc-link-search=/path/to/esp-tui/target/<triple>/release");
     println!("cargo:rustc-link-lib=static=esp_agent");
+    println!("cargo:rustc-link-arg=-Wl,--undefined=_esp_agent_ctor");
 }
 ```
 
-Rust (Xtensa ESP-IDF projects, source compilation): skip xtask and add a Cargo dependency instead. Cargo will compile `esp-agent` from source using the same target and toolchain as your project. This requires your project to already be set up for Xtensa ESP-IDF development (`+esp` toolchain and `build-std` configured):
-
-```toml
-[dependencies]
-esp-agent = { git = "https://github.com/yrakcaz/esp-tui" }
-```
+Use an absolute path in `rustc-link-search`; a relative path resolves against the project root, not the esp-tui workspace. The `--undefined` flag is required because no Rust code references the constructor directly; without it the linker silently drops the archive.
 
 **Optional configuration**
 
@@ -194,21 +190,14 @@ C/C++:
 esp_agent_configure(500);  // 500 ms
 ```
 
-Rust (Cargo dependency):
-```rust
-fn app_main() {
-    esp_agent::configure(500);  // 500 ms
-}
-```
-
-Rust (pre-built `.a`):
+Rust:
 ```rust
 unsafe extern "C" {
     fn esp_agent_configure(interval_ms: u32);
 }
 
 fn app_main() {
-    unsafe { esp_agent_configure(500); }  // 500 ms
+    unsafe { esp_agent_configure(500); }
 }
 ```
 

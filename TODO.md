@@ -45,6 +45,7 @@
 ## Phase 4: Polish
 
 - [ ] Revisit build system: once a release mechanism is in place (pre-built `.a` assets on GitHub Releases), evaluate whether `cargo xtask build-agent` is still the right developer-facing entry point, whether CI artifact caching is worth adding, and whether any of the current workarounds (`crate-type = ["lib", "staticlib"]`, `target_os` guards, `load_esp_env` parsing) can be simplified
+- [ ] Revisit Rust-native integration: evaluate whether to publish `esp-agent` as a Cargo dependency with a safe `configure()` API (requires solving panic handler conflicts with `esp-idf-sys` and the linker inclusion problem without user-side `build.rs` changes)
 
 
 - [ ] On macOS, filter `cu.*` entries from port detection: only `tty.*` devices should appear in the selector and auto-connect logic, since `cu.*` is not the correct interface for ESP32 serial communication
