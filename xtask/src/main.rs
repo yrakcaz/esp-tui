@@ -59,6 +59,7 @@ fn build_agent(target_filter: Option<&str>) -> anyhow::Result<()> {
             .join("release")
             .join("libesp_agent.a");
         verify_symbols(&lib)?;
+        weaken_panic_symbol(&lib, target, &esp_env)?;
         println!("  -> target/{target}/release/libesp_agent.a");
     }
     Ok(())
@@ -113,6 +114,46 @@ fn load_esp_env() -> anyhow::Result<Vec<(String, String)>> {
 
 fn toolchain_for(target: &str) -> Option<&'static str> {
     target.starts_with("xtensa-").then_some("+esp")
+}
+
+/// Makes `rust_begin_unwind` a weak symbol in the archive so that Rust
+/// projects linking the `.a` can override it with their own panic handler
+/// (e.g. from std) without a duplicate-symbol linker error. C/C++ projects
+/// are unaffected: the weak symbol is used when no other definition exists.
+///
+/// # Arguments
+///
+/// * `lib` - Path to the built `.a` archive.
+/// * `target` - Target triple; selects the correct `objcopy` binary.
+/// * `esp_env` - Xtensa toolchain environment from [`load_esp_env`].
+///
+/// # Errors
+///
+/// Returns an error if the `objcopy` binary is not found or exits non-zero.
+fn weaken_panic_symbol(
+    lib: &std::path::Path,
+    target: &str,
+    esp_env: &[(String, String)],
+) -> anyhow::Result<()> {
+    let bin = if target.starts_with("xtensa-") {
+        "xtensa-esp-elf-objcopy"
+    } else {
+        "objcopy"
+    };
+    let mut cmd = std::process::Command::new(bin);
+    cmd.arg("--weaken-symbol=rust_begin_unwind").arg(lib);
+    if target.starts_with("xtensa-") {
+        cmd.envs(esp_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    }
+    anyhow::ensure!(
+        cmd.status()
+            .with_context(|| format!("{bin} not found; install binutils"))?
+            .success(),
+        "objcopy failed to weaken rust_begin_unwind in {}",
+        lib.display()
+    );
+    println!("  rust_begin_unwind weakened");
+    Ok(())
 }
 
 fn verify_symbols(path: &std::path::Path) -> anyhow::Result<()> {
