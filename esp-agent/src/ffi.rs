@@ -1,7 +1,6 @@
 use core::ffi::{c_char, c_int, c_void};
 
 pub(crate) type TaskHandle = *mut c_void;
-pub(crate) type UartPortT = c_int;
 pub(crate) type PartitionIter = *mut c_void;
 
 /// Matches `TaskStatus_t` from `FreeRTOS` `task.h`.
@@ -134,11 +133,11 @@ extern "C" {
     pub(crate) fn esp_flash_get_size(chip: *mut c_void, out_size: *mut u32)
         -> c_int;
 
-    pub(crate) fn uart_write_bytes(
-        port: UartPortT,
-        src: *const c_void,
-        size: usize,
-    ) -> c_int;
+    /// Writes `n` bytes from `buf` to file descriptor `fd`.
+    ///
+    /// Used with `fd = 1` (stdout) to route output through the ESP-IDF VFS
+    /// console layer without requiring a UART driver to be installed.
+    pub(crate) fn write(fd: c_int, buf: *const c_void, n: usize) -> isize;
 }
 
 /// Returns the chip name bytes for a given `esp_chip_model_t` value.

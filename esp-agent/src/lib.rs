@@ -7,7 +7,7 @@
 // embedded builds remain no_std as required.
 #![cfg_attr(any(target_os = "none", target_os = "espidf"), no_std)]
 
-use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(any(target_os = "none", target_os = "espidf"))]
 mod ffi;
@@ -22,22 +22,20 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-pub(crate) static AGENT_UART: AtomicU8 = AtomicU8::new(0);
 pub(crate) static AGENT_INTERVAL: AtomicU32 = AtomicU32::new(1000);
 
-/// Overrides the agent UART port and sampling interval.
+/// Overrides the agent sampling interval.
 ///
-/// The `.init_array` constructor always starts the agent task with defaults
-/// (UART 0, 1000 ms). Call this from `app_main` to use a different port or
-/// interval. Changes are picked up on the next task iteration. Passing
-/// `interval_ms = 0` suspends telemetry indefinitely. C callers use the
-/// `esp_agent_configure` symbol exported with `#[no_mangle]`.
+/// The constructor always starts the agent task with a default of 1000 ms.
+/// Call this from `app_main` to use a different interval. Changes are picked
+/// up on the next task iteration. Passing `interval_ms = 0` suspends
+/// telemetry indefinitely. Output always goes to stdout (the configured
+/// ESP-IDF console). C callers use the `esp_agent_configure` symbol exported
+/// with `#[no_mangle]`.
 ///
 /// # Arguments
 ///
-/// * `uart_num` - ESP-IDF UART port number (0, 1, or 2).
 /// * `interval_ms` - Sampling interval in milliseconds.
-pub fn configure(uart_num: u8, interval_ms: u32) {
-    AGENT_UART.store(uart_num, Ordering::Relaxed);
+pub fn configure(interval_ms: u32) {
     AGENT_INTERVAL.store(interval_ms, Ordering::Relaxed);
 }

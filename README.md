@@ -187,28 +187,28 @@ esp-agent = { git = "https://github.com/yrakcaz/esp-tui" }
 
 **Optional configuration**
 
-By default the agent uses UART 0 and a 1000 ms sampling interval. Override from `app_main` before the scheduler starts:
+By default the agent samples every 1000 ms. Override from `app_main` before the scheduler starts. Output always goes to stdout (the ESP-IDF configured console).
 
 C/C++:
 ```c
-esp_agent_configure(0, 500);  // UART 0, 500 ms
+esp_agent_configure(500);  // 500 ms
 ```
 
 Rust (Cargo dependency):
 ```rust
 fn app_main() {
-    esp_agent::configure(0, 500);  // UART 0, 500 ms
+    esp_agent::configure(500);  // 500 ms
 }
 ```
 
 Rust (pre-built `.a`):
 ```rust
 unsafe extern "C" {
-    fn esp_agent_configure(uart_num: u8, interval_ms: u32);
+    fn esp_agent_configure(interval_ms: u32);
 }
 
 fn app_main() {
-    unsafe { esp_agent_configure(0, 500); }  // UART 0, 500 ms
+    unsafe { esp_agent_configure(500); }  // 500 ms
 }
 ```
 

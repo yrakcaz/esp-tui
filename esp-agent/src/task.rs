@@ -38,11 +38,10 @@ extern "C" fn _esp_agent_ctor() {
 ///
 /// # Arguments
 ///
-/// * `uart_num`    - ESP-IDF UART port number (0, 1, or 2).
 /// * `interval_ms` - Sampling interval in milliseconds.
 #[no_mangle]
-pub extern "C" fn esp_agent_configure(uart_num: u8, interval_ms: u32) {
-    crate::configure(uart_num, interval_ms);
+pub extern "C" fn esp_agent_configure(interval_ms: u32) {
+    crate::configure(interval_ms);
 }
 
 fn reset_reason_from_esp(raw: u32) -> ResetReason {
@@ -224,7 +223,12 @@ fn cpu_percent(idle_delta: u32, total_delta: u32) -> u8 {
     }
 }
 
-fn emit_startup_lines(startup: &StartupInfo, uart: u8) {
+fn console_write(buf: &[u8]) {
+    // SAFETY: buf is valid for buf.len() bytes; fd 1 is always open.
+    unsafe { ffi::write(1, buf.as_ptr().cast(), buf.len()) };
+}
+
+fn emit_startup_lines(startup: &StartupInfo) {
     let mut start_buf = [0u8; MAX_LINE];
     if let Some(n) = fmt::format_start_line(
         // SAFETY: pure query.
@@ -232,10 +236,7 @@ fn emit_startup_lines(startup: &StartupInfo, uart: u8) {
         startup,
         &mut start_buf,
     ) {
-        // SAFETY: start_buf is valid for `n` bytes; uart is a valid port number.
-        unsafe {
-            ffi::uart_write_bytes(i32::from(uart), start_buf.as_ptr().cast(), n)
-        };
+        console_write(&start_buf[..n]);
     }
 
     let (parts, part_count) = collect_partitions();
@@ -246,10 +247,7 @@ fn emit_startup_lines(startup: &StartupInfo, uart: u8) {
         &parts[..part_count],
         &mut parts_buf,
     ) {
-        // SAFETY: parts_buf is valid for `n` bytes; uart is a valid port number.
-        unsafe {
-            ffi::uart_write_bytes(i32::from(uart), parts_buf.as_ptr().cast(), n)
-        };
+        console_write(&parts_buf[..n]);
     }
 }
 
@@ -258,7 +256,6 @@ fn run_iteration(
     cores: usize,
     prev_total_runtime: &mut u32,
     prev_idle: &mut [u32; 2],
-    uart: u8,
 ) {
     let heap_free =
         u32::try_from(unsafe { ffi::heap_caps_get_free_size(MALLOC_CAP_DEFAULT) })
@@ -350,16 +347,13 @@ fn run_iteration(
 
     let mut line_buf = [0u8; MAX_LINE];
     if let Some(n) = fmt::format_telemetry_line(&frame, &mut line_buf) {
-        // SAFETY: line_buf is valid for `n` bytes; uart is a valid port.
-        unsafe {
-            ffi::uart_write_bytes(i32::from(uart), line_buf.as_ptr().cast(), n)
-        };
+        console_write(&line_buf[..n]);
     }
 }
 
 unsafe extern "C" fn agent_task_fn(_param: *mut core::ffi::c_void) {
     let startup = build_startup_info();
-    emit_startup_lines(&startup, crate::AGENT_UART.load(Ordering::Relaxed));
+    emit_startup_lines(&startup);
 
     let cores_u8 = startup.cores.clamp(1, 2);
     let cores = usize::from(cores_u8);
@@ -375,12 +369,6 @@ unsafe extern "C" fn agent_task_fn(_param: *mut core::ffi::c_void) {
         }
         // SAFETY: ticks is a valid FreeRTOS tick count.
         unsafe { ffi::vTaskDelay(interval_ms * CONFIG_FREERTOS_HZ / 1000) };
-        run_iteration(
-            cores_u8,
-            cores,
-            &mut prev_total_runtime,
-            &mut prev_idle,
-            crate::AGENT_UART.load(Ordering::Relaxed),
-        );
+        run_iteration(cores_u8, cores, &mut prev_total_runtime, &mut prev_idle);
     }
 }
