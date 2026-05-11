@@ -155,6 +155,16 @@ esp-tui --port /dev/ttyUSB0      # connect to a specific port
 
 `esp-agent` is a static library that adds live telemetry to ESP32 firmware. Link it in and it self-starts; no changes to `app_main` are required.
 
+**Prerequisites**
+
+esp-agent uses `uxTaskGetSystemState` for task list and CPU usage, which requires runtime stats collection to be enabled in your firmware's `sdkconfig` (or `sdkconfig.defaults`):
+
+```
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+```
+
+This implicitly enables `CONFIG_FREERTOS_USE_TRACE_FACILITY`. Without it the firmware will fail to link with an undefined reference to `uxTaskGetSystemState`.
+
 **Linking**
 
 First build the library for your target (see [Development](#development)):
