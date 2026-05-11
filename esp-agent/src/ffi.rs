@@ -86,7 +86,6 @@ pub(crate) const MALLOC_CAP_INTERNAL: u32 = 1 << 3;
 pub(crate) const MALLOC_CAP_SPIRAM: u32 = 1 << 9;
 pub(crate) const ESP_PARTITION_TYPE_ANY: u32 = 0xFF;
 pub(crate) const ESP_PARTITION_SUBTYPE_ANY: u32 = 0xFF;
-pub(crate) const CONFIG_FREERTOS_HZ: u32 = 1000;
 
 extern "C" {
     pub(crate) fn heap_caps_get_free_size(caps: u32) -> usize;
@@ -110,6 +109,8 @@ extern "C" {
     ) -> i32;
     pub(crate) fn vTaskDelay(ticks: u32);
     pub(crate) fn xTaskGetTickCount() -> u32;
+    /// Returns microseconds elapsed since boot; independent of FreeRTOS tick rate.
+    pub(crate) fn esp_timer_get_time() -> i64;
 
     pub(crate) fn esp_partition_find(
         type_: u32,

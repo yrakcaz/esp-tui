@@ -2,10 +2,10 @@ use core::sync::atomic::Ordering;
 
 use crate::ffi::{
     self, EspChipInfo, EspPartition, NvsStats, TaskStatus, WifiApRecord,
-    CONFIG_FREERTOS_HZ, ESP_PARTITION_SUBTYPE_ANY, ESP_PARTITION_TYPE_ANY,
-    MALLOC_CAP_DEFAULT, MALLOC_CAP_INTERNAL, MALLOC_CAP_SPIRAM, RST_BROWNOUT,
-    RST_DEEPSLEEP, RST_EXT, RST_INT_WDT, RST_PANIC, RST_POWERON, RST_SW,
-    RST_TASK_WDT, RST_WDT, TSK_NO_AFFINITY,
+    ESP_PARTITION_SUBTYPE_ANY, ESP_PARTITION_TYPE_ANY, MALLOC_CAP_DEFAULT,
+    MALLOC_CAP_INTERNAL, MALLOC_CAP_SPIRAM, RST_BROWNOUT, RST_DEEPSLEEP, RST_EXT,
+    RST_INT_WDT, RST_PANIC, RST_POWERON, RST_SW, RST_TASK_WDT, RST_WDT,
+    TSK_NO_AFFINITY,
 };
 use crate::fmt::{
     self, PartitionEntry, ResetReason, StartupInfo, TaskInfo, TelemetryFrame,
@@ -367,8 +367,15 @@ unsafe extern "C" fn agent_task_fn(_param: *mut core::ffi::c_void) {
             unsafe { ffi::vTaskDelay(0xFFFF_FFFF) };
             continue;
         }
-        // SAFETY: ticks is a valid FreeRTOS tick count.
-        unsafe { ffi::vTaskDelay(interval_ms * CONFIG_FREERTOS_HZ / 1000) };
+        // SAFETY: esp_timer_get_time returns monotonic microseconds since boot.
+        let deadline_us =
+            unsafe { ffi::esp_timer_get_time() } + i64::from(interval_ms) * 1000;
         run_iteration(cores_u8, cores, &mut prev_total_runtime, &mut prev_idle);
+        // Yield in single-tick increments until the interval elapses, avoiding
+        // any dependency on configTICK_RATE_HZ.
+        // SAFETY: vTaskDelay(1) yields for one tick; esp_timer_get_time is safe.
+        while unsafe { ffi::esp_timer_get_time() } < deadline_us {
+            unsafe { ffi::vTaskDelay(1) };
+        }
     }
 }
