@@ -62,6 +62,8 @@ pub(crate) struct EspChipInfo {
     pub(crate) _pad: u8,
 }
 
+pub(crate) const TSK_NO_AFFINITY: i32 = 0x7FFF_FFFF;
+
 pub(crate) const RST_POWERON: u32 = 1;
 pub(crate) const RST_EXT: u32 = 2;
 pub(crate) const RST_SW: u32 = 3;

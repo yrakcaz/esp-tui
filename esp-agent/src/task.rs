@@ -5,7 +5,7 @@ use crate::ffi::{
     CONFIG_FREERTOS_HZ, ESP_PARTITION_SUBTYPE_ANY, ESP_PARTITION_TYPE_ANY,
     MALLOC_CAP_DEFAULT, MALLOC_CAP_INTERNAL, MALLOC_CAP_SPIRAM, RST_BROWNOUT,
     RST_DEEPSLEEP, RST_EXT, RST_INT_WDT, RST_PANIC, RST_POWERON, RST_SW,
-    RST_TASK_WDT, RST_WDT,
+    RST_TASK_WDT, RST_WDT, TSK_NO_AFFINITY,
 };
 use crate::fmt::{
     self, PartitionEntry, ResetReason, StartupInfo, TaskInfo, TelemetryFrame,
@@ -29,7 +29,7 @@ extern "C" fn _esp_agent_ctor() {
             core::ptr::null_mut(),
             1,
             core::ptr::null_mut(),
-            -1,
+            TSK_NO_AFFINITY,
         );
     }
 }
