@@ -140,6 +140,44 @@ fn llvm_objcopy_path() -> anyhow::Result<std::path::PathBuf> {
         })
 }
 
+/// Finds the symbol in `lib` whose name ends with `rust_begin_unwind`.
+///
+/// The Rust compiler emits a Rust-mangled name (e.g.
+/// `_RNvCs..._17rust_begin_unwind`) for the internal shim it generates for
+/// `#[panic_handler]` functions. We match by suffix so the lookup works
+/// for both the mangled form and any future unmangled form.
+///
+/// # Arguments
+///
+/// * `lib` - Path to the `.a` archive to search.
+///
+/// # Returns
+///
+/// The exact symbol name as it appears in the archive.
+///
+/// # Errors
+///
+/// Returns an error if `nm` is not found, fails, or the symbol is absent.
+fn find_rust_begin_unwind(lib: &std::path::Path) -> anyhow::Result<String> {
+    let out = std::process::Command::new("nm")
+        .arg("--defined-only")
+        .arg(lib)
+        .output()
+        .context("nm not found")?;
+    anyhow::ensure!(out.status.success(), "nm failed on {}", lib.display());
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().last().map(str::to_owned))
+        .find(|sym| sym.ends_with("rust_begin_unwind"))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "rust_begin_unwind not found in {}; \
+                 ensure the crate defines a #[panic_handler]",
+                lib.display()
+            )
+        })
+}
+
 /// Makes `rust_begin_unwind` a weak symbol in the archive so that Rust
 /// projects linking the `.a` can override it with their own panic handler
 /// (e.g. from std) without a duplicate-symbol linker error. C/C++ projects
@@ -160,13 +198,14 @@ fn weaken_panic_symbol(
     target: &str,
     esp_env: &[(String, String)],
 ) -> anyhow::Result<()> {
+    let sym = find_rust_begin_unwind(lib)?;
     let (bin, use_esp_env) = if target.starts_with("xtensa-") {
         (std::path::PathBuf::from("xtensa-esp-elf-objcopy"), true)
     } else {
         (llvm_objcopy_path()?, false)
     };
     let mut cmd = std::process::Command::new(&bin);
-    cmd.arg("--weaken-symbol=rust_begin_unwind").arg(lib);
+    cmd.arg(format!("--weaken-symbol={sym}")).arg(lib);
     if use_esp_env {
         cmd.envs(esp_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     }
@@ -174,7 +213,7 @@ fn weaken_panic_symbol(
         cmd.status()
             .with_context(|| format!("{} not found", bin.display()))?
             .success(),
-        "objcopy failed to weaken rust_begin_unwind in {}",
+        "objcopy failed to weaken {sym} in {}",
         lib.display()
     );
 
@@ -186,11 +225,10 @@ fn weaken_panic_symbol(
     anyhow::ensure!(out.status.success(), "nm failed on {}", lib.display());
     let text = String::from_utf8_lossy(&out.stdout);
     let weakened = text.lines().any(|line| {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        matches!(
-            parts.as_slice(),
-            [_, "W", "rust_begin_unwind"] | ["W", "rust_begin_unwind"]
-        )
+        let mut parts = line.split_whitespace();
+        let last = parts.next_back();
+        let typ = parts.next_back();
+        matches!((typ, last), (Some("W"), Some(s)) if s == sym)
     });
     anyhow::ensure!(
         weakened,
