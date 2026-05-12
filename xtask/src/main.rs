@@ -59,7 +59,7 @@ fn build_agent(target_filter: Option<&str>) -> anyhow::Result<()> {
             .join("release")
             .join("libesp_agent.a");
         verify_symbols(&lib)?;
-        weaken_panic_symbol(&lib, target, &esp_env)?;
+        weaken_panic_symbol(&lib)?;
         println!("  -> target/{target}/release/libesp_agent.a");
     }
     Ok(())
@@ -116,6 +116,30 @@ fn toolchain_for(target: &str) -> Option<&'static str> {
     target.starts_with("xtensa-").then_some("+esp")
 }
 
+fn llvm_objcopy_path() -> anyhow::Result<std::path::PathBuf> {
+    let out = std::process::Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .context("rustc not found")?;
+    anyhow::ensure!(out.status.success(), "rustc --print sysroot failed");
+    let sysroot = String::from_utf8(out.stdout)
+        .context("rustc sysroot path is not valid UTF-8")?;
+    let lib_rustlib = std::path::Path::new(sysroot.trim())
+        .join("lib")
+        .join("rustlib");
+    std::fs::read_dir(&lib_rustlib)
+        .with_context(|| format!("cannot read {}", lib_rustlib.display()))?
+        .flatten()
+        .map(|e| e.path().join("bin").join("llvm-objcopy"))
+        .find(|p| p.exists())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "llvm-objcopy not found; \
+                 run: rustup component add llvm-tools-preview"
+            )
+        })
+}
+
 /// Makes `rust_begin_unwind` a weak symbol in the archive so that Rust
 /// projects linking the `.a` can override it with their own panic handler
 /// (e.g. from std) without a duplicate-symbol linker error. C/C++ projects
@@ -124,32 +148,42 @@ fn toolchain_for(target: &str) -> Option<&'static str> {
 /// # Arguments
 ///
 /// * `lib` - Path to the built `.a` archive.
-/// * `target` - Target triple; selects the correct `objcopy` binary.
-/// * `esp_env` - Xtensa toolchain environment from [`load_esp_env`].
 ///
 /// # Errors
 ///
-/// Returns an error if the `objcopy` binary is not found or exits non-zero.
-fn weaken_panic_symbol(
-    lib: &std::path::Path,
-    target: &str,
-    esp_env: &[(String, String)],
-) -> anyhow::Result<()> {
-    let bin = if target.starts_with("xtensa-") {
-        "xtensa-esp-elf-objcopy"
-    } else {
-        "objcopy"
-    };
-    let mut cmd = std::process::Command::new(bin);
-    cmd.arg("--weaken-symbol=rust_begin_unwind").arg(lib);
-    if target.starts_with("xtensa-") {
-        cmd.envs(esp_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-    }
+/// Returns an error if `llvm-objcopy` is not found, exits non-zero,
+/// or the symbol is not weak after the operation.
+fn weaken_panic_symbol(lib: &std::path::Path) -> anyhow::Result<()> {
+    let bin = llvm_objcopy_path()?;
     anyhow::ensure!(
-        cmd.status()
-            .with_context(|| format!("{bin} not found; install binutils"))?
+        std::process::Command::new(&bin)
+            .arg("--weaken-symbol=rust_begin_unwind")
+            .arg(lib)
+            .status()
+            .with_context(|| format!("{} not found", bin.display()))?
             .success(),
         "objcopy failed to weaken rust_begin_unwind in {}",
+        lib.display()
+    );
+
+    let out = std::process::Command::new("nm")
+        .arg("--defined-only")
+        .arg(lib)
+        .output()
+        .context("nm not found")?;
+    anyhow::ensure!(out.status.success(), "nm failed on {}", lib.display());
+    let text = String::from_utf8_lossy(&out.stdout);
+    let weakened = text.lines().any(|line| {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        matches!(
+            parts.as_slice(),
+            [_, "W", "rust_begin_unwind"] | ["W", "rust_begin_unwind"]
+        )
+    });
+    anyhow::ensure!(
+        weakened,
+        "rust_begin_unwind is not weak in {}; \
+         objcopy may not support this object format",
         lib.display()
     );
     println!("  rust_begin_unwind weakened");

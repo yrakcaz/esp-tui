@@ -56,5 +56,8 @@ jobs:
       - name: Add RISC-V bare-metal targets
         run: rustup target add riscv32imc-unknown-none-elf riscv32imac-unknown-none-elf
 
+      - name: Install LLVM tools
+        run: rustup component add llvm-tools-preview
+
       - name: Build agent for all targets
         run: cargo xtask build-agent
