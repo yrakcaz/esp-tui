@@ -59,7 +59,7 @@ fn build_agent(target_filter: Option<&str>) -> anyhow::Result<()> {
             .join("release")
             .join("libesp_agent.a");
         verify_symbols(&lib)?;
-        weaken_panic_symbol(&lib)?;
+        weaken_panic_symbol(&lib, target, &esp_env)?;
         println!("  -> target/{target}/release/libesp_agent.a");
     }
     Ok(())
@@ -148,18 +148,30 @@ fn llvm_objcopy_path() -> anyhow::Result<std::path::PathBuf> {
 /// # Arguments
 ///
 /// * `lib` - Path to the built `.a` archive.
+/// * `target` - Target triple; selects the correct `objcopy` binary.
+/// * `esp_env` - Xtensa toolchain environment from [`load_esp_env`].
 ///
 /// # Errors
 ///
-/// Returns an error if `llvm-objcopy` is not found, exits non-zero,
+/// Returns an error if the `objcopy` binary is not found, exits non-zero,
 /// or the symbol is not weak after the operation.
-fn weaken_panic_symbol(lib: &std::path::Path) -> anyhow::Result<()> {
-    let bin = llvm_objcopy_path()?;
+fn weaken_panic_symbol(
+    lib: &std::path::Path,
+    target: &str,
+    esp_env: &[(String, String)],
+) -> anyhow::Result<()> {
+    let (bin, use_esp_env) = if target.starts_with("xtensa-") {
+        (std::path::PathBuf::from("xtensa-esp-elf-objcopy"), true)
+    } else {
+        (llvm_objcopy_path()?, false)
+    };
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.arg("--weaken-symbol=rust_begin_unwind").arg(lib);
+    if use_esp_env {
+        cmd.envs(esp_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    }
     anyhow::ensure!(
-        std::process::Command::new(&bin)
-            .arg("--weaken-symbol=rust_begin_unwind")
-            .arg(lib)
-            .status()
+        cmd.status()
             .with_context(|| format!("{} not found", bin.display()))?
             .success(),
         "objcopy failed to weaken rust_begin_unwind in {}",
