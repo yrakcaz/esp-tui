@@ -36,7 +36,7 @@ Works with any ESP32 firmware: C, C++, Rust, Arduino.
 - Auto-starts a FreeRTOS task on boot via an `.init_array` constructor; no changes to `app_main` required
 - Emits heap, CPU, WiFi RSSI, NVS, and task-list telemetry as ESP-IDF VERBOSE log lines (tag `esp_agent`); parsed by esp-tui to populate the System Inspector pane, and readable in any serial monitor
 - Optional override via `esp_agent_configure(interval_ms)` for custom sampling interval
-- Builds a `.a` for all five ESP32 targets via `cargo xtask build-agent` (ESP32, S2, S3, C3/C2, C6/H2)
+- Builds a `.a` for all seven ESP32 targets via `cargo xtask build agent` (ESP32, S2, S3; C3/C2 and C6/H2 as both bare-metal and ESP-IDF Rust targets)
 - System Inspector pane with live heap gauges, per-core CPU bars, task table, and partition viewer (in progress)
 
 ---
@@ -77,14 +77,27 @@ cargo install espup
 espup install
 ```
 
-Then build pre-compiled static libraries for all five ESP32 targets:
+Then build pre-compiled static libraries for all seven ESP32 targets:
 
 ```
-cargo xtask build-agent                         # all targets
-cargo xtask build-agent xtensa-esp32s3-espidf  # one target
+cargo xtask build agent                                    # all targets
+cargo xtask build agent --target xtensa-esp32s3-espidf    # one target
 ```
 
 Produces `target/<triple>/release/libesp_agent.a` for each target. No environment setup is needed beyond running `espup install`; the xtask resolves the toolchain paths automatically.
+
+**Examples**
+
+Working reference projects live in `examples/c/` and `examples/rust/`. Each can be built with a single command from the repo root; the xtask builds the agent first and then the example:
+
+```
+cargo xtask build examples                                             # both, all targets
+cargo xtask build examples rust                                        # Rust only, all targets
+cargo xtask build examples c                                           # C only, all targets
+cargo xtask build examples rust --target xtensa-esp32s3-espidf        # one target
+```
+
+Each command builds for all five ESP-IDF targets by default (ESP32, S2, S3, C3, C6). Pass a target triple as the second argument to build for a single chip. The xtask auto-detects the ESP-IDF installation at `~/.espressif/esp-idf/v5.3.1` for the C example; set `IDF_PATH` to override.
 
 **Devcontainer**
 
@@ -170,16 +183,14 @@ This implicitly enables `CONFIG_FREERTOS_USE_TRACE_FACILITY`. Without it the fir
 First build the library for your target (see [Development](#development)):
 
 ```
-cargo xtask build-agent xtensa-esp32s3-espidf   # adjust for your chip
+cargo xtask build agent --target xtensa-esp32s3-espidf   # adjust for your chip
 ```
 
-C/C++: pass the archive to your linker:
+C/C++ (ESP-IDF v5, CMake): see `examples/c/` for a complete working project. The key points for integrating into your own component: declare `REQUIRES nvs_flash esp_wifi esp_hw_support` and anchor five symbols with `--undefined` so `--gc-sections` does not drop them before the agent archive is processed. `_esp_agent_ctor` and `esp_chip_info` are always required; the other three (`esp_read_mac`, `esp_wifi_sta_get_ap_info`, `nvs_get_stats`) are only required when your app does not already use WiFi or NVS directly.
 
-```
--L target/<triple>/release -lesp_agent
-```
+The `<triple>` for each chip: `xtensa-esp32-espidf`, `xtensa-esp32s2-espidf`, `xtensa-esp32s3-espidf`, `riscv32imc-unknown-none-elf` (C3/C2), `riscv32imac-unknown-none-elf` (C6/H2).
 
-Rust: emit the linker directives from a `build.rs`, then force the linker to include the constructor symbol:
+Rust: see `examples/rust/` for a complete working project using `esp-idf-sys`. The RISC-V targets use `riscv32imc-esp-espidf` (C3/C2) and `riscv32imac-esp-espidf` (C6/H2) rather than the bare-metal `none-elf` variants. To integrate into your own project, emit the linker directives from a `build.rs` and force the linker to include the constructor symbol:
 
 ```rust
 fn main() {

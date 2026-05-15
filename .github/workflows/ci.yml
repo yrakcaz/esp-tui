@@ -50,14 +50,32 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libudev-dev binutils
 
-      - name: Install Xtensa toolchain
-        run: cargo install espup && espup install
-
-      - name: Add RISC-V bare-metal targets
-        run: rustup target add riscv32imc-unknown-none-elf riscv32imac-unknown-none-elf
-
-      - name: Install LLVM tools
-        run: rustup component add llvm-tools-preview
+      - name: Set up ESP toolchain
+        uses: ./.github/actions/esp-toolchain
 
       - name: Build agent for all targets
         run: cargo xtask build-agent
+
+  examples:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libudev-dev binutils git cmake ninja-build python3-pip
+
+      - name: Set up ESP toolchain
+        uses: ./.github/actions/esp-toolchain
+
+      - name: Cache ESP-IDF
+        uses: actions/cache@v4
+        with:
+          path: ~/.espressif/frameworks
+          key: ${{ runner.os }}-espressif-${{ hashFiles('examples/rust/.cargo/config.toml') }}
+
+      - name: Build Rust example
+        run: cargo xtask build-examples rust

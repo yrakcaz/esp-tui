@@ -1,0 +1,14 @@
+name: "Set up ESP toolchain"
+description: "Install Xtensa toolchain, RISC-V bare-metal targets, and LLVM tools"
+runs:
+  using: "composite"
+  steps:
+    - name: Install Xtensa toolchain
+      run: cargo install espup && espup install
+      shell: bash
+    - name: Add RISC-V bare-metal targets
+      run: rustup target add riscv32imc-unknown-none-elf riscv32imac-unknown-none-elf
+      shell: bash
+    - name: Install LLVM tools
+      run: rustup component add llvm-tools-preview
+      shell: bash

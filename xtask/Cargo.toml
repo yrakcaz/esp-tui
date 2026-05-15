@@ -9,3 +9,4 @@ workspace = true
 
 [dependencies]
 anyhow = "1"
+clap = { version = "4", features = ["derive"] }
