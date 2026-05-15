@@ -10,7 +10,7 @@ runs:
         path: |
           ~/.rustup/toolchains/esp
           ~/export-esp.sh
-        key: esp-toolchain-${{ runner.os }}-${{ hashFiles('examples/rust/rust-toolchain.toml') }}-v1
+        key: esp-toolchain-${{ runner.os }}-${{ hashFiles('examples/rust/rust-toolchain.toml') }}-v2
     - name: Install Xtensa toolchain
       if: steps.cache-esp-toolchain.outputs.cache-hit != 'true'
       run: cargo install espup && espup install
