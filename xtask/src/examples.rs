@@ -120,7 +120,7 @@ fn resolve_idf_path() -> anyhow::Result<String> {
     anyhow::ensure!(
         candidate.exists(),
         "IDF_PATH not set and ~/.espressif/esp-idf/v5.3.1 not found; \
-         set IDF_PATH or run `cargo xtask build-examples rust` first to install it"
+         set IDF_PATH or run `cargo xtask build examples rust` first to install it"
     );
     Ok(candidate.to_string_lossy().into_owned())
 }

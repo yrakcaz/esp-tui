@@ -243,7 +243,7 @@ fn reset_reason_str(reason: ResetReason) -> &'static [u8] {
 /// Formats a startup line into `out`.
 ///
 /// Output: `V ({timestamp_ms}) esp_agent: start reason=R chip=C cores=N
-/// rev=V mac=XX:XX:XX:XX:XX:XX flash=F\r\n`
+/// rev=V mac=XX:XX:XX:XX:XX:XX flash=0xF\r\n`
 ///
 /// # Arguments
 ///
@@ -284,8 +284,8 @@ pub(crate) fn format_start_line(
                     && write_byte(HEX[usize::from(byte & 0xF)], out, &mut pos)
             })
         }
-        && write_str(b" flash=", out, &mut pos)
-        && write_u32(info.flash_size, out, &mut pos)
+        && write_str(b" flash=0x", out, &mut pos)
+        && write_u32_hex(info.flash_size, out, &mut pos)
         && write_str(b"\r\n", out, &mut pos);
     ok.then_some(pos)
 }
@@ -367,10 +367,10 @@ pub(crate) fn format_telemetry_line(
 /// Formats a partition table line into `out`.
 ///
 /// Output: `V ({timestamp_ms}) esp_agent: parts
-/// label:t:0xoffset:size,...\r\n`
+/// label:t:0xoffset:0xsize,...\r\n`
 ///
 /// Type char `t` is `a` for app partitions and `d` for data partitions.
-/// Partition offsets are written as lowercase hex with a `0x` prefix.
+/// Partition offsets and sizes are written as lowercase hex with a `0x` prefix.
 /// An empty `parts` slice produces a valid line with no entries.
 ///
 /// # Arguments
@@ -403,8 +403,8 @@ pub(crate) fn format_parts_line(
                 && write_byte(partition_type_char(part.type_), out, &mut pos)
                 && write_str(b":0x", out, &mut pos)
                 && write_u32_hex(part.offset, out, &mut pos)
-                && write_byte(b':', out, &mut pos)
-                && write_u32(part.size, out, &mut pos)
+                && write_str(b":0x", out, &mut pos)
+                && write_u32_hex(part.size, out, &mut pos)
         })
         && write_str(b"\r\n", out, &mut pos);
     ok.then_some(pos)
@@ -553,7 +553,7 @@ mod tests {
         let mut buf = [0u8; MAX_LINE];
         let n = format_start_line(0, &info, &mut buf).unwrap();
         let s = output_str(&buf, n);
-        assert!(s.contains("flash=4194304"), "{s}");
+        assert!(s.contains("flash=0x400000"), "{s}");
     }
 
     #[test]
@@ -766,7 +766,7 @@ mod tests {
         let mut buf = [0u8; MAX_PARTS_LINE];
         let n = format_parts_line(0, &[part], &mut buf).unwrap();
         let s = output_str(&buf, n);
-        assert!(s.contains("ota_0:a:0x10000:1572864"), "{s}");
+        assert!(s.contains("ota_0:a:0x10000:0x180000"), "{s}");
     }
 
     #[test]
