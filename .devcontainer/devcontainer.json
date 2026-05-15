@@ -1,5 +1,5 @@
 {
   "name": "esp-tui",
   "onCreateCommand": "sudo apt-get update && sudo apt-get install -y libudev-dev binutils git cmake ninja-build python3-pip",
-  "postCreateCommand": "cargo install espup && espup install && rustup target add riscv32imc-unknown-none-elf riscv32imac-unknown-none-elf && rustup component add llvm-tools-preview"
+  "postCreateCommand": "cargo install espup ldproxy && espup install && rustup target add riscv32imc-unknown-none-elf riscv32imac-unknown-none-elf && rustup component add llvm-tools-preview"
 }

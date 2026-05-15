@@ -6,6 +6,9 @@ runs:
     - name: Install Xtensa toolchain
       run: cargo install espup && espup install
       shell: bash
+    - name: Install ldproxy
+      run: cargo install ldproxy
+      shell: bash
     - name: Add RISC-V bare-metal targets
       run: rustup target add riscv32imc-unknown-none-elf riscv32imac-unknown-none-elf
       shell: bash
