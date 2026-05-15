@@ -76,6 +76,14 @@ fn build_c(target: &str) -> anyhow::Result<()> {
         "idf.py not found at {}; check IDF_PATH",
         idf_py.display()
     );
+    anyhow::ensure!(
+        std::process::Command::new("python3")
+            .args([format!("{idf_path}/tools/idf_tools.py").as_str(), "install",])
+            .status()
+            .context("failed to run idf_tools.py install")?
+            .success(),
+        "idf_tools.py install failed"
+    );
     let example_dir = crate::agent::workspace_root().join("examples").join("c");
     let build_dir = format!("build/{chip}");
     for step in [
