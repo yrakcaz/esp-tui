@@ -53,6 +53,9 @@ jobs:
       - name: Set up ESP toolchain
         uses: ./.github/actions/esp-toolchain
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
       - name: Build agent for all targets
         run: cargo xtask build agent
 
@@ -71,6 +74,13 @@ jobs:
       - name: Set up ESP toolchain
         uses: ./.github/actions/esp-toolchain
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            examples/rust -> examples/rust/target
+
       - name: Cache ESP-IDF
         uses: actions/cache@v4
         with:
@@ -81,8 +91,8 @@ jobs:
             ~/.espressif/python_env
           key: ${{ runner.os }}-espressif-${{ hashFiles('examples/rust/.cargo/config.toml') }}
 
-      - name: Build Rust example
-        run: cargo xtask build examples rust
+      - name: Build Xtensa example (esp32s3)
+        run: cargo xtask build examples --target xtensa-esp32s3-espidf
 
-      - name: Build C example
-        run: cargo xtask build examples c
+      - name: Build RISC-V example (esp32c3)
+        run: cargo xtask build examples --target riscv32imc-esp-espidf

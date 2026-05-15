@@ -3,10 +3,24 @@ description: "Install Xtensa toolchain, RISC-V bare-metal targets, and LLVM tool
 runs:
   using: "composite"
   steps:
+    - name: Cache esp Rust toolchain
+      id: cache-esp-toolchain
+      uses: actions/cache@v4
+      with:
+        path: ~/.rustup/toolchains/esp
+        key: esp-toolchain-${{ runner.os }}-${{ hashFiles('examples/rust/rust-toolchain.toml') }}-v1
     - name: Install Xtensa toolchain
+      if: steps.cache-esp-toolchain.outputs.cache-hit != 'true'
       run: cargo install espup && espup install
       shell: bash
+    - name: Cache ldproxy binary
+      id: cache-ldproxy
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/bin/ldproxy
+        key: ldproxy-${{ runner.os }}-v1
     - name: Install ldproxy
+      if: steps.cache-ldproxy.outputs.cache-hit != 'true'
       run: cargo install ldproxy
       shell: bash
     - name: Add RISC-V bare-metal targets
