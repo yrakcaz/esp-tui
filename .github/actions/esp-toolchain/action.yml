@@ -7,7 +7,9 @@ runs:
       id: cache-esp-toolchain
       uses: actions/cache@v4
       with:
-        path: ~/.rustup/toolchains/esp
+        path: |
+          ~/.rustup/toolchains/esp
+          ~/export-esp.sh
         key: esp-toolchain-${{ runner.os }}-${{ hashFiles('examples/rust/rust-toolchain.toml') }}-v1
     - name: Install Xtensa toolchain
       if: steps.cache-esp-toolchain.outputs.cache-hit != 'true'
