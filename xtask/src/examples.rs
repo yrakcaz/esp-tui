@@ -23,6 +23,9 @@ pub(crate) fn build(
             crate::agent::TARGETS.iter().find(|&&s| s == t).unwrap(),
         ),
     };
+    if matches!(filter, None | Some("c")) {
+        ensure_idf_tools()?;
+    }
     for t in targets {
         match filter {
             None => {
@@ -65,6 +68,19 @@ fn build_rust(target: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn ensure_idf_tools() -> anyhow::Result<()> {
+    let idf_path = resolve_idf_path()?;
+    anyhow::ensure!(
+        std::process::Command::new("python3")
+            .args([format!("{idf_path}/tools/idf_tools.py").as_str(), "install"])
+            .status()
+            .context("failed to run idf_tools.py install")?
+            .success(),
+        "idf_tools.py install failed"
+    );
+    Ok(())
+}
+
 fn build_c(target: &str) -> anyhow::Result<()> {
     println!("building C example for {target}...");
     crate::agent::build(Some(target))?;
@@ -75,14 +91,6 @@ fn build_c(target: &str) -> anyhow::Result<()> {
         idf_py.exists(),
         "idf.py not found at {}; check IDF_PATH",
         idf_py.display()
-    );
-    anyhow::ensure!(
-        std::process::Command::new("python3")
-            .args([format!("{idf_path}/tools/idf_tools.py").as_str(), "install",])
-            .status()
-            .context("failed to run idf_tools.py install")?
-            .success(),
-        "idf_tools.py install failed"
     );
     let example_dir = crate::agent::workspace_root().join("examples").join("c");
     let build_dir = format!("build/{chip}");
