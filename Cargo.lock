@@ -543,6 +543,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "esp-agent"
+version = "0.1.0"
+
+[[package]]
 name = "esp-idf-part"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2488,6 +2492,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42c49817e78342f7f30a181573d82ff55b88a35f86ccaf07fc64b3008f56d1c6"
 dependencies = [
  "zero",
+]
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
 ]
 
 [[package]]

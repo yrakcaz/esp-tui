@@ -5,11 +5,26 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+    steps:
+      - id: targets
+        run: >
+          echo 'targets=["xtensa-esp32-espidf","xtensa-esp32s2-espidf",
+          "xtensa-esp32s3-espidf","riscv32imc-esp-espidf",
+          "riscv32imac-esp-espidf"]' >> $GITHUB_OUTPUT
+
+  host:
     runs-on: ubuntu-latest
 
     steps:
@@ -31,7 +46,74 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Run Clippy
-        run: cargo clippy --all-targets
+        run: cargo clippy --all-targets --workspace
 
       - name: Run Tests
-        run: RUST_BACKTRACE=1 cargo test --all-targets --verbose
+        run: RUST_BACKTRACE=1 cargo test --all-targets --workspace --verbose
+
+  cross:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.setup.outputs.targets) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev binutils
+
+      - name: Set up ESP toolchain
+        uses: ./.github/actions/esp-toolchain
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build agent
+        run: cargo xtask build agent --target ${{ matrix.target }}
+
+  examples:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.setup.outputs.targets) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libudev-dev binutils git cmake ninja-build python3-pip
+
+      - name: Set up ESP toolchain
+        uses: ./.github/actions/esp-toolchain
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            examples/rust -> examples/rust/target
+          key: ${{ matrix.target }}
+
+      - name: Cache ESP-IDF
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.espressif/frameworks
+            ~/.espressif/esp-idf
+            ~/.espressif/tools
+            ~/.espressif/python_env
+          key: ${{ runner.os }}-espressif-${{ hashFiles('examples/rust/.cargo/config.toml') }}
+
+      - name: Build examples
+        run: cargo xtask build examples --target ${{ matrix.target }}

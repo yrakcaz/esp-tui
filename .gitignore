@@ -8,3 +8,6 @@ target
 
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
+
+# Cross-compiled static libraries (built by cargo xtask build-agent)
+*.a

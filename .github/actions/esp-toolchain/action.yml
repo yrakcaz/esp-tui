@@ -1,0 +1,33 @@
+name: "Set up ESP toolchain"
+description: "Install Xtensa toolchain, RISC-V bare-metal targets, and LLVM tools"
+runs:
+  using: "composite"
+  steps:
+    - name: Cache esp Rust toolchain
+      id: cache-esp-toolchain
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.rustup/toolchains/esp
+          ~/export-esp.sh
+        key: esp-toolchain-${{ runner.os }}-${{ hashFiles('examples/rust/rust-toolchain.toml') }}-v2
+    - name: Install Xtensa toolchain
+      if: steps.cache-esp-toolchain.outputs.cache-hit != 'true'
+      run: cargo install espup && espup install
+      shell: bash
+    - name: Cache ldproxy binary
+      id: cache-ldproxy
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/bin/ldproxy
+        key: ldproxy-${{ runner.os }}-v1
+    - name: Install ldproxy
+      if: steps.cache-ldproxy.outputs.cache-hit != 'true'
+      run: cargo install ldproxy
+      shell: bash
+    - name: Add RISC-V bare-metal targets
+      run: rustup target add riscv32imc-unknown-none-elf riscv32imac-unknown-none-elf
+      shell: bash
+    - name: Install LLVM tools
+      run: rustup component add llvm-tools-preview
+      shell: bash

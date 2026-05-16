@@ -9,7 +9,8 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 | Crate | Purpose | Status |
 |---|---|---|
 | `esp-tui` | Host-side ratatui TUI application | Active |
-| `esp-tui-agent` | ESP32-side no_std telemetry agent (C-ABI static lib) | Deferred to Phase 3 |
+| `esp-agent` | ESP32-side `no_std` telemetry agent (C-ABI static lib) | Active |
+| `xtask` | Build automation (`cargo xtask build-agent`) | Active |
 
 ---
 
@@ -22,7 +23,7 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 | Serial port | `serialport` | Same crate as espflash |
 | Flash integration | `espflash` as a library dep | No subprocess spawning |
 | Backtrace decoding | `addr2line` + `gimli` | Phase 4 |
-| Framing/deserialization | `postcard` + `cobs` | Agent telemetry parsing, Phase 3 |
+| Agent wire format | Human-readable VERBOSE log lines, tag `esp_agent` | No binary encoding; parseable with split |
 | CLI args | `clap` (derive feature) | |
 
 ---
@@ -66,14 +67,12 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 - Port auto-reconnect after flash or erase
 - `--baud` CLI flag
 
-### Phase 3: Agent + System Inspector
-- `esp-tui-agent` crate (FreeRTOS task, heap/CPU/task sampling, COBS framing)
-- C ABI (`esp_tui_agent_start()` via `#[no_mangle] extern "C"`)
-- Pre-compiled `.a` variants for all chips, bundled via `include_bytes!`
-- In-TUI agent install flow (`[A]` keybinding)
-- `esp-tui agent install` CLI command
-- Host-side COBS demuxer (magic header `0xAE 0x73`)
-- System Inspector pane: heap gauges, CPU bars, task list
+### Phase 3: Agent (embedded side complete)
+- `esp-agent` crate: `no_std` FreeRTOS task sampling heap, CPU, WiFi, NVS, and tasks
+- Human-readable VERBOSE log lines (tag `esp_agent`); no binary encoding
+- `.init_array` constructor auto-starts the task; `esp_agent_configure(uart, interval_ms)` for optional override
+- `cargo xtask build-agent` cross-compiles pre-built `.a` for all five ESP32 targets
+- Host-side tag detection, System Inspector pane, and `esp-tui agent install` deferred to Phase 4
 
 ### Phase 4: Polish
 - Panic backtrace decoding (addr2line + ELF)

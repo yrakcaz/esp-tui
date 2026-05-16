@@ -1,0 +1,15 @@
+[package]
+name = "esp-agent"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+# Both types are required: "lib" (rlib) so cargo test can link a host test
+# binary, and "staticlib" so the xtask produces a linkable .a for firmware.
+# Declaring both here is also necessary for cargo's -Z build-std to plan the
+# dependency graph correctly when cross-compiling for Xtensa targets.
+crate-type = ["lib", "staticlib"]
+
+[lints]
+workspace = true
