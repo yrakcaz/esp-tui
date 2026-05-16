@@ -42,6 +42,15 @@ jobs:
 
   cross:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - xtensa-esp32-espidf
+          - xtensa-esp32s2-espidf
+          - xtensa-esp32s3-espidf
+          - riscv32imc-esp-espidf
+          - riscv32imac-esp-espidf
 
     steps:
       - name: Checkout code
@@ -55,12 +64,23 @@ jobs:
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
-      - name: Build agent for all targets
-        run: cargo xtask build agent
+      - name: Build agent
+        run: cargo xtask build agent --target ${{ matrix.target }}
 
   examples:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - xtensa-esp32-espidf
+          - xtensa-esp32s2-espidf
+          - xtensa-esp32s3-espidf
+          - riscv32imc-esp-espidf
+          - riscv32imac-esp-espidf
 
     steps:
       - name: Checkout code
@@ -80,6 +100,7 @@ jobs:
           workspaces: |
             . -> target
             examples/rust -> examples/rust/target
+          key: ${{ matrix.target }}
 
       - name: Cache ESP-IDF
         uses: actions/cache@v4
@@ -92,4 +113,4 @@ jobs:
           key: ${{ runner.os }}-espressif-${{ hashFiles('examples/rust/.cargo/config.toml') }}
 
       - name: Build examples
-        run: cargo xtask build examples
+        run: cargo xtask build examples --target ${{ matrix.target }}
