@@ -13,6 +13,17 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+    steps:
+      - id: targets
+        run: >
+          echo 'targets=["xtensa-esp32-espidf","xtensa-esp32s2-espidf",
+          "xtensa-esp32s3-espidf","riscv32imc-esp-espidf",
+          "riscv32imac-esp-espidf"]' >> $GITHUB_OUTPUT
+
   host:
     runs-on: ubuntu-latest
 
@@ -41,16 +52,12 @@ jobs:
         run: RUST_BACKTRACE=1 cargo test --all-targets --workspace --verbose
 
   cross:
+    needs: setup
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - xtensa-esp32-espidf
-          - xtensa-esp32s2-espidf
-          - xtensa-esp32s3-espidf
-          - riscv32imc-esp-espidf
-          - riscv32imac-esp-espidf
+        target: ${{ fromJson(needs.setup.outputs.targets) }}
 
     steps:
       - name: Checkout code
@@ -71,16 +78,12 @@ jobs:
         run: cargo xtask build agent --target ${{ matrix.target }}
 
   examples:
+    needs: setup
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - xtensa-esp32-espidf
-          - xtensa-esp32s2-espidf
-          - xtensa-esp32s3-espidf
-          - riscv32imc-esp-espidf
-          - riscv32imac-esp-espidf
+        target: ${{ fromJson(needs.setup.outputs.targets) }}
 
     steps:
       - name: Checkout code
