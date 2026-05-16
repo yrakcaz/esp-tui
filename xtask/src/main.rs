@@ -62,10 +62,13 @@ fn clean() -> anyhow::Result<()> {
         root.join("examples").join("rust").join("target"),
         root.join("examples").join("c").join("build"),
     ] {
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir)
-                .with_context(|| format!("failed to remove {}", dir.display()))?;
-            println!("removed {}", dir.display());
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => println!("removed {}", dir.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("failed to remove {}", dir.display()));
+            }
         }
     }
     Ok(())

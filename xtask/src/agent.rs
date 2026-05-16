@@ -8,6 +8,25 @@ pub(crate) const TARGETS: &[&str] = &[
     "riscv32imac-esp-espidf",
 ];
 
+/// Returns the subset of [`TARGETS`] matching `target`, or all targets when
+/// `target` is `None`.
+///
+/// # Errors
+///
+/// Returns an error if `target` is not one of [`TARGETS`].
+pub(crate) fn filter_targets(
+    target: Option<&str>,
+) -> anyhow::Result<&'static [&'static str]> {
+    match target {
+        None => Ok(TARGETS),
+        Some(t) => TARGETS
+            .iter()
+            .find(|&&s| s == t)
+            .map(std::slice::from_ref)
+            .ok_or_else(|| anyhow::anyhow!("unknown target {t:?}")),
+    }
+}
+
 /// Builds `esp-agent` for the given target, or all targets if `target_filter`
 /// is `None`. Verifies exported symbols and weakens `rust_begin_unwind` after
 /// each build.
@@ -22,28 +41,24 @@ pub(crate) const TARGETS: &[&str] = &[
 /// Returns an error if the build fails, a required symbol is missing, or
 /// post-processing with `objcopy` fails.
 pub(crate) fn build(target_filter: Option<&str>) -> anyhow::Result<()> {
-    let targets: &[&str] = match target_filter {
-        None => TARGETS,
-        Some(t) => std::slice::from_ref(TARGETS.iter().find(|&&s| s == t).unwrap()),
-    };
-
     let workspace_root = workspace_root();
     let esp_env = load_esp_env()?;
 
-    for target in targets {
+    for target in filter_targets(target_filter)? {
         println!("building esp-agent for {target}...");
+        let needs_esp = needs_esp_toolchain(target);
         let mut args: Vec<&str> = Vec::new();
-        if let Some(tc) = toolchain_for(target) {
-            args.push(tc);
+        if needs_esp {
+            args.push("+esp");
         }
         args.extend(["build", "-p", "esp-agent", "--release", "--target", target]);
-        if needs_esp_toolchain(target) {
+        if needs_esp {
             args.push("-Z");
             args.push("build-std=core");
         }
         let mut cmd = std::process::Command::new("cargo");
         cmd.args(&args).current_dir(&workspace_root);
-        if needs_esp_toolchain(target) {
+        if needs_esp {
             cmd.envs(esp_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         }
         anyhow::ensure!(cmd.status()?.success(), "build failed for {target}");
@@ -116,10 +131,6 @@ pub(crate) fn load_esp_env() -> anyhow::Result<Vec<(String, String)>> {
     Ok(vars)
 }
 
-pub(crate) fn toolchain_for(target: &str) -> Option<&'static str> {
-    needs_esp_toolchain(target).then_some("+esp")
-}
-
 fn needs_esp_toolchain(target: &str) -> bool {
     target.starts_with("xtensa-") || target.ends_with("-esp-espidf")
 }
@@ -175,8 +186,9 @@ fn find_rust_begin_unwind(lib: &std::path::Path) -> anyhow::Result<String> {
     anyhow::ensure!(out.status.success(), "nm failed on {}", lib.display());
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter_map(|line| line.split_whitespace().last().map(str::to_owned))
+        .filter_map(|line| line.split_whitespace().last())
         .find(|sym| sym.ends_with("rust_begin_unwind"))
+        .map(str::to_owned)
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "rust_begin_unwind not found in {}; \

@@ -1,5 +1,7 @@
 use anyhow::Context as _;
 
+const ESP_IDF_VERSION: &str = "v5.3.1";
+
 /// Builds the requested example(s) for the given target, or for all targets
 /// when `target` is `None`.
 ///
@@ -17,16 +19,11 @@ pub(crate) fn build(
     filter: Option<&str>,
     target: Option<&str>,
 ) -> anyhow::Result<()> {
-    let targets: &[&str] = match target {
-        None => crate::agent::TARGETS,
-        Some(t) => std::slice::from_ref(
-            crate::agent::TARGETS.iter().find(|&&s| s == t).unwrap(),
-        ),
-    };
     if matches!(filter, None | Some("c")) {
         ensure_idf_tools()?;
     }
-    for t in targets {
+    for t in crate::agent::filter_targets(target)? {
+        crate::agent::build(Some(t))?;
         match filter {
             None => {
                 build_rust(t)?;
@@ -44,7 +41,6 @@ pub(crate) fn build(
 
 fn build_rust(target: &str) -> anyhow::Result<()> {
     println!("building Rust example for {target}...");
-    crate::agent::build(Some(target))?;
     let esp_env = crate::agent::load_esp_env()?;
     let example_dir = crate::agent::workspace_root().join("examples").join("rust");
     anyhow::ensure!(
@@ -83,7 +79,6 @@ fn ensure_idf_tools() -> anyhow::Result<()> {
 
 fn build_c(target: &str) -> anyhow::Result<()> {
     println!("building C example for {target}...");
-    crate::agent::build(Some(target))?;
     let chip = chip_for_target(target)?;
     let idf_path = resolve_idf_path()?;
     let idf_py = std::path::Path::new(&idf_path).join("tools").join("idf.py");
@@ -132,10 +127,10 @@ fn resolve_idf_path() -> anyhow::Result<String> {
     let candidate = std::path::Path::new(&home)
         .join(".espressif")
         .join("esp-idf")
-        .join("v5.3.1");
+        .join(ESP_IDF_VERSION);
     anyhow::ensure!(
         candidate.exists(),
-        "IDF_PATH not set and ~/.espressif/esp-idf/v5.3.1 not found; \
+        "IDF_PATH not set and ~/.espressif/esp-idf/{ESP_IDF_VERSION} not found; \
          set IDF_PATH or run `cargo xtask build examples rust` first to install it"
     );
     Ok(candidate.to_string_lossy().into_owned())
