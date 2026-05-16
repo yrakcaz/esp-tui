@@ -19,19 +19,27 @@ pub(crate) fn build(
     filter: Option<&str>,
     target: Option<&str>,
 ) -> anyhow::Result<()> {
-    if matches!(filter, None | Some("c")) {
-        ensure_idf_tools()?;
-    }
     let esp_env = if matches!(filter, None | Some("rust")) {
         Some(crate::agent::load_esp_env()?)
     } else {
         None
     };
+    // C-only: IDF must already be installed; run idf_tools.py install once upfront.
+    // Both: IDF is installed by esp-idf-sys during the first Rust build, so defer
+    // the idf_tools.py call to after that build (tracked by idf_tools_done below).
+    if matches!(filter, Some("c")) {
+        ensure_idf_tools()?;
+    }
+    let mut idf_tools_done = false;
     for t in crate::agent::filter_targets(target)? {
         crate::agent::build(Some(t))?;
         match filter {
             None => {
                 build_rust(t, esp_env.as_deref().unwrap())?;
+                if !idf_tools_done {
+                    ensure_idf_tools()?;
+                    idf_tools_done = true;
+                }
                 build_c(t)?;
             }
             Some("rust") => build_rust(t, esp_env.as_deref().unwrap())?,
