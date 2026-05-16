@@ -39,7 +39,7 @@ pub(crate) struct WifiApRecord {
     pub(crate) primary: u8,
     pub(crate) second: u32,
     pub(crate) rssi: i8,
-    pub(crate) _pad: [u8; 64],
+    pub(crate) _pad: [u8; 128],
 }
 
 /// Matches `nvs_stats_t` from `nvs.h`.

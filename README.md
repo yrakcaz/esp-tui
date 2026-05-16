@@ -36,7 +36,7 @@ Works with any ESP32 firmware: C, C++, Rust, Arduino.
 - Auto-starts a FreeRTOS task on boot via an `.init_array` constructor; no changes to `app_main` required
 - Emits heap, CPU, WiFi RSSI, NVS, and task-list telemetry as ESP-IDF VERBOSE log lines (tag `esp_agent`); parsed by esp-tui to populate the System Inspector pane, and readable in any serial monitor
 - Optional override via `esp_agent_configure(interval_ms)` for custom sampling interval
-- Builds a `.a` for all seven ESP32 targets via `cargo xtask build agent` (ESP32, S2, S3; C3/C2 and C6/H2 as both bare-metal and ESP-IDF Rust targets)
+- Builds a `.a` for all five ESP32 targets via `cargo xtask build agent` (ESP32, S2, S3, C3, C6)
 - System Inspector pane with live heap gauges, per-core CPU bars, task table, and partition viewer (in progress)
 
 ---
@@ -77,7 +77,7 @@ cargo install espup
 espup install
 ```
 
-Then build pre-compiled static libraries for all seven ESP32 targets:
+Then build pre-compiled static libraries for all five ESP32 targets:
 
 ```
 cargo xtask build agent                                    # all targets
@@ -188,7 +188,7 @@ cargo xtask build agent --target xtensa-esp32s3-espidf   # adjust for your chip
 
 C/C++ (ESP-IDF v5, CMake): see `examples/c/` for a complete working project. The key points for integrating into your own component: declare `REQUIRES nvs_flash esp_wifi esp_hw_support` and anchor five symbols with `--undefined` so `--gc-sections` does not drop them before the agent archive is processed. `_esp_agent_ctor` and `esp_chip_info` are always required; the other three (`esp_read_mac`, `esp_wifi_sta_get_ap_info`, `nvs_get_stats`) are only required when your app does not already use WiFi or NVS directly.
 
-The `<triple>` for each chip: `xtensa-esp32-espidf`, `xtensa-esp32s2-espidf`, `xtensa-esp32s3-espidf`, `riscv32imc-unknown-none-elf` (C3/C2), `riscv32imac-unknown-none-elf` (C6/H2).
+The `<triple>` for each chip: `xtensa-esp32-espidf`, `xtensa-esp32s2-espidf`, `xtensa-esp32s3-espidf`, `riscv32imc-esp-espidf` (C3/C2), `riscv32imac-esp-espidf` (C6/H2).
 
 Rust: see `examples/rust/` for a complete working project using `esp-idf-sys`. The RISC-V targets use `riscv32imc-esp-espidf` (C3/C2) and `riscv32imac-esp-espidf` (C6/H2) rather than the bare-metal `none-elf` variants. To integrate into your own project, emit the linker directives from a `build.rs` and force the linker to include the constructor symbol:
 
@@ -229,7 +229,7 @@ The agent and esp-tui communicate through three ESP-IDF VERBOSE log line types u
 `start` is emitted once on boot:
 
 ```
-V (123) esp_agent: start reason=poweron chip=esp32s3 cores=2 rev=1 mac=AA:BB:CC:DD:EE:FF flash=4194304
+V (123) esp_agent: start reason=poweron chip=esp32s3 cores=2 rev=1 mac=AA:BB:CC:DD:EE:FF flash=0x400000
 ```
 
 Fields: `reason` (reset cause: `poweron` `sw` `panic` `int_wdt` `task_wdt` `wdt` `brownout` `deepsleep` `ext` `unknown`), `chip` (model name), `cores`, `rev` (silicon revision), `mac` (WiFi station MAC, colon-separated uppercase hex), `flash` (flash size in bytes).
@@ -237,10 +237,10 @@ Fields: `reason` (reset cause: `poweron` `sw` `panic` `int_wdt` `task_wdt` `wdt`
 `parts` is emitted once on boot:
 
 ```
-V (124) esp_agent: parts nvs:d:0x9000:24576,ota_0:a:0x10000:1572864
+V (124) esp_agent: parts nvs:d:0x9000:0x6000,ota_0:a:0x10000:0x180000
 ```
 
-Comma-separated partition entries, each `label:type:0xoffset:size`. Type is `a` (app) or `d` (data). Offsets are lowercase hex.
+Comma-separated partition entries, each `label:type:0xoffset:0xsize`. Type is `a` (app) or `d` (data). Offsets and sizes are lowercase hex.
 
 The periodic telemetry line is emitted every sampling interval:
 

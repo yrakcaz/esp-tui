@@ -254,10 +254,6 @@ fn reset_reason_str(reason: ResetReason) -> &'static [u8] {
 /// # Returns
 ///
 /// Number of bytes written, or `None` if `out` is too short.
-///
-/// # Errors
-///
-/// Returns `None` if `out` is too short to hold the full line.
 #[must_use]
 pub(crate) fn format_start_line(
     timestamp_ms: u32,
@@ -307,10 +303,6 @@ pub(crate) fn format_start_line(
 /// # Returns
 ///
 /// Number of bytes written, or `None` if `out` is too short.
-///
-/// # Errors
-///
-/// Returns `None` if `out` is too short to hold the full line.
 #[must_use]
 pub(crate) fn format_telemetry_line(
     frame: &TelemetryFrame,
@@ -382,10 +374,6 @@ pub(crate) fn format_telemetry_line(
 /// # Returns
 ///
 /// Number of bytes written, or `None` if `out` is too short.
-///
-/// # Errors
-///
-/// Returns `None` if `out` is too short to hold the full line.
 #[must_use]
 pub(crate) fn format_parts_line(
     timestamp_ms: u32,
@@ -716,6 +704,30 @@ mod tests {
             n < MAX_LINE,
             "32 tasks exceeded MAX_LINE: {n} >= {MAX_LINE}"
         );
+        let s = output_str(&buf, n);
+        assert!(s.contains("a:r:1024:2"), "{s}");
+        assert!(s.contains("b:r:1024:2"), "{s}");
+        assert!(s.contains("z:r:1024:2"), "{s}");
+    }
+
+    #[test]
+    fn format_start_line_buffer_too_small() {
+        let info = make_startup_info(ResetReason::PowerOn);
+        let mut buf = [0u8; 4];
+        assert_eq!(format_start_line(0, &info, &mut buf), None);
+    }
+
+    #[test]
+    fn format_telemetry_line_buffer_too_small() {
+        let frame = make_frame(1, None, None);
+        let mut buf = [0u8; 4];
+        assert_eq!(format_telemetry_line(&frame, &mut buf), None);
+    }
+
+    #[test]
+    fn format_parts_line_buffer_too_small() {
+        let mut buf = [0u8; 4];
+        assert_eq!(format_parts_line(0, &[], &mut buf), None);
     }
 
     #[test]

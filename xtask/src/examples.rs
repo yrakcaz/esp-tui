@@ -22,14 +22,19 @@ pub(crate) fn build(
     if matches!(filter, None | Some("c")) {
         ensure_idf_tools()?;
     }
+    let esp_env = if matches!(filter, None | Some("rust")) {
+        Some(crate::agent::load_esp_env()?)
+    } else {
+        None
+    };
     for t in crate::agent::filter_targets(target)? {
         crate::agent::build(Some(t))?;
         match filter {
             None => {
-                build_rust(t)?;
+                build_rust(t, esp_env.as_deref().unwrap())?;
                 build_c(t)?;
             }
-            Some("rust") => build_rust(t)?,
+            Some("rust") => build_rust(t, esp_env.as_deref().unwrap())?,
             Some("c") => build_c(t)?,
             Some(other) => {
                 anyhow::bail!("unknown example {other:?}; valid options: c, rust")
@@ -39,9 +44,8 @@ pub(crate) fn build(
     Ok(())
 }
 
-fn build_rust(target: &str) -> anyhow::Result<()> {
+fn build_rust(target: &str, esp_env: &[(String, String)]) -> anyhow::Result<()> {
     println!("building Rust example for {target}...");
-    let esp_env = crate::agent::load_esp_env()?;
     let example_dir = crate::agent::workspace_root().join("examples").join("rust");
     anyhow::ensure!(
         std::process::Command::new("cargo")
@@ -93,7 +97,8 @@ fn build_c(target: &str) -> anyhow::Result<()> {
         format!("-B {build_dir} set-target {chip}"),
         format!("-B {build_dir} build"),
     ] {
-        let script = format!(". {idf_path}/export.sh 1>/dev/null && idf.py {step}");
+        let script =
+            format!(". '{idf_path}/export.sh' 1>/dev/null && idf.py {step}");
         anyhow::ensure!(
             std::process::Command::new("bash")
                 .args(["-c", &script])
@@ -120,18 +125,20 @@ fn chip_for_target(target: &str) -> anyhow::Result<&'static str> {
 }
 
 fn resolve_idf_path() -> anyhow::Result<String> {
-    if let Ok(p) = std::env::var("IDF_PATH") {
-        return Ok(p);
-    }
-    let home = std::env::var("HOME").context("HOME not set")?;
-    let candidate = std::path::Path::new(&home)
-        .join(".espressif")
-        .join("esp-idf")
-        .join(ESP_IDF_VERSION);
-    anyhow::ensure!(
-        candidate.exists(),
-        "IDF_PATH not set and ~/.espressif/esp-idf/{ESP_IDF_VERSION} not found; \
-         set IDF_PATH or run `cargo xtask build examples rust` first to install it"
-    );
-    Ok(candidate.to_string_lossy().into_owned())
+    std::env::var("IDF_PATH").ok().map_or_else(
+        || {
+            let home = std::env::var("HOME").context("HOME not set")?;
+            let candidate = std::path::Path::new(&home)
+                .join(".espressif")
+                .join("esp-idf")
+                .join(ESP_IDF_VERSION);
+            anyhow::ensure!(
+                candidate.exists(),
+                "IDF_PATH not set and ~/.espressif/esp-idf/{ESP_IDF_VERSION} not found; \
+                 set IDF_PATH or run `cargo xtask build examples rust` first to install it"
+            );
+            Ok(candidate.to_string_lossy().into_owned())
+        },
+        Ok,
+    )
 }

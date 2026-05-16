@@ -29,7 +29,7 @@
 
 - [x] `esp-agent` crate: FreeRTOS task, heap/CPU/WiFi/NVS/task sampling
 - [x] Human-readable VERBOSE log lines (tag `esp_agent`); no binary encoding
-- [x] C ABI: `esp_agent_configure(uart_num, interval_ms)` for optional config override
+- [x] C ABI: `esp_agent_configure(interval_ms)` for optional config override
 - [x] `.init_array` constructor always included; auto-starts task with defaults
 - [x] `cargo xtask build-agent`: cross-compiles `.a` for all five ESP32 targets
 - [ ] Host-side `esp_agent` tag detection and telemetry parsing

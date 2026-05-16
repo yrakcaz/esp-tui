@@ -204,12 +204,13 @@ fn idle_runtime(
         .iter()
         .find_map(|s| {
             if s.name.is_null() {
-                return None;
+                None
+            } else {
+                let mut name = [0u8; 8];
+                // SAFETY: s.name is a valid null-terminated FreeRTOS task name.
+                let len = unsafe { copy_cstr(s.name, &mut name) };
+                (name[..len] == *target).then_some(s.runtime_counter)
             }
-            let mut name = [0u8; 8];
-            // SAFETY: s.name is a valid null-terminated FreeRTOS task name.
-            let len = unsafe { copy_cstr(s.name, &mut name) };
-            (name[..len] == *target).then_some(s.runtime_counter)
         })
         .unwrap_or(0)
 }

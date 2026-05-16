@@ -7,6 +7,7 @@
 // embedded builds remain no_std as required.
 #![cfg_attr(any(target_os = "none", target_os = "espidf"), no_std)]
 
+#[cfg(any(target_os = "none", target_os = "espidf"))]
 use core::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(any(target_os = "none", target_os = "espidf"))]
@@ -22,6 +23,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
+#[cfg(any(target_os = "none", target_os = "espidf"))]
 pub(crate) static AGENT_INTERVAL: AtomicU32 = AtomicU32::new(1000);
 
 /// Overrides the agent sampling interval.
@@ -36,6 +38,7 @@ pub(crate) static AGENT_INTERVAL: AtomicU32 = AtomicU32::new(1000);
 /// # Arguments
 ///
 /// * `interval_ms` - Sampling interval in milliseconds.
-pub fn configure(interval_ms: u32) {
+#[cfg(any(target_os = "none", target_os = "espidf"))]
+pub(crate) fn configure(interval_ms: u32) {
     AGENT_INTERVAL.store(interval_ms, Ordering::Relaxed);
 }
