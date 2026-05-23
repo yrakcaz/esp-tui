@@ -32,15 +32,15 @@
 - [x] C ABI: `esp_agent_configure(interval_ms)` for optional config override
 - [x] `.init_array` constructor always included; auto-starts task with defaults
 - [x] `cargo xtask build-agent`: cross-compiles `.a` for all five ESP32 targets
-- [ ] Host-side `esp_agent` tag detection and telemetry parsing
-- [ ] System Inspector pane: heap gauges, per-core CPU bars, task list
+- [x] Host-side `esp_agent` tag detection and telemetry parsing
+- [x] System Inspector pane: heap gauges, per-core CPU bars, task list
 - [ ] Partition table viewer in Inspector pane
-- [ ] Agent detection / graceful absence ("agent not detected" prompt)
+- [x] Agent detection / graceful absence ("Waiting for esp-agent..." / "Connect a device to begin.")
 - [ ] `esp-tui agent install` CLI subcommand (deliver pre-built `.a` to user project)
-- [ ] Pane focus: introduce a `FocusedPane` enum so scroll and resize operations target the active pane; review and reassign conflicting keybindings (e.g. `Tab` currently opens the filter popup) at that time
-- [ ] Per-pane independent scrolling once Inspector has scrollable content
+- [x] Pane focus: `Tab` cycles Monitor/Inspector; focused pane shows cyan border; `Ctrl+F` opens filter
+- [x] Per-pane independent scrolling (Inspector scroll targets task list)
 - [ ] Per-pane independent resizing (adjust split ratio with keybindings)
-- [ ] Split `app.rs`: move `run_inner`, `begin_connect`, `spawn_port_poller`, `handle_ports_detected`, and `apply_scan` into a new `runner.rs`; `app.rs` becomes a pure state container. The seam already exists but the split is not worth the churn until agent state grows the file further.
+- [x] Split `app.rs`: move `run_inner`, `begin_connect`, `spawn_port_poller`, `handle_ports_detected`, and `apply_scan` into a new `runner.rs`; `app.rs` becomes a pure state container.
 
 ## Phase 4: Polish
 

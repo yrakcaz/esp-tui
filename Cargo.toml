@@ -1,7 +1,10 @@
 [workspace]
-members = ["esp-tui", "esp-agent", "xtask"]
+members = ["esp-tui", "esp-agent", "esp-agent-msg", "xtask"]
 default-members = ["esp-tui"]
 resolver = "2"
+
+[workspace.lints.rust]
+warnings = "deny"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

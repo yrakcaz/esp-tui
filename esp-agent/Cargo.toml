@@ -11,5 +11,9 @@ publish = false
 # dependency graph correctly when cross-compiling for Xtensa targets.
 crate-type = ["lib", "staticlib"]
 
+[dependencies]
+esp-agent-msg = { path = "../esp-agent-msg" }
+heapless = "0.8"
+
 [lints]
 workspace = true

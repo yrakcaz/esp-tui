@@ -1,3 +1,6 @@
+use std::time::Duration;
+
+use esp_agent_msg as agent_msg;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -6,9 +9,11 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::app::App;
+use crate::app::{App, Pane};
 use crate::filter;
 use crate::flash;
+
+const INSPECTOR_BAR_W: usize = 10;
 
 /// Renders the full TUI to the given frame.
 ///
@@ -29,9 +34,9 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
             .split(outer[1]);
 
     render_menu_bar(frame, outer[0], app);
-    render_monitor(frame, main[0], app);
-    render_inspector(frame, main[1], app);
-    render_status_bar(frame, outer[2], app);
+    render_monitor(frame, main[0], app, app.focused_pane() == Pane::Monitor);
+    render_inspector(frame, main[1], app, app.focused_pane() == Pane::Inspector);
+    render_status_bar(frame, outer[2], app, app.focused_pane() == Pane::Status);
 
     if app.is_quit_confirm_open() {
         render_quit_confirm_popup(frame, frame.area());
@@ -51,6 +56,11 @@ fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
         .port_name()
         .map_or("none".into(), std::borrow::Cow::Borrowed);
 
+    let port_color = if app.port_name().is_some() {
+        Color::Green
+    } else {
+        Color::Red
+    };
     let right_text = format!("Port: {port_label}");
 
     let left = Line::from(vec![
@@ -69,12 +79,15 @@ fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     let right_len = u16::try_from(right_text.len()).unwrap_or(u16::MAX);
     let right =
-        Line::from(Span::styled(right_text, Style::default().fg(Color::Cyan)));
+        Line::from(Span::styled(right_text, Style::default().fg(port_color)));
     let [left_area, right_area] =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(right_len)])
             .areas(area);
 
-    frame.render_widget(Paragraph::new(left), left_area);
+    frame.render_widget(
+        Paragraph::new(truncate_line_spans(left, usize::from(left_area.width))),
+        left_area,
+    );
     frame.render_widget(
         Paragraph::new(right).alignment(Alignment::Right),
         right_area,
@@ -90,17 +103,41 @@ fn hint(text: &'static str) -> Span<'static> {
     )
 }
 
-fn render_monitor(frame: &mut Frame, area: Rect, app: &App) {
+fn render_monitor(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
+    let border_style = if is_focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default()
+    };
     let block = Block::default()
         .title(" Serial Monitor ")
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded);
+        .border_type(BorderType::Rounded)
+        .border_style(border_style);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let [content_area, footer_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
+    let filter = app.filter();
+    let hidden_level_count = filter::State::levels()
+        .iter()
+        .filter(|&&l| filter.is_level_hidden(l))
+        .count();
+    let hidden_tag_count = filter
+        .known_tags()
+        .iter()
+        .filter(|t| filter.is_tag_hidden(t))
+        .count();
+    let search_query = filter.search_query();
+    let show_filter_bar =
+        hidden_level_count > 0 || hidden_tag_count > 0 || !search_query.is_empty();
+
+    let [content_area, filter_bar_area, footer_area] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(u16::from(show_filter_bar)),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
 
     let height = content_area.height as usize;
     let entries = app.visible_entries(height);
@@ -137,82 +174,470 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App) {
         content_area,
     );
 
-    let footer = if app.scroll() > 0 {
-        Line::from(vec![
-            Span::styled(
-                " SCROLL ",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::REVERSED | Modifier::BOLD),
-            ),
-            Span::styled(
-                "  q/Esc to follow live",
+    if show_filter_bar {
+        let hidden_text = match (hidden_level_count, hidden_tag_count) {
+            (0, 0) => None,
+            (l, 0) => {
+                Some(format!("{l} level{} hidden", if l == 1 { "" } else { "s" }))
+            }
+            (0, t) => {
+                Some(format!("{t} tag{} hidden", if t == 1 { "" } else { "s" }))
+            }
+            (l, t) => Some(format!(
+                "{l} level{}, {t} tag{} hidden",
+                if l == 1 { "" } else { "s" },
+                if t == 1 { "" } else { "s" },
+            )),
+        };
+        let search_text = (!search_query.is_empty())
+            .then(|| format!("Search: \"{search_query}\""));
+        let w = usize::from(filter_bar_area.width);
+        let line = match (hidden_text, search_text) {
+            (Some(h), Some(s)) => {
+                truncate_line(format!("  Active filters: {h}  •  {s}"), w)
+            }
+            (Some(h), None) => truncate_line(format!("  Active filters: {h}"), w),
+            (None, Some(s)) => truncate_line(format!("  {s}"), w),
+            (None, None) => String::new(),
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                line,
                 Style::default().fg(Color::Yellow),
-            ),
-        ])
-    } else {
-        Line::from(Span::styled(
-            "[↑/↓  PgUp/PgDn] scroll  [^L] clear  [Tab] filter",
-            Style::default().fg(Color::DarkGray),
-        ))
-    };
-    frame.render_widget(Paragraph::new(footer), footer_area);
+            ))),
+            filter_bar_area,
+        );
+    }
+
+    if is_focused {
+        let w = usize::from(footer_area.width);
+        let footer = if app.scroll() > 0 {
+            const BADGE: &str = " SCROLL ";
+            let tail = truncate_line(
+                "  q/Esc to follow live".to_owned(),
+                w.saturating_sub(BADGE.len()),
+            );
+            Line::from(vec![
+                Span::styled(
+                    BADGE,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+                ),
+                Span::styled(tail, Style::default().fg(Color::Yellow)),
+            ])
+        } else {
+            Line::from(Span::styled(
+                truncate_line(
+                    "[↑/↓  PgUp/PgDn] scroll  [^L] clear  [^F] filter  [Tab] focus"
+                        .to_owned(),
+                    w,
+                ),
+                Style::default().fg(Color::DarkGray),
+            ))
+        };
+        frame.render_widget(Paragraph::new(footer), footer_area);
+    }
 }
 
-fn render_inspector(frame: &mut Frame, area: Rect, app: &App) {
+fn board_info_lines(app: &App, label: Style, col_width: usize) -> Vec<Line<'_>> {
+    if let Some(info) = app.device_info() {
+        vec![
+            truncate_line_spans(
+                Line::from(vec![
+                    Span::styled("Board  ", label),
+                    Span::raw(info.chip()),
+                ]),
+                col_width,
+            ),
+            truncate_line_spans(
+                Line::from(vec![
+                    Span::styled("Flash  ", label),
+                    Span::raw(info.flash_size()),
+                ]),
+                col_width,
+            ),
+            truncate_line_spans(
+                Line::from(vec![
+                    Span::styled("MAC    ", label),
+                    Span::raw(info.mac_address()),
+                ]),
+                col_width,
+            ),
+        ]
+    } else if let Some(s) = app.agent_startup() {
+        vec![
+            truncate_line_spans(
+                Line::from(vec![
+                    Span::styled("Board  ", label),
+                    Span::raw(s.chip.as_str()),
+                ]),
+                col_width,
+            ),
+            truncate_line_spans(
+                Line::from(vec![
+                    Span::styled("Flash  ", label),
+                    Span::raw(format_bytes(s.flash_size)),
+                ]),
+                col_width,
+            ),
+            truncate_line_spans(
+                Line::from(vec![
+                    Span::styled("MAC    ", label),
+                    Span::raw(format_mac(s.mac)),
+                ]),
+                col_width,
+            ),
+        ]
+    } else {
+        vec![]
+    }
+}
+
+fn mline(spans: Vec<Span<'static>>, col_width: usize) -> Line<'static> {
+    truncate_line_spans(Line::from(spans), col_width)
+}
+
+fn cpu_bar_color(usage: u8) -> Color {
+    if usage > 80 {
+        Color::Red
+    } else if usage > 50 {
+        Color::Yellow
+    } else {
+        Color::Green
+    }
+}
+
+fn frame_metric_lines(
+    f: &agent_msg::Frame,
+    label: Style,
+    value_style: Style,
+    is_stale: bool,
+    col_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    let heap_ratio = f64::from(f.heap_free) / f64::from(f.heap_total.max(1));
+    lines.push(mline(
+        vec![
+            Span::styled("Heap  ", label),
+            Span::styled(
+                inspector_bar(heap_ratio, INSPECTOR_BAR_W),
+                agent_bar_style(is_stale, Color::Green),
+            ),
+            Span::styled(
+                format!(
+                    "  {}/{}",
+                    format_bytes(f.heap_free),
+                    format_bytes(f.heap_total)
+                ),
+                value_style,
+            ),
+        ],
+        col_width,
+    ));
+    lines.push(mline(
+        vec![
+            Span::styled("Min   ", label),
+            Span::styled(format_bytes(f.heap_min_free), value_style),
+            Span::styled(" low-water", label),
+        ],
+        col_width,
+    ));
+    if f.heap_iram > 0 {
+        lines.push(mline(
+            vec![
+                Span::styled("IRAM  ", label),
+                Span::styled(format_bytes(f.heap_iram), value_style),
+                Span::styled(" free", label),
+            ],
+            col_width,
+        ));
+    }
+    if f.heap_psram > 0 {
+        lines.push(mline(
+            vec![
+                Span::styled("PSRAM ", label),
+                Span::styled(format_bytes(f.heap_psram), value_style),
+                Span::styled(" free", label),
+            ],
+            col_width,
+        ));
+    }
+    lines.push(Line::from(""));
+    for (i, &usage) in f.cpu_usage.iter().enumerate() {
+        let cpu_ratio = f64::from(usage) / 100.0;
+        let cpu_color = cpu_bar_color(usage);
+        lines.push(mline(
+            vec![
+                Span::styled(format!("CPU{i}  "), label),
+                Span::styled(
+                    inspector_bar(cpu_ratio, INSPECTOR_BAR_W),
+                    agent_bar_style(is_stale, cpu_color),
+                ),
+                Span::styled(format!("  {usage}%"), value_style),
+            ],
+            col_width,
+        ));
+    }
+    if let Some(rssi) = f.wifi_rssi {
+        lines.push(Line::from(""));
+        lines.push(mline(
+            vec![
+                Span::styled("WiFi  ", label),
+                Span::styled(format!("{rssi} dBm"), value_style),
+            ],
+            col_width,
+        ));
+    }
+    if let Some((used, total)) = f.nvs {
+        lines.push(mline(
+            vec![
+                Span::styled("NVS   ", label),
+                Span::styled(format!("{used}/{total} entries"), value_style),
+            ],
+            col_width,
+        ));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Tasks",
+        label.add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        truncate_line(
+            format!("{:<16}  {:<9}  {:<7}  {}", "Name", "State", "Stack", "Prio"),
+            col_width,
+        ),
+        label,
+    )));
+    lines
+}
+
+fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
+    let is_stale = app
+        .agent_last_seen()
+        .is_some_and(|t| t.elapsed() > Duration::from_secs(5));
+    let label = Style::default().fg(Color::DarkGray);
+    let value_style = if is_stale { label } else { Style::default() };
+    let mut lines: Vec<Line<'a>> = board_info_lines(app, label, col_width);
+
+    if let Some(parts) = app.agent_partitions() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Partitions",
+            label.add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            truncate_line(
+                format!("{:<16}  {:<6}  {:<10}  Size", "Label", "Type", "Offset"),
+                col_width,
+            ),
+            label,
+        )));
+        lines.extend(parts.iter().map(|p| {
+            let type_str = match p.part_type {
+                agent_msg::PartType::App => "app",
+                agent_msg::PartType::Data => "data",
+                agent_msg::PartType::Unknown => "?",
+            };
+            Line::from(Span::styled(
+                truncate_line(
+                    format!(
+                        "{:<16}  {:<6}  0x{:08x}  {}",
+                        p.label.as_str(),
+                        type_str,
+                        p.offset,
+                        format_bytes(p.size),
+                    ),
+                    col_width,
+                ),
+                value_style,
+            ))
+        }));
+    }
+
+    let Some(f) = app.agent_frame() else {
+        let baseline = app.agent_last_seen().or_else(|| app.connected_at());
+        let timed_out =
+            baseline.is_some_and(|t| t.elapsed() > Duration::from_secs(10));
+        let msg = if timed_out {
+            "esp-agent not detected. Add the esp-agent library to your \
+             firmware to see live telemetry here."
+        } else {
+            "Waiting for esp-agent..."
+        };
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines.extend(
+            word_wrap(msg, col_width)
+                .into_iter()
+                .map(|l| Line::from(Span::styled(l, label))),
+        );
+        return lines;
+    };
+
+    lines.push(Line::from(""));
+    lines.extend(frame_metric_lines(
+        f,
+        label,
+        value_style,
+        is_stale,
+        col_width,
+    ));
+    lines.extend(f.tasks.iter().map(|t| {
+        Line::from(Span::styled(
+            truncate_line(
+                format!(
+                    "{:<16}  {:<9}  {:<7}  {}",
+                    t.name.as_str(),
+                    task_state_label(t.state),
+                    format_bytes(t.hwm),
+                    t.priority,
+                ),
+                col_width,
+            ),
+            value_style,
+        ))
+    }));
+    lines
+}
+
+fn render_inspector(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
+    let border_style = if is_focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default()
+    };
     let block = Block::default()
         .title(" System Inspector ")
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded);
+        .border_type(BorderType::Rounded)
+        .border_style(border_style);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if let Some(info) = app.device_info() {
-        let board_lines = [
+    let [content_area, footer_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
+
+    if is_focused {
+        let w = usize::from(footer_area.width);
+        let footer = if app.inspector_scroll().min(app.inspector_max_scroll()) > 0 {
+            const BADGE: &str = " SCROLL ";
+            let tail = truncate_line(
+                "  q/Esc to scroll top".to_owned(),
+                w.saturating_sub(BADGE.len()),
+            );
             Line::from(vec![
-                Span::styled("Board: ", Style::default().fg(Color::DarkGray)),
-                Span::raw(info.chip()),
-            ]),
-            Line::from(vec![
-                Span::styled("Flash: ", Style::default().fg(Color::DarkGray)),
-                Span::raw(info.flash_size()),
-            ]),
-            Line::from(vec![
-                Span::styled("MAC: ", Style::default().fg(Color::DarkGray)),
-                Span::raw(info.mac_address()),
-            ]),
-        ];
-        let partition_lines: Vec<Line> = if info.partitions().is_empty() {
-            vec![]
-        } else {
-            std::iter::once(Line::from(""))
-                .chain(std::iter::once(Line::from(Span::styled(
-                    "Partitions:",
+                Span::styled(
+                    BADGE,
                     Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                ))))
-                .chain(info.partitions().iter().map(|p| {
-                    Line::from(format!(
-                        "{:<8} {}/{:<8} 0x{:06X}  {}",
-                        p.name(),
-                        p.partition_type(),
-                        p.subtype(),
-                        p.offset(),
-                        format_bytes(p.size()),
-                    ))
-                }))
-                .collect()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+                ),
+                Span::styled(tail, Style::default().fg(Color::Yellow)),
+            ])
+        } else {
+            Line::from(Span::styled(
+                truncate_line("[↑/↓  PgUp/PgDn] scroll  [Tab] focus".to_owned(), w),
+                Style::default().fg(Color::DarkGray),
+            ))
         };
-        let lines: Vec<Line> =
-            board_lines.into_iter().chain(partition_lines).collect();
-        frame.render_widget(Paragraph::new(lines), inner);
-    } else {
-        frame.render_widget(
-            Paragraph::new("(Phase 3)").style(Style::default().fg(Color::DarkGray)),
-            inner,
-        );
+        frame.render_widget(Paragraph::new(footer), footer_area);
     }
+
+    let col_width = usize::from(content_area.width);
+    if app.port_name().is_none() {
+        frame.render_widget(
+            Paragraph::new(truncate_line(
+                "Connect a device to begin.".to_owned(),
+                col_width,
+            ))
+            .style(Style::default().fg(Color::DarkGray)),
+            content_area,
+        );
+        return;
+    }
+
+    let lines = build_inspector_lines(app, col_width);
+
+    let viewport = usize::from(content_area.height);
+    let max_scroll = lines.len().saturating_sub(viewport);
+    app.set_inspector_max_scroll(max_scroll);
+    let skip = app.inspector_scroll().min(max_scroll);
+
+    frame.render_widget(
+        Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()),
+        content_area,
+    );
+}
+
+fn word_wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let needed = if current.is_empty() {
+            word.len()
+        } else {
+            current.len() + 1 + word.len()
+        };
+        if !current.is_empty() && needed > width {
+            lines.push(current.clone());
+            current.clear();
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn truncate_line(mut s: String, max_chars: usize) -> String {
+    if s.chars().count() > max_chars {
+        let cut = s
+            .char_indices()
+            .nth(max_chars.saturating_sub(1))
+            .map_or(0, |(i, _)| i);
+        s.truncate(cut);
+        s.push('…');
+    }
+    s
+}
+
+fn truncate_line_spans(line: Line<'_>, max_chars: usize) -> Line<'_> {
+    let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    if total <= max_chars {
+        return line;
+    }
+    let budget = max_chars.saturating_sub(1);
+    let mut out: Vec<Span<'_>> = Vec::new();
+    let mut used = 0usize;
+    for span in line.spans {
+        if used >= budget {
+            break;
+        }
+        let count = span.content.chars().count();
+        if used + count <= budget {
+            used += count;
+            out.push(span);
+        } else {
+            let need = budget - used;
+            let cut = span
+                .content
+                .char_indices()
+                .nth(need)
+                .map_or(span.content.len(), |(i, _)| i);
+            out.push(Span::styled(span.content[..cut].to_string(), span.style));
+            used = budget;
+        }
+    }
+    out.push(Span::raw("…"));
+    Line::from(out)
 }
 
 fn format_bytes(bytes: u32) -> String {
@@ -225,11 +650,53 @@ fn format_bytes(bytes: u32) -> String {
     }
 }
 
-fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn inspector_bar(ratio: f64, width: usize) -> String {
+    let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
+    let empty = width.saturating_sub(filled);
+    format!("{}{}", "█".repeat(filled), "░".repeat(empty))
+}
+
+fn format_mac(mac: [u8; 6]) -> String {
+    format!(
+        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    )
+}
+
+fn task_state_label(state: agent_msg::TaskState) -> &'static str {
+    match state {
+        agent_msg::TaskState::Running => "Running",
+        agent_msg::TaskState::Ready => "Ready",
+        agent_msg::TaskState::Blocked => "Blocked",
+        agent_msg::TaskState::Suspended => "Suspend",
+        agent_msg::TaskState::Deleted => "Deleted",
+    }
+}
+
+fn agent_bar_style(is_stale: bool, color: Color) -> Style {
+    if is_stale {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(color)
+    }
+}
+
+fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
+    let border_style = if is_focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default()
+    };
     let block = Block::default()
         .title(" Status ")
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded);
+        .border_type(BorderType::Rounded)
+        .border_style(border_style);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -374,18 +841,31 @@ fn render_erase_confirm_popup(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(text), inner);
 }
 
-fn render_elf_input(frame: &mut Frame, area: Rect, sel: &crate::elf::Selector) {
-    let input = sel.value();
-    let cursor_byte = sel.cursor_pos();
-    let before = &input[..cursor_byte];
-    let rest = &input[cursor_byte..];
-    let (cursor_str, after) = if let Some(c) = rest.chars().next() {
-        let char_len = c.len_utf8();
-        (&rest[..char_len], &rest[char_len..])
+/// Splits `value` at `cursor_pos` and returns spans with the cursor
+/// character (or a space when at end) rendered in reverse video.
+fn text_cursor_spans<'a>(value: &'a str, cursor_pos: usize) -> Vec<Span<'a>> {
+    let before = &value[..cursor_pos];
+    let rest = &value[cursor_pos..];
+    if let Some(c) = rest.chars().next() {
+        let len = c.len_utf8();
+        vec![
+            Span::raw(before),
+            Span::styled(
+                &rest[..len],
+                Style::default().add_modifier(Modifier::REVERSED),
+            ),
+            Span::raw(&rest[len..]),
+        ]
     } else {
-        (" ", "")
-    };
+        vec![
+            Span::raw(before),
+            Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
+        ]
+    }
+}
 
+fn render_elf_input(frame: &mut Frame, area: Rect, value: &str, cursor_pos: usize) {
+    let before = &value[..cursor_pos];
     let cursor_chars = before.chars().count();
     let visible_width = area.width as usize;
     let scroll = cursor_chars.saturating_sub(visible_width.saturating_sub(1));
@@ -393,6 +873,14 @@ fn render_elf_input(frame: &mut Frame, area: Rect, sel: &crate::elf::Selector) {
         .char_indices()
         .nth(scroll)
         .map_or("", |(i, _)| &before[i..]);
+
+    let rest = &value[cursor_pos..];
+    let (cursor_str, after): (&str, &str) = if let Some(c) = rest.chars().next() {
+        let len = c.len_utf8();
+        (&rest[..len], &rest[len..])
+    } else {
+        (" ", "")
+    };
 
     let input_line = Line::from(vec![
         Span::raw(display_before),
@@ -439,7 +927,7 @@ fn render_elf_selector_popup(frame: &mut Frame, area: Rect, app: &App) {
                 height: 1,
             };
 
-            render_elf_input(frame, input_area, sel);
+            render_elf_input(frame, input_area, sel.value(), sel.cursor_pos());
 
             if inner.height > 1 {
                 let hint_area = Rect {
@@ -493,19 +981,35 @@ fn render_elf_selector_popup(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
-    const HINT: &str = " [Space] toggle  [^A] toggle all  [q/Esc] close";
+    const HINT_NAV: &str = " [↑/↓] navigate  [Space] toggle  [^A] all  [Esc] close";
+    const HINT_SEARCH: &str = " [↑/↓] navigate  [Esc] done";
 
     let filter = app.filter();
-    let tags = filter.known_tags();
     let levels = filter::State::levels();
-    let tag_rows = u16::try_from(tags.len()).unwrap_or(u16::MAX);
+    let all_tags: Vec<&str> = filter.filtered_tags().collect();
+    let any_tags = !filter.known_tags().is_empty();
+    let search_focused = filter.is_search_focused();
+
+    let hint = if search_focused {
+        HINT_SEARCH
+    } else {
+        HINT_NAV
+    };
+    let hint_width = HINT_NAV.len().max(HINT_SEARCH.len());
+
+    let tag_section_rows: u16 = if any_tags {
+        1 + u16::try_from(all_tags.len()).unwrap_or(u16::MAX)
+    } else {
+        0
+    };
     let height = (2
         + 1
+        + 1
         + u16::try_from(levels.len()).unwrap_or(5)
-        + if tags.is_empty() { 0 } else { 1 + tag_rows }
+        + tag_section_rows
         + 1)
     .min(area.height);
-    let width = (u16::try_from(HINT.len()).unwrap_or(60) + 3).min(area.width);
+    let width = (u16::try_from(hint_width).unwrap_or(70) + 3).min(area.width);
     let popup = centered_rect(width, height, area);
 
     frame.render_widget(Clear, popup);
@@ -519,44 +1023,78 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
         .fg(Color::DarkGray)
         .add_modifier(Modifier::BOLD);
 
-    let items: Vec<ListItem> =
-        std::iter::once(ListItem::new(" Severity").style(section_style))
-            .chain(levels.iter().enumerate().map(|(i, &level)| {
-                let marker = if filter.is_level_hidden(level) {
-                    "[ ]"
-                } else {
-                    "[x]"
-                };
-                let style = if filter.cursor() == i {
-                    Style::default()
-                        .fg(level.color())
-                        .add_modifier(Modifier::REVERSED)
-                } else {
-                    Style::default().fg(level.color())
-                };
-                ListItem::new(format!("  {marker} {}", level.label())).style(style)
-            }))
-            .chain(
-                (!tags.is_empty())
-                    .then_some(ListItem::new(" Tags").style(section_style)),
-            )
-            .chain(tags.iter().enumerate().map(|(i, tag)| {
-                let marker = if filter.is_tag_hidden(tag) {
-                    "[ ]"
-                } else {
-                    "[x]"
-                };
-                let style = if filter.cursor() == levels.len() + i {
-                    Style::default().add_modifier(Modifier::REVERSED)
-                } else {
-                    Style::default()
-                };
-                ListItem::new(format!("  {marker} {tag}")).style(style)
-            }))
-            .chain(std::iter::once(
-                ListItem::new(HINT).style(Style::default().fg(Color::DarkGray)),
-            ))
-            .collect();
+    let search_item = {
+        let label = Span::styled(" Search: ", Style::default().fg(Color::DarkGray));
+        let query = filter.search_query();
+        let content: Line<'_> = if search_focused {
+            let mut spans = vec![label];
+            spans.extend(text_cursor_spans(query, filter.search_cursor()));
+            Line::from(spans)
+        } else if query.is_empty() {
+            Line::from(vec![
+                label,
+                Span::styled(
+                    "type to search…",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])
+        } else {
+            Line::from(vec![
+                label,
+                Span::styled(query, Style::default().fg(Color::Yellow)),
+            ])
+        };
+        ListItem::new(content)
+    };
+
+    let level_items = levels.iter().enumerate().map(|(i, &level)| {
+        let marker = if filter.is_level_hidden(level) {
+            "[ ]"
+        } else {
+            "[x]"
+        };
+        let style = if filter.cursor() == i {
+            Style::default()
+                .fg(level.color())
+                .add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default().fg(level.color())
+        };
+        ListItem::new(format!("  {marker} {}", level.label())).style(style)
+    });
+
+    let tag_items: Box<dyn Iterator<Item = ListItem>> = if !any_tags {
+        Box::new(std::iter::empty())
+    } else {
+        Box::new(
+            std::iter::once(ListItem::new(" Tags").style(section_style)).chain(
+                all_tags.into_iter().enumerate().map(|(i, tag)| {
+                    let marker = if filter.is_tag_hidden(tag) {
+                        "[ ]"
+                    } else {
+                        "[x]"
+                    };
+                    let style = if filter.cursor() == levels.len() + i {
+                        Style::default().add_modifier(Modifier::REVERSED)
+                    } else {
+                        Style::default()
+                    };
+                    ListItem::new(format!("  {marker} {tag}")).style(style)
+                }),
+            ),
+        )
+    };
+
+    let items: Vec<ListItem> = std::iter::once(search_item)
+        .chain(std::iter::once(
+            ListItem::new(" Severity").style(section_style),
+        ))
+        .chain(level_items)
+        .chain(tag_items)
+        .chain(std::iter::once(
+            ListItem::new(hint).style(Style::default().fg(Color::DarkGray)),
+        ))
+        .collect();
 
     let list = List::new(items).block(block);
     frame.render_widget(list, popup);
@@ -756,7 +1294,6 @@ mod tests {
             "ESP32-S3 (rev v0.1)",
             "4MB",
             "AA:BB:CC:DD:EE:FF",
-            Vec::new(),
         ));
         render(&app);
     }
@@ -766,6 +1303,98 @@ mod tests {
         let mut app = App::new(Some("COM1".into()));
         app.set_elf_path(std::path::PathBuf::from("/tmp/firmware.elf"));
         render(&app);
+    }
+
+    #[test]
+    fn draw_inspector_connected_no_agent_does_not_panic() {
+        render(&App::new(Some("COM1".into())));
+    }
+
+    #[test]
+    fn draw_inspector_with_agent_frame_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.push_line(
+            "V (1) esp_agent: heap=100000/200000 min=50000 frag=10000 \
+             iram=40000 psram=0 cpu=23,45 tasks=main:R:3200:1,wifi:B:1800:5",
+        );
+        render(&app);
+    }
+
+    #[test]
+    fn draw_inspector_with_psram_and_wifi_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.push_line(
+            "V (1) esp_agent: heap=100000/200000 min=50000 frag=10000 \
+             iram=0 psram=524288 cpu=90 wifi=-65 nvs=45/512 tasks=",
+        );
+        render(&app);
+    }
+
+    #[test]
+    fn draw_inspector_with_agent_startup_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.push_line(
+            "V (1) esp_agent: start reason=poweron chip=esp32s3 cores=2 \
+             rev=1 mac=AA:BB:CC:DD:EE:FF flash=0x400000",
+        );
+        render(&app);
+    }
+
+    #[test]
+    fn draw_inspector_inspector_pane_focused_does_not_panic() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(Some("COM1".into()));
+        app.push_line(
+            "V (1) esp_agent: heap=100000/200000 min=50000 frag=10000 \
+             iram=0 psram=0 cpu=50 tasks=t1:R:1024:1,t2:B:512:2,t3:r:256:3",
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()));
+        render(&app);
+    }
+
+    #[test]
+    fn inspector_bar_empty_is_all_blocks() {
+        let bar = super::inspector_bar(0.0, 5);
+        assert_eq!(bar, "░░░░░");
+    }
+
+    #[test]
+    fn inspector_bar_full_is_all_filled() {
+        let bar = super::inspector_bar(1.0, 5);
+        assert_eq!(bar, "█████");
+    }
+
+    #[test]
+    fn inspector_bar_half_is_mixed() {
+        let bar = super::inspector_bar(0.5, 10);
+        assert_eq!(bar, "█████░░░░░");
+    }
+
+    #[test]
+    fn truncate_line_no_op_when_short() {
+        assert_eq!(super::truncate_line("hello".into(), 10), "hello");
+    }
+
+    #[test]
+    fn truncate_line_no_op_when_exact() {
+        assert_eq!(super::truncate_line("hello".into(), 5), "hello");
+    }
+
+    #[test]
+    fn truncate_line_appends_ellipsis_when_over() {
+        assert_eq!(super::truncate_line("hello world".into(), 8), "hello w…");
+    }
+
+    #[test]
+    fn truncate_line_handles_multibyte() {
+        let s = "héllo".to_string();
+        assert_eq!(super::truncate_line(s, 4), "hél…");
+    }
+
+    #[test]
+    fn format_mac_formats_correctly() {
+        let mac = super::format_mac([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
     }
 
     #[test]

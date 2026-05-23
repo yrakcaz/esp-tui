@@ -31,7 +31,6 @@ pub(crate) struct DeviceInfo {
     chip: String,
     flash_size: String,
     mac_address: String,
-    partitions: Vec<PartitionEntry>,
 }
 
 impl DeviceInfo {
@@ -42,7 +41,6 @@ impl DeviceInfo {
     /// * `chip` - Chip string (e.g. `"ESP32-S3 (rev v0.1)"`).
     /// * `flash_size` - Flash size string (e.g. `"4MB"`).
     /// * `mac_address` - MAC address string (e.g. `"AA:BB:CC:DD:EE:FF"`).
-    /// * `partitions` - Partition entries read from the device.
     ///
     /// # Returns
     ///
@@ -52,13 +50,11 @@ impl DeviceInfo {
         chip: impl Into<String>,
         flash_size: impl Into<String>,
         mac_address: impl Into<String>,
-        partitions: Vec<PartitionEntry>,
     ) -> Self {
         Self {
             chip: chip.into(),
             flash_size: flash_size.into(),
             mac_address: mac_address.into(),
-            partitions,
         }
     }
 
@@ -90,78 +86,6 @@ impl DeviceInfo {
     #[must_use]
     pub(crate) fn mac_address(&self) -> &str {
         &self.mac_address
-    }
-
-    /// Returns the partition entries read from the device.
-    ///
-    /// # Returns
-    ///
-    /// A slice of [`PartitionEntry`] values, or an empty slice if the
-    /// partition table could not be read.
-    #[must_use]
-    pub(crate) fn partitions(&self) -> &[PartitionEntry] {
-        &self.partitions
-    }
-}
-
-/// A single entry in the device partition table.
-pub(crate) struct PartitionEntry {
-    name: String,
-    partition_type: String,
-    subtype: String,
-    offset: u32,
-    size: u32,
-}
-
-impl PartitionEntry {
-    /// Returns the partition name.
-    ///
-    /// # Returns
-    ///
-    /// The partition name as a string slice (e.g. `"nvs"` or `"factory"`).
-    #[must_use]
-    pub(crate) fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns the partition type string.
-    ///
-    /// # Returns
-    ///
-    /// A string like `"app"` or `"data"`.
-    #[must_use]
-    pub(crate) fn partition_type(&self) -> &str {
-        &self.partition_type
-    }
-
-    /// Returns the partition subtype string.
-    ///
-    /// # Returns
-    ///
-    /// A string like `"factory"` or `"nvs"`.
-    #[must_use]
-    pub(crate) fn subtype(&self) -> &str {
-        &self.subtype
-    }
-
-    /// Returns the partition byte offset in flash.
-    ///
-    /// # Returns
-    ///
-    /// The byte offset from the start of flash (e.g. `0x010000`).
-    #[must_use]
-    pub(crate) fn offset(&self) -> u32 {
-        self.offset
-    }
-
-    /// Returns the partition size in bytes.
-    ///
-    /// # Returns
-    ///
-    /// The partition size in bytes (e.g. `1048576` for 1 MB).
-    #[must_use]
-    pub(crate) fn size(&self) -> u32 {
-        self.size
     }
 }
 
@@ -245,7 +169,6 @@ fn collect_device_info(flasher: &mut Flasher) -> anyhow::Result<DeviceInfo> {
         chip,
         format!("{}", info.flash_size),
         info.mac_address,
-        Vec::new(),
     ))
 }
 
@@ -371,28 +294,9 @@ mod tests {
 
     #[test]
     fn device_info_accessors() {
-        let info = DeviceInfo::new(
-            "ESP32-S3",
-            "4MB",
-            "AA:BB:CC:DD:EE:FF",
-            vec![PartitionEntry {
-                name: "nvs".into(),
-                partition_type: "data".into(),
-                subtype: "nvs".into(),
-                offset: 0x9000,
-                size: 0x6000,
-            }],
-        );
-
+        let info = DeviceInfo::new("ESP32-S3", "4MB", "AA:BB:CC:DD:EE:FF");
         assert_eq!(info.chip(), "ESP32-S3");
         assert_eq!(info.flash_size(), "4MB");
         assert_eq!(info.mac_address(), "AA:BB:CC:DD:EE:FF");
-        assert_eq!(info.partitions().len(), 1);
-        let p = &info.partitions()[0];
-        assert_eq!(p.name(), "nvs");
-        assert_eq!(p.partition_type(), "data");
-        assert_eq!(p.subtype(), "nvs");
-        assert_eq!(p.offset(), 0x9000);
-        assert_eq!(p.size(), 0x6000);
     }
 }

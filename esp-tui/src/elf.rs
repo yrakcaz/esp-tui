@@ -1,6 +1,10 @@
 use std::io::Read as _;
 use std::path::Path;
 
+use crossterm::event::KeyEvent;
+
+use crate::input::TextInput;
+
 /// Returns `true` if `path` begins with the ELF magic bytes `\x7fELF`.
 ///
 /// Opens the file, reads exactly four bytes, and compares them against the
@@ -26,8 +30,7 @@ pub(crate) fn is_elf_file(path: &Path) -> bool {
 
 /// State for the ELF path input popup with filesystem tab-completion.
 pub(crate) struct Selector {
-    input: String,
-    cursor: usize,
+    text: TextInput,
     completions: Vec<String>,
     completion_cursor: usize,
     /// The parent prefix captured when completions were last computed, so that
@@ -43,11 +46,9 @@ impl Selector {
     /// * `prefill` - If `Some`, the input is initialized with this path.
     #[must_use]
     pub(crate) fn new(prefill: Option<&Path>) -> Self {
-        let input = prefill.and_then(|p| p.to_str()).unwrap_or("").to_owned();
-        let cursor = input.len();
+        let initial = prefill.and_then(|p| p.to_str()).unwrap_or("");
         Self {
-            input,
-            cursor,
+            text: TextInput::with_value(initial),
             completions: Vec::new(),
             completion_cursor: 0,
             completion_parent: String::new(),
@@ -60,121 +61,34 @@ impl Selector {
         self.completion_parent.clear();
     }
 
-    /// Appends a character at the cursor position and clears completions.
-    ///
-    /// # Arguments
-    ///
-    /// * `ch` - The character to insert.
-    pub(crate) fn push_char(&mut self, ch: char) {
-        self.input.insert(self.cursor, ch);
-        self.cursor += ch.len_utf8();
-        self.clear_completions();
-    }
-
-    /// Removes the character before the cursor and clears completions.
-    pub(crate) fn backspace(&mut self) {
-        if self.cursor > 0 {
-            let before = &self.input[..self.cursor];
-            let char_start = before.char_indices().next_back().map_or(0, |(i, _)| i);
-            self.input.drain(char_start..self.cursor);
-            self.cursor = char_start;
-            self.clear_completions();
-        }
-    }
-
-    /// Moves the text cursor to the beginning of the input and clears
-    /// completions.
-    pub(crate) fn move_cursor_to_start(&mut self) {
-        self.cursor = 0;
-        self.clear_completions();
-    }
-
-    /// Moves the text cursor to the end of the input and clears completions.
-    pub(crate) fn move_cursor_to_end(&mut self) {
-        self.cursor = self.input.len();
-        self.clear_completions();
-    }
-
-    /// Clears the entire input text, resets the cursor, and clears
-    /// completions.
-    pub(crate) fn clear_input(&mut self) {
-        self.input.clear();
-        self.cursor = 0;
-        self.clear_completions();
-    }
-
-    /// Deletes the character under the cursor (forward delete) and clears
-    /// completions.
-    pub(crate) fn delete_forward(&mut self) {
-        if self.cursor < self.input.len() {
-            let ch = self.input[self.cursor..].chars().next().unwrap_or('\0');
-            self.input.drain(self.cursor..self.cursor + ch.len_utf8());
-            self.clear_completions();
-        }
-    }
-
-    /// Deletes from the cursor to the end of the input and clears completions.
-    pub(crate) fn kill_to_end(&mut self) {
-        self.input.truncate(self.cursor);
-        self.clear_completions();
-    }
-
-    /// Deletes from the start of the input to the cursor and clears
-    /// completions.
-    pub(crate) fn kill_to_start(&mut self) {
-        self.input.drain(..self.cursor);
-        self.cursor = 0;
-        self.clear_completions();
-    }
-
-    /// Deletes the word immediately before the cursor, stopping at `/`
-    /// boundaries, and clears completions.
-    pub(crate) fn kill_word_back(&mut self) {
-        if self.cursor != 0 {
-            let before = &self.input[..self.cursor];
-            let trimmed = before.trim_end_matches('/');
-            let word_start = trimmed.rfind('/').map_or(0, |i| i + 1);
-            self.input.drain(word_start..self.cursor);
-            self.cursor = word_start;
-            self.clear_completions();
-        }
-    }
-
-    /// Moves the text cursor left or right, clamped to the input bounds.
-    ///
-    /// # Arguments
-    ///
-    /// * `delta` - Negative to move left, positive to move right.
-    pub(crate) fn move_cursor(&mut self, delta: isize) {
-        if delta < 0 {
-            let steps = (-delta).cast_unsigned();
-            self.cursor = self.input[..self.cursor]
-                .char_indices()
-                .rev()
-                .take(steps)
-                .last()
-                .map_or(0, |(i, _)| i);
-        } else {
-            let steps = delta.cast_unsigned();
-            self.cursor = self.input[self.cursor..]
-                .char_indices()
-                .take(steps)
-                .last()
-                .map_or(self.cursor, |(i, ch)| self.cursor + i + ch.len_utf8());
-        }
-        self.clear_completions();
-    }
-
     /// Returns the current input string.
     #[must_use]
     pub(crate) fn value(&self) -> &str {
-        &self.input
+        self.text.value()
     }
 
     /// Returns the current text cursor position (byte offset).
     #[must_use]
     pub(crate) fn cursor_pos(&self) -> usize {
-        self.cursor
+        self.text.cursor_pos()
+    }
+
+    /// Handles a text-editing key event, delegating to [`TextInput`] and
+    /// clearing the completion list on any consumed edit.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key event to process.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the event was consumed.
+    pub(crate) fn apply_key(&mut self, key: KeyEvent) -> bool {
+        let consumed = self.text.apply_key(key);
+        if consumed {
+            self.clear_completions();
+        }
+        consumed
     }
 
     /// Populates the completion list from the filesystem based on the current
@@ -185,12 +99,13 @@ impl Selector {
     /// Directories are suffixed with `/`. No-op if the parent dir is
     /// unreadable.
     fn complete(&mut self) {
-        let (parent_str, prefix) = if self.input.ends_with('/') {
-            (self.input.as_str(), "")
-        } else if let Some(slash) = self.input.rfind('/') {
-            (&self.input[..=slash], &self.input[slash + 1..])
+        let input = self.text.value().to_owned();
+        let (parent_str, prefix) = if input.ends_with('/') {
+            (input.as_str(), "")
+        } else if let Some(slash) = input.rfind('/') {
+            (&input[..=slash], &input[slash + 1..])
         } else {
-            (".", self.input.as_str())
+            (".", input.as_str())
         };
 
         if let Ok(entries) = std::fs::read_dir(parent_str) {
@@ -224,8 +139,8 @@ impl Selector {
 
     fn apply_highlighted_completion(&mut self) {
         if let Some(completion) = self.completions.get(self.completion_cursor) {
-            self.input = format!("{}{completion}", self.completion_parent);
-            self.cursor = self.input.len();
+            let new_val = format!("{}{completion}", self.completion_parent);
+            self.text.set_value(&new_val);
         }
     }
 
@@ -297,7 +212,7 @@ impl Selector {
                 0 => {}
                 1 => {
                     self.accept_completion();
-                    if self.input.ends_with('/') {
+                    if self.text.value().ends_with('/') {
                         self.complete();
                     }
                 }
@@ -321,16 +236,16 @@ impl Selector {
                 .fold(first.as_str(), |acc, s| common_prefix(acc, s))
                 .to_owned();
 
-            let parent_end = if self.input.ends_with('/') {
-                self.input.len()
+            let input = self.text.value().to_owned();
+            let parent_end = if input.ends_with('/') {
+                input.len()
             } else {
-                self.input.rfind('/').map_or(0, |i| i + 1)
+                input.rfind('/').map_or(0, |i| i + 1)
             };
 
-            let new_input = format!("{}{prefix}", &self.input[..parent_end]);
-            if new_input.len() > self.input.len() {
-                self.input = new_input;
-                self.cursor = self.input.len();
+            let new_input = format!("{}{prefix}", &input[..parent_end]);
+            if new_input.len() > input.len() {
+                self.text.set_value(&new_input);
             }
         }
     }
@@ -361,6 +276,59 @@ fn common_prefix<'a>(a: &'a str, b: &str) -> &'a str {
         .last()
         .map_or(0, |((i, c), _)| i + c.len_utf8());
     &a[..end]
+}
+
+#[cfg(test)]
+impl Selector {
+    pub(crate) fn push_char(&mut self, ch: char) {
+        self.text.push_char(ch);
+        self.clear_completions();
+    }
+
+    pub(crate) fn backspace(&mut self) {
+        self.text.backspace();
+        self.clear_completions();
+    }
+
+    pub(crate) fn move_cursor(&mut self, delta: isize) {
+        self.text.move_cursor(delta);
+        self.clear_completions();
+    }
+
+    pub(crate) fn move_cursor_to_start(&mut self) {
+        self.text.move_cursor_to_start();
+        self.clear_completions();
+    }
+
+    pub(crate) fn move_cursor_to_end(&mut self) {
+        self.text.move_cursor_to_end();
+        self.clear_completions();
+    }
+
+    pub(crate) fn clear_input(&mut self) {
+        self.text.clear_input();
+        self.clear_completions();
+    }
+
+    pub(crate) fn delete_forward(&mut self) {
+        self.text.delete_forward();
+        self.clear_completions();
+    }
+
+    pub(crate) fn kill_to_end(&mut self) {
+        self.text.kill_to_end();
+        self.clear_completions();
+    }
+
+    pub(crate) fn kill_to_start(&mut self) {
+        self.text.kill_to_start();
+        self.clear_completions();
+    }
+
+    pub(crate) fn kill_word_back(&mut self) {
+        self.text.kill_word_back();
+        self.clear_completions();
+    }
 }
 
 #[cfg(test)]

@@ -37,7 +37,8 @@ Works with any ESP32 firmware: C, C++, Rust, Arduino.
 - Emits heap, CPU, WiFi RSSI, NVS, and task-list telemetry as ESP-IDF VERBOSE log lines (tag `esp_agent`); parsed by esp-tui to populate the System Inspector pane, and readable in any serial monitor
 - Optional override via `esp_agent_configure(interval_ms)` for custom sampling interval
 - Builds a `.a` for all five ESP32 targets via `cargo xtask build agent` (ESP32, S2, S3, C3, C6)
-- System Inspector pane with live heap gauges, per-core CPU bars, task table, and partition viewer (in progress)
+- System Inspector pane with live heap gauges, per-core CPU bars, WiFi RSSI, NVS usage, and a scrollable task table; graceful fallback messages when no device or agent is connected
+- Pane focus system: `Tab` cycles between the Serial Monitor and System Inspector; `Ctrl-F` opens the filter popup with a live search bar for tag filtering
 
 ---
 
@@ -134,14 +135,26 @@ esp-tui --port /dev/ttyUSB0      # connect to a specific port
 | `f` | Open ELF path selector and flash to device |
 | `e` | Erase flash (shows confirmation prompt) |
 | `r` | Reset device (DTR/RTS) |
-| `Tab` | Open / close filter popup |
-| `Space` | Toggle filter item (inside popup) |
-| `Ctrl-A` | Toggle all filter items (inside popup) |
-| `↑` / `↓` | Scroll up / down |
-| `PgUp` / `PgDn` | Scroll by 10 lines |
+| `Tab` | Cycle focus between Serial Monitor and System Inspector panes |
+| `Ctrl-F` | Open / close filter popup |
+| `Space` | Toggle filter item (inside filter popup) |
+| `Ctrl-A` | Toggle all filter items (inside filter popup) |
+| `↑` / `↓` | Scroll the focused pane up / down |
+| `PgUp` / `PgDn` | Scroll the focused pane by 10 lines |
 | `Ctrl-L` | Clear log buffer |
 | `q` / `Esc` | Exit scroll mode, or quit |
 | `Ctrl-C` | Quit |
+
+**Filter popup** (type any character to search tags by name)
+
+| Key | Action |
+|---|---|
+| Type characters | Narrow the tag list by substring match |
+| `Backspace` | Remove last character from search |
+| `↑` / `↓` | Move selection |
+| `Space` | Toggle selected item |
+| `Ctrl-A` | Toggle all items |
+| `q` / `Esc` | Close popup |
 
 **ELF path selector** (active while the `f` popup is open)
 
