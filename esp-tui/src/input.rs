@@ -38,7 +38,7 @@ impl TextInput {
     ///
     /// * `s` - The new content.
     pub(crate) fn set_value(&mut self, s: &str) {
-        self.input = s.to_owned();
+        s.clone_into(&mut self.input);
         self.cursor = self.input.len();
     }
 
@@ -179,28 +179,69 @@ impl TextInput {
     pub(crate) fn apply_key(&mut self, key: KeyEvent) -> bool {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('a') => self.move_cursor_to_start(),
-                KeyCode::Char('e') => self.move_cursor_to_end(),
-                KeyCode::Char('l') => self.clear_input(),
-                KeyCode::Char('d') => self.delete_forward(),
-                KeyCode::Char('k') => self.kill_to_end(),
-                KeyCode::Char('u') => self.kill_to_start(),
-                KeyCode::Char('w') => self.kill_word_back(),
-                _ => return false,
+                KeyCode::Char('a') => {
+                    self.move_cursor_to_start();
+                    true
+                }
+                KeyCode::Char('e') => {
+                    self.move_cursor_to_end();
+                    true
+                }
+                KeyCode::Char('l') => {
+                    self.clear_input();
+                    true
+                }
+                KeyCode::Char('d') => {
+                    self.delete_forward();
+                    true
+                }
+                KeyCode::Char('k') => {
+                    self.kill_to_end();
+                    true
+                }
+                KeyCode::Char('u') => {
+                    self.kill_to_start();
+                    true
+                }
+                KeyCode::Char('w') => {
+                    self.kill_word_back();
+                    true
+                }
+                _ => false,
             }
-            return true;
+        } else {
+            match key.code {
+                KeyCode::Char(ch) => {
+                    self.push_char(ch);
+                    true
+                }
+                KeyCode::Backspace => {
+                    self.backspace();
+                    true
+                }
+                KeyCode::Delete => {
+                    self.delete_forward();
+                    true
+                }
+                KeyCode::Left => {
+                    self.move_cursor(-1);
+                    true
+                }
+                KeyCode::Right => {
+                    self.move_cursor(1);
+                    true
+                }
+                KeyCode::Home => {
+                    self.move_cursor_to_start();
+                    true
+                }
+                KeyCode::End => {
+                    self.move_cursor_to_end();
+                    true
+                }
+                _ => false,
+            }
         }
-        match key.code {
-            KeyCode::Char(ch) => self.push_char(ch),
-            KeyCode::Backspace => self.backspace(),
-            KeyCode::Delete => self.delete_forward(),
-            KeyCode::Left => self.move_cursor(-1),
-            KeyCode::Right => self.move_cursor(1),
-            KeyCode::Home => self.move_cursor_to_start(),
-            KeyCode::End => self.move_cursor_to_end(),
-            _ => return false,
-        }
-        true
     }
 }
 

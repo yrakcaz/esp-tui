@@ -146,6 +146,9 @@ pub struct Partition {
     pub size: u32,
 }
 
+/// The ESP-IDF log tag emitted by the embedded agent on every message line.
+pub const TAG: &str = "esp_agent";
+
 /// A parsed agent message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]

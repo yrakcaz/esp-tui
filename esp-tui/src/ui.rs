@@ -52,11 +52,10 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let port_label: std::borrow::Cow<str> = app
-        .port_name()
-        .map_or("none".into(), std::borrow::Cow::Borrowed);
-
-    let port_color = if app.port_name().is_some() {
+    let port_name = app.port_name();
+    let port_label: std::borrow::Cow<str> =
+        port_name.map_or("none".into(), std::borrow::Cow::Borrowed);
+    let port_color = if port_name.is_some() {
         Color::Green
     } else {
         Color::Red
@@ -94,6 +93,40 @@ fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+fn focused_border(is_focused: bool) -> Style {
+    if is_focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default()
+    }
+}
+
+fn scroll_footer(
+    w: usize,
+    is_scrolled: bool,
+    scroll_hint: &str,
+    nav_hint: &str,
+) -> Line<'static> {
+    const BADGE: &str = " SCROLL ";
+    if is_scrolled {
+        let tail = truncate_line(scroll_hint, w.saturating_sub(BADGE.len()));
+        Line::from(vec![
+            Span::styled(
+                BADGE,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            ),
+            Span::styled(tail, Style::default().fg(Color::Yellow)),
+        ])
+    } else {
+        Line::from(Span::styled(
+            truncate_line(nav_hint, w),
+            Style::default().fg(Color::DarkGray),
+        ))
+    }
+}
+
 fn hint(text: &'static str) -> Span<'static> {
     Span::styled(
         text,
@@ -104,16 +137,11 @@ fn hint(text: &'static str) -> Span<'static> {
 }
 
 fn render_monitor(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
-    let border_style = if is_focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default()
-    };
     let block = Block::default()
         .title(" Serial Monitor ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(border_style);
+        .border_style(focused_border(is_focused));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -175,69 +203,62 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
     );
 
     if show_filter_bar {
-        let hidden_text = match (hidden_level_count, hidden_tag_count) {
-            (0, 0) => None,
-            (l, 0) => {
-                Some(format!("{l} level{} hidden", if l == 1 { "" } else { "s" }))
-            }
-            (0, t) => {
-                Some(format!("{t} tag{} hidden", if t == 1 { "" } else { "s" }))
-            }
-            (l, t) => Some(format!(
-                "{l} level{}, {t} tag{} hidden",
-                if l == 1 { "" } else { "s" },
-                if t == 1 { "" } else { "s" },
-            )),
-        };
-        let search_text = (!search_query.is_empty())
-            .then(|| format!("Search: \"{search_query}\""));
-        let w = usize::from(filter_bar_area.width);
-        let line = match (hidden_text, search_text) {
-            (Some(h), Some(s)) => {
-                truncate_line(format!("  Active filters: {h}  •  {s}"), w)
-            }
-            (Some(h), None) => truncate_line(format!("  Active filters: {h}"), w),
-            (None, Some(s)) => truncate_line(format!("  {s}"), w),
-            (None, None) => String::new(),
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                line,
-                Style::default().fg(Color::Yellow),
-            ))),
+        render_filter_bar(
+            frame,
             filter_bar_area,
+            hidden_level_count,
+            hidden_tag_count,
+            search_query,
         );
     }
 
     if is_focused {
         let w = usize::from(footer_area.width);
-        let footer = if app.scroll() > 0 {
-            const BADGE: &str = " SCROLL ";
-            let tail = truncate_line(
-                "  q/Esc to follow live".to_owned(),
-                w.saturating_sub(BADGE.len()),
-            );
-            Line::from(vec![
-                Span::styled(
-                    BADGE,
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::REVERSED | Modifier::BOLD),
-                ),
-                Span::styled(tail, Style::default().fg(Color::Yellow)),
-            ])
-        } else {
-            Line::from(Span::styled(
-                truncate_line(
-                    "[↑/↓  PgUp/PgDn] scroll  [^L] clear  [^F] filter  [Tab] focus"
-                        .to_owned(),
-                    w,
-                ),
-                Style::default().fg(Color::DarkGray),
-            ))
-        };
+        let footer = scroll_footer(
+            w,
+            app.scroll() > 0,
+            "  q/Esc to follow live",
+            "[↑/↓  PgUp/PgDn] scroll  [^L] clear  [^F] filter  [Tab] focus",
+        );
         frame.render_widget(Paragraph::new(footer), footer_area);
     }
+}
+
+fn render_filter_bar(
+    frame: &mut Frame,
+    area: Rect,
+    hidden_level_count: usize,
+    hidden_tag_count: usize,
+    search_query: &str,
+) {
+    let hidden_text = match (hidden_level_count, hidden_tag_count) {
+        (0, 0) => None,
+        (l, 0) => Some(format!("{l} level{} hidden", if l == 1 { "" } else { "s" })),
+        (0, t) => Some(format!("{t} tag{} hidden", if t == 1 { "" } else { "s" })),
+        (l, t) => Some(format!(
+            "{l} level{}, {t} tag{} hidden",
+            if l == 1 { "" } else { "s" },
+            if t == 1 { "" } else { "s" },
+        )),
+    };
+    let search_text =
+        (!search_query.is_empty()).then(|| format!("Search: \"{search_query}\""));
+    let w = usize::from(area.width);
+    let line = match (hidden_text, search_text) {
+        (Some(h), Some(s)) => {
+            truncate_line(format!("  Active filters: {h}  •  {s}"), w)
+        }
+        (Some(h), None) => truncate_line(format!("  Active filters: {h}"), w),
+        (None, Some(s)) => truncate_line(format!("  {s}"), w),
+        (None, None) => String::new(),
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            line,
+            Style::default().fg(Color::Yellow),
+        ))),
+        area,
+    );
 }
 
 fn board_info_lines(app: &App, label: Style, col_width: usize) -> Vec<Line<'_>> {
@@ -457,7 +478,31 @@ fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
         }));
     }
 
-    let Some(f) = app.agent_frame() else {
+    if let Some(f) = app.agent_frame() {
+        lines.push(Line::from(""));
+        lines.extend(frame_metric_lines(
+            f,
+            label,
+            value_style,
+            is_stale,
+            col_width,
+        ));
+        lines.extend(f.tasks.iter().map(|t| {
+            Line::from(Span::styled(
+                truncate_line(
+                    format!(
+                        "{:<16}  {:<9}  {:<7}  {}",
+                        t.name.as_str(),
+                        task_state_label(t.state),
+                        format_bytes(t.hwm),
+                        t.priority,
+                    ),
+                    col_width,
+                ),
+                value_style,
+            ))
+        }));
+    } else {
         let baseline = app.agent_last_seen().or_else(|| app.connected_at());
         let timed_out =
             baseline.is_some_and(|t| t.elapsed() > Duration::from_secs(10));
@@ -475,46 +520,16 @@ fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
                 .into_iter()
                 .map(|l| Line::from(Span::styled(l, label))),
         );
-        return lines;
-    };
-
-    lines.push(Line::from(""));
-    lines.extend(frame_metric_lines(
-        f,
-        label,
-        value_style,
-        is_stale,
-        col_width,
-    ));
-    lines.extend(f.tasks.iter().map(|t| {
-        Line::from(Span::styled(
-            truncate_line(
-                format!(
-                    "{:<16}  {:<9}  {:<7}  {}",
-                    t.name.as_str(),
-                    task_state_label(t.state),
-                    format_bytes(t.hwm),
-                    t.priority,
-                ),
-                col_width,
-            ),
-            value_style,
-        ))
-    }));
+    }
     lines
 }
 
 fn render_inspector(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
-    let border_style = if is_focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default()
-    };
     let block = Block::default()
         .title(" System Inspector ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(border_style);
+        .border_style(focused_border(is_focused));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -523,27 +538,12 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) 
 
     if is_focused {
         let w = usize::from(footer_area.width);
-        let footer = if app.inspector_scroll().min(app.inspector_max_scroll()) > 0 {
-            const BADGE: &str = " SCROLL ";
-            let tail = truncate_line(
-                "  q/Esc to scroll top".to_owned(),
-                w.saturating_sub(BADGE.len()),
-            );
-            Line::from(vec![
-                Span::styled(
-                    BADGE,
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::REVERSED | Modifier::BOLD),
-                ),
-                Span::styled(tail, Style::default().fg(Color::Yellow)),
-            ])
-        } else {
-            Line::from(Span::styled(
-                truncate_line("[↑/↓  PgUp/PgDn] scroll  [Tab] focus".to_owned(), w),
-                Style::default().fg(Color::DarkGray),
-            ))
-        };
+        let footer = scroll_footer(
+            w,
+            app.inspector_scroll().min(app.inspector_max_scroll()) > 0,
+            "  q/Esc to scroll top",
+            "[↑/↓  PgUp/PgDn] scroll  [Tab] focus",
+        );
         frame.render_widget(Paragraph::new(footer), footer_area);
     }
 
@@ -583,8 +583,7 @@ fn word_wrap(text: &str, width: usize) -> Vec<String> {
             current.len() + 1 + word.len()
         };
         if !current.is_empty() && needed > width {
-            lines.push(current.clone());
-            current.clear();
+            lines.push(std::mem::take(&mut current));
         }
         if !current.is_empty() {
             current.push(' ');
@@ -597,7 +596,8 @@ fn word_wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-fn truncate_line(mut s: String, max_chars: usize) -> String {
+fn truncate_line(s: impl Into<String>, max_chars: usize) -> String {
+    let mut s = s.into();
     if s.chars().count() > max_chars {
         let cut = s
             .char_indices()
@@ -687,16 +687,11 @@ fn agent_bar_style(is_stale: bool, color: Color) -> Style {
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
-    let border_style = if is_focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default()
-    };
     let block = Block::default()
         .title(" Status ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(border_style);
+        .border_style(focused_border(is_focused));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -843,7 +838,7 @@ fn render_erase_confirm_popup(frame: &mut Frame, area: Rect) {
 
 /// Splits `value` at `cursor_pos` and returns spans with the cursor
 /// character (or a space when at end) rendered in reverse video.
-fn text_cursor_spans<'a>(value: &'a str, cursor_pos: usize) -> Vec<Span<'a>> {
+fn text_cursor_spans(value: &str, cursor_pos: usize) -> Vec<Span<'_>> {
     let before = &value[..cursor_pos];
     let rest = &value[cursor_pos..];
     if let Some(c) = rest.chars().next() {
@@ -980,13 +975,34 @@ fn render_elf_selector_popup(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+fn filter_search_item(filter: &filter::State, search_focused: bool) -> ListItem<'_> {
+    let label = Span::styled(" Search: ", Style::default().fg(Color::DarkGray));
+    let query = filter.search_query();
+    let content: Line<'_> = if search_focused {
+        let mut spans = vec![label];
+        spans.extend(text_cursor_spans(query, filter.search_cursor()));
+        Line::from(spans)
+    } else if query.is_empty() {
+        Line::from(vec![
+            label,
+            Span::styled("type to search…", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        Line::from(vec![
+            label,
+            Span::styled(query, Style::default().fg(Color::Yellow)),
+        ])
+    };
+    ListItem::new(content)
+}
+
 fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
     const HINT_NAV: &str = " [↑/↓] navigate  [Space] toggle  [^A] all  [Esc] close";
     const HINT_SEARCH: &str = " [↑/↓] navigate  [Esc] done";
 
     let filter = app.filter();
     let levels = filter::State::levels();
-    let all_tags: Vec<&str> = filter.filtered_tags().collect();
+    let all_tags: Vec<&str> = filter.known_tags_iter().collect();
     let any_tags = !filter.known_tags().is_empty();
     let search_focused = filter.is_search_focused();
 
@@ -1023,29 +1039,7 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
         .fg(Color::DarkGray)
         .add_modifier(Modifier::BOLD);
 
-    let search_item = {
-        let label = Span::styled(" Search: ", Style::default().fg(Color::DarkGray));
-        let query = filter.search_query();
-        let content: Line<'_> = if search_focused {
-            let mut spans = vec![label];
-            spans.extend(text_cursor_spans(query, filter.search_cursor()));
-            Line::from(spans)
-        } else if query.is_empty() {
-            Line::from(vec![
-                label,
-                Span::styled(
-                    "type to search…",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ])
-        } else {
-            Line::from(vec![
-                label,
-                Span::styled(query, Style::default().fg(Color::Yellow)),
-            ])
-        };
-        ListItem::new(content)
-    };
+    let search_item = filter_search_item(filter, search_focused);
 
     let level_items = levels.iter().enumerate().map(|(i, &level)| {
         let marker = if filter.is_level_hidden(level) {
@@ -1063,9 +1057,7 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
         ListItem::new(format!("  {marker} {}", level.label())).style(style)
     });
 
-    let tag_items: Box<dyn Iterator<Item = ListItem>> = if !any_tags {
-        Box::new(std::iter::empty())
-    } else {
+    let tag_items: Box<dyn Iterator<Item = ListItem>> = if any_tags {
         Box::new(
             std::iter::once(ListItem::new(" Tags").style(section_style)).chain(
                 all_tags.into_iter().enumerate().map(|(i, tag)| {
@@ -1083,6 +1075,8 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
                 }),
             ),
         )
+    } else {
+        Box::new(std::iter::empty())
     };
 
     let items: Vec<ListItem> = std::iter::once(search_item)
@@ -1372,17 +1366,17 @@ mod tests {
 
     #[test]
     fn truncate_line_no_op_when_short() {
-        assert_eq!(super::truncate_line("hello".into(), 10), "hello");
+        assert_eq!(super::truncate_line("hello", 10), "hello");
     }
 
     #[test]
     fn truncate_line_no_op_when_exact() {
-        assert_eq!(super::truncate_line("hello".into(), 5), "hello");
+        assert_eq!(super::truncate_line("hello", 5), "hello");
     }
 
     #[test]
     fn truncate_line_appends_ellipsis_when_over() {
-        assert_eq!(super::truncate_line("hello world".into(), 8), "hello w…");
+        assert_eq!(super::truncate_line("hello world", 8), "hello w…");
     }
 
     #[test]

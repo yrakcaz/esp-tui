@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::hash::Hash;
 
 use crossterm::event::KeyEvent;
+use esp_agent_msg as agent_msg;
 
 use crate::input::TextInput;
 use crate::log;
@@ -24,7 +25,6 @@ const LEVELS: [log::Level; 5] = [
 /// the filter popup state.
 pub(crate) struct State {
     known_tags: Vec<String>,
-    known_tags_set: HashSet<String>,
     hidden_tags: HashSet<String>,
     hidden_levels: HashSet<log::Level>,
     popup_open: bool,
@@ -44,7 +44,6 @@ impl State {
     pub(crate) fn new() -> Self {
         Self {
             known_tags: Vec::new(),
-            known_tags_set: HashSet::new(),
             hidden_tags: HashSet::new(),
             hidden_levels: HashSet::new(),
             popup_open: false,
@@ -60,10 +59,9 @@ impl State {
     ///
     /// * `tag` - The ESP-IDF tag string to record.
     pub(crate) fn record_tag(&mut self, tag: &str) {
-        if !tag.is_empty() && !self.known_tags_set.contains(tag) {
-            self.known_tags_set.insert(tag.to_owned());
+        if !tag.is_empty() && !self.known_tags.iter().any(|t| t == tag) {
             self.known_tags.push(tag.to_owned());
-            if tag == "esp_agent" {
+            if tag == agent_msg::TAG {
                 self.hidden_tags.insert(tag.to_owned());
             }
         }
@@ -92,7 +90,7 @@ impl State {
             toggle_in_set(&mut self.hidden_levels, LEVELS[self.cursor]);
         } else {
             let tag_idx = self.cursor - LEVELS.len();
-            let tag = self.filtered_tags().nth(tag_idx).map(str::to_owned);
+            let tag = self.known_tags_iter().nth(tag_idx).map(str::to_owned);
             if let Some(tag) = tag {
                 toggle_in_set(&mut self.hidden_tags, tag);
             }
@@ -106,7 +104,7 @@ impl State {
     ///
     /// * `delta` - Positive to move down, negative to move up.
     pub(crate) fn move_cursor(&mut self, delta: isize) {
-        let total = LEVELS.len() + self.filtered_tags().count();
+        let total = LEVELS.len() + self.known_tags_iter().count();
         self.cursor = self
             .cursor
             .saturating_add_signed(delta)
@@ -250,7 +248,7 @@ impl State {
     /// # Returns
     ///
     /// An iterator yielding tag strings in the order they were first recorded.
-    pub(crate) fn filtered_tags(&self) -> impl Iterator<Item = &str> {
+    pub(crate) fn known_tags_iter(&self) -> impl Iterator<Item = &str> {
         self.known_tags.iter().map(String::as_str)
     }
 }
@@ -391,24 +389,24 @@ mod tests {
     }
 
     #[test]
-    fn filtered_tags_empty_query_returns_all() {
+    fn known_tags_iter_returns_all() {
         let mut s = State::new();
         s.record_tag("wifi");
         s.record_tag("i2c");
         s.record_tag("esp_agent");
-        let tags: Vec<&str> = s.filtered_tags().collect();
+        let tags: Vec<&str> = s.known_tags_iter().collect();
         assert_eq!(tags, vec!["wifi", "i2c", "esp_agent"]);
     }
 
     #[test]
-    fn filtered_tags_returns_all_regardless_of_search() {
+    fn known_tags_iter_ignores_search_query() {
         let mut s = State::new();
         s.record_tag("WiFi");
         s.record_tag("i2c");
         s.record_tag("wifi_task");
         s.push_search_char('w');
         s.push_search_char('i');
-        let tags: Vec<&str> = s.filtered_tags().collect();
+        let tags: Vec<&str> = s.known_tags_iter().collect();
         assert_eq!(tags, vec!["WiFi", "i2c", "wifi_task"]);
     }
 

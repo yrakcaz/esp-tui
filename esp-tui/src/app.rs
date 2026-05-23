@@ -61,10 +61,8 @@ enum ConfirmDialog {
 }
 
 fn matches_search(entry: &log::Entry, query: &str) -> bool {
-    if query.is_empty() {
-        return true;
-    }
-    entry.message().to_lowercase().contains(query)
+    query.is_empty()
+        || entry.message().to_lowercase().contains(query)
         || entry.tag().to_lowercase().contains(query)
 }
 
@@ -146,7 +144,7 @@ impl App {
         if !line.trim().is_empty() {
             let entry = log::parse_line(line);
             self.filter.record_tag(entry.tag());
-            if entry.tag() == "esp_agent" {
+            if entry.tag() == agent_msg::TAG {
                 self.agent_last_seen = Some(Instant::now());
                 match agent_msg::parse::parse(entry.message()) {
                     Some(agent_msg::Message::Frame(f)) => {
@@ -519,19 +517,15 @@ impl App {
     #[must_use]
     pub(crate) fn visible_entries(&self, height: usize) -> Vec<&log::Entry> {
         let query = self.filter.search_query().to_lowercase();
-        let total = self
+        let visible: Vec<&log::Entry> = self
             .log_buffer
             .iter()
             .filter(|e| self.filter.is_visible(e) && matches_search(e, &query))
-            .count();
+            .collect();
+        let total = visible.len();
         let skip = self.scroll.min(total.saturating_sub(height));
         let start = total.saturating_sub(height).saturating_sub(skip);
-        self.log_buffer
-            .iter()
-            .filter(|e| self.filter.is_visible(e) && matches_search(e, &query))
-            .skip(start)
-            .take(height)
-            .collect()
+        visible.into_iter().skip(start).take(height).collect()
     }
 
     /// Returns a shared reference to the port selector, if active.

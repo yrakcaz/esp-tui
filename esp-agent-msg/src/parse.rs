@@ -251,9 +251,8 @@ mod tests {
     use crate::{format as fmt, Message, MAX_LINE, MAX_PARTS_LINE};
 
     fn strip_prefix(line: &str) -> &str {
-        line.splitn(2, ": ")
-            .nth(1)
-            .unwrap_or("")
+        line.split_once(": ")
+            .map_or("", |x| x.1)
             .trim_end_matches("\r\n")
     }
 
@@ -447,7 +446,7 @@ mod tests {
                 label: l1,
                 part_type: PartType::App,
                 offset: 0x10000,
-                size: 0x180000,
+                size: 0x0018_0000,
             })
             .ok();
         let mut l2: heapless::String<MAX_NAME_LEN> = heapless::String::new();
@@ -474,7 +473,7 @@ mod tests {
         assert_eq!(parsed[0].label.as_str(), "ota_0");
         assert_eq!(parsed[0].part_type, PartType::App);
         assert_eq!(parsed[0].offset, 0x10000);
-        assert_eq!(parsed[0].size, 0x180000);
+        assert_eq!(parsed[0].size, 0x0018_0000);
         assert_eq!(parsed[1].label.as_str(), "nvs");
         assert_eq!(parsed[1].part_type, PartType::Data);
     }

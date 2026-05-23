@@ -27,6 +27,9 @@ struct Args {
     baud: Option<u32>,
 }
 
+const MSG_OP_IN_PROGRESS: &str = "Operation already in progress.";
+const MSG_NOT_CONNECTED: &str = "No port connected.";
+
 fn begin_connect(port: &str, baud: u32, tx: &mpsc::UnboundedSender<event::Message>) {
     let (src_tx, src_rx) = watch::channel(false);
     let port_name = port.to_owned();
@@ -66,7 +69,7 @@ fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
 
 fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
     if app.is_flashing() {
-        app.set_status("Operation already in progress.");
+        app.set_status(MSG_OP_IN_PROGRESS);
     } else {
         match serial::detect_esp_ports() {
             Err(e) => app.set_status(format!("Port scan failed: {e}")),
@@ -197,9 +200,9 @@ fn confirm_elf_path(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
 
 fn start_flash(app: &mut App) {
     if app.port_name().is_none() {
-        app.set_status("No port connected.");
+        app.set_status(MSG_NOT_CONNECTED);
     } else if app.is_flashing() {
-        app.set_status("Operation already in progress.");
+        app.set_status(MSG_OP_IN_PROGRESS);
     } else {
         let prefill = app.elf_path().map(Path::to_path_buf);
         app.open_elf_selector(prefill.as_deref());
@@ -233,7 +236,7 @@ fn do_flash(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
             app.port_name().map(str::to_owned),
             app.elf_path().map(Path::to_path_buf),
         ) {
-            (None, _) => app.set_status("No port connected."),
+            (None, _) => app.set_status(MSG_NOT_CONNECTED),
             (_, None) => {}
             (Some(port), Some(elf_path)) => {
                 let baud = app.baud();
@@ -278,14 +281,14 @@ pub(crate) fn handle_action(
         Action::Quit => app.quit(),
         Action::QuitPrompt => {
             if app.is_flashing() {
-                app.set_status("Operation already in progress.");
+                app.set_status(MSG_OP_IN_PROGRESS);
             } else {
                 app.open_quit_confirm();
             }
         }
         Action::Disconnect => {
             if app.is_flashing() {
-                app.set_status("Operation already in progress.");
+                app.set_status(MSG_OP_IN_PROGRESS);
             } else if app.port_name().is_some() {
                 app.disconnect();
                 app.set_status("Disconnected.");
@@ -297,7 +300,7 @@ pub(crate) fn handle_action(
         Action::ConfirmElfPath => confirm_elf_path(app, tx),
         Action::ResetDevice => {
             if app.is_flashing() {
-                app.set_status("Operation already in progress.");
+                app.set_status(MSG_OP_IN_PROGRESS);
             } else {
                 match app.port_cmd_tx() {
                     Some(cmd_tx) => {
@@ -310,14 +313,14 @@ pub(crate) fn handle_action(
                     None if app.port_name().is_some() => {
                         app.set_status("Reset not supported.");
                     }
-                    None => app.set_status("No port connected."),
+                    None => app.set_status(MSG_NOT_CONNECTED),
                 }
             }
         }
         Action::ScanPorts => apply_scan(app, tx),
         Action::ConnectPort(port) => {
             if app.is_flashing() {
-                app.set_status("Operation already in progress.");
+                app.set_status(MSG_OP_IN_PROGRESS);
             } else {
                 app.set_status(format!("Connecting to {port}..."));
                 begin_connect(&port, app.baud(), tx);
@@ -326,9 +329,9 @@ pub(crate) fn handle_action(
         }
         Action::ErasePrompt => {
             if app.port_name().is_none() {
-                app.set_status("No port connected.");
+                app.set_status(MSG_NOT_CONNECTED);
             } else if app.is_flashing() {
-                app.set_status("Operation already in progress.");
+                app.set_status(MSG_OP_IN_PROGRESS);
             } else {
                 app.open_erase_confirm();
             }
