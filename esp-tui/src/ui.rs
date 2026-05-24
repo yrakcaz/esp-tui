@@ -29,9 +29,11 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     ])
     .split(frame.area());
 
-    let main =
-        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(outer[1]);
+    let main = Layout::horizontal([
+        Constraint::Percentage(app.monitor_pct()),
+        Constraint::Percentage(100 - app.monitor_pct()),
+    ])
+    .split(outer[1]);
 
     render_menu_bar(frame, outer[0], app);
     render_monitor(frame, main[0], app, app.focused_pane() == Pane::Monitor);
@@ -138,7 +140,7 @@ fn hint(text: &'static str) -> Span<'static> {
 
 fn render_monitor(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
     let block = Block::default()
-        .title(" Serial Monitor ")
+        .title(clip_title(" Serial Monitor ", area.width))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(focused_border(is_focused));
@@ -218,7 +220,7 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
             w,
             app.scroll() > 0,
             "  q/Esc to follow live",
-            "[↑/↓  PgUp/PgDn] scroll  [^L] clear  [^F] filter  [Tab] focus",
+            "[↑/↓  PgUp/PgDn] scroll  [^L] clear  [^F] filter  [^←/→] resize  [Tab] focus",
         );
         frame.render_widget(Paragraph::new(footer), footer_area);
     }
@@ -526,7 +528,7 @@ fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
 
 fn render_inspector(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
     let block = Block::default()
-        .title(" System Inspector ")
+        .title(clip_title(" System Inspector ", area.width))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(focused_border(is_focused));
@@ -542,7 +544,7 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) 
             w,
             app.inspector_scroll().min(app.inspector_max_scroll()) > 0,
             "  q/Esc to scroll top",
-            "[↑/↓  PgUp/PgDn] scroll  [Tab] focus",
+            "[↑/↓  PgUp/PgDn] scroll  [^←/→] resize  [Tab] focus",
         );
         frame.render_widget(Paragraph::new(footer), footer_area);
     }
@@ -586,6 +588,10 @@ fn word_wrap(text: &str, width: usize) -> Vec<String> {
         lines.push(current);
     }
     lines
+}
+
+fn clip_title(title: &str, area_width: u16) -> String {
+    truncate_line(title, usize::from(area_width).saturating_sub(2))
 }
 
 fn truncate_line(s: impl Into<String>, max_chars: usize) -> String {
@@ -681,7 +687,7 @@ fn agent_bar_style(is_stale: bool, color: Color) -> Style {
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
     let block = Block::default()
-        .title(" Status ")
+        .title(clip_title(" Status ", area.width))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(focused_border(is_focused));

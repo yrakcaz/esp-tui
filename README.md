@@ -136,6 +136,7 @@ esp-tui --port /dev/ttyUSB0      # connect to a specific port
 | `e` | Erase flash (shows confirmation prompt) |
 | `r` | Reset device (DTR/RTS) |
 | `Tab` | Cycle focus between Serial Monitor and System Inspector panes |
+| `Ctrl-←` / `Ctrl-→` | Move the split divider left / right; auto-switches focus when a pane collapses |
 | `Ctrl-F` | Open / close filter popup |
 | `Space` | Toggle filter item (inside filter popup) |
 | `Ctrl-A` | Toggle all filter items (inside filter popup) |
