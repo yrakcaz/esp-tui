@@ -98,6 +98,12 @@ Flag violations of `snake_case` for functions/modules and `PascalCase` for types
 ### Formatting
 Note if the diff is likely to fail `cargo fmt` (max_width = 85) or `cargo clippy`. Do not enumerate every fmt issue; just flag that it needs to be run.
 
+### Clippy suppression
+Flag any `#[allow(clippy::...)]` attribute where a code fix was available instead. Suppression is only acceptable for known false positives or cases where the idiomatic alternative would make the code meaningfully worse. When flagging, suggest the concrete fix.
+
+### Consistency and idiomacy
+Flag code that is inconsistent with the surrounding file in naming, error-handling style, or abstraction level. Flag non-idiomatic Rust where an established pattern exists: prefer `is_some_and` over `map(...).unwrap_or`, `ok_or_else` over manual `match` on `Option`, iterator chains over imperative accumulation, etc.
+
 ---
 
 ## Tests

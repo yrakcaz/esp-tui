@@ -1,6 +1,10 @@
 use std::collections::HashSet;
 use std::hash::Hash;
 
+use crossterm::event::KeyEvent;
+use esp_agent_msg as agent_msg;
+
+use crate::input::TextInput;
 use crate::log;
 
 fn toggle_in_set<T: Eq + Hash>(set: &mut HashSet<T>, value: T) {
@@ -21,11 +25,12 @@ const LEVELS: [log::Level; 5] = [
 /// the filter popup state.
 pub(crate) struct State {
     known_tags: Vec<String>,
-    known_tags_set: HashSet<String>,
     hidden_tags: HashSet<String>,
     hidden_levels: HashSet<log::Level>,
     popup_open: bool,
     cursor: usize,
+    search: TextInput,
+    search_focused: bool,
 }
 
 impl State {
@@ -39,11 +44,12 @@ impl State {
     pub(crate) fn new() -> Self {
         Self {
             known_tags: Vec::new(),
-            known_tags_set: HashSet::new(),
             hidden_tags: HashSet::new(),
             hidden_levels: HashSet::new(),
             popup_open: false,
             cursor: 0,
+            search: TextInput::new(),
+            search_focused: false,
         }
     }
 
@@ -53,9 +59,11 @@ impl State {
     ///
     /// * `tag` - The ESP-IDF tag string to record.
     pub(crate) fn record_tag(&mut self, tag: &str) {
-        if !tag.is_empty() && !self.known_tags_set.contains(tag) {
-            self.known_tags_set.insert(tag.to_owned());
+        if !tag.is_empty() && !self.known_tags.iter().any(|t| t == tag) {
             self.known_tags.push(tag.to_owned());
+            if tag == agent_msg::TAG {
+                self.hidden_tags.insert(tag.to_owned());
+            }
         }
     }
 
@@ -75,18 +83,22 @@ impl State {
     }
 
     /// Toggles the item at the current cursor position. Cursor indices 0–4
-    /// address severity levels; indices 5 and above address known tags.
+    /// address severity levels; indices 5 and above address the filtered tag
+    /// list (tags matching the current search query).
     pub(crate) fn toggle_at_cursor(&mut self) {
         if self.cursor < LEVELS.len() {
             toggle_in_set(&mut self.hidden_levels, LEVELS[self.cursor]);
-        } else if let Some(tag) =
-            self.known_tags.get(self.cursor - LEVELS.len()).cloned()
-        {
-            toggle_in_set(&mut self.hidden_tags, tag);
+        } else {
+            let tag_idx = self.cursor - LEVELS.len();
+            let tag = self.known_tags.get(tag_idx).cloned();
+            if let Some(tag) = tag {
+                toggle_in_set(&mut self.hidden_tags, tag);
+            }
         }
     }
 
     /// Moves the cursor by `delta` positions, clamped to the total item count.
+    /// The tag section is sized by the current filtered tag list.
     ///
     /// # Arguments
     ///
@@ -111,9 +123,10 @@ impl State {
         }
     }
 
-    /// Toggles the filter popup open or closed.
+    /// Toggles the filter popup open or closed, resetting search focus.
     pub(crate) fn toggle_popup(&mut self) {
         self.popup_open = !self.popup_open;
+        self.search_focused = false;
     }
 
     /// Returns whether the filter popup is currently open.
@@ -126,7 +139,28 @@ impl State {
         self.popup_open
     }
 
-    /// Returns all tags seen so far, in insertion order.
+    /// Focuses the search bar, routing all subsequent key input to it.
+    pub(crate) fn focus_search(&mut self) {
+        self.search_focused = true;
+    }
+
+    /// Unfocuses the search bar, returning to navigation mode.
+    pub(crate) fn unfocus_search(&mut self) {
+        self.search_focused = false;
+    }
+
+    /// Returns whether the search bar currently has focus.
+    ///
+    /// # Returns
+    ///
+    /// `true` when key input is routed to the search bar.
+    #[must_use]
+    pub(crate) fn is_search_focused(&self) -> bool {
+        self.search_focused
+    }
+
+    /// Returns all tags seen so far, in insertion order. This list is never
+    /// filtered by the active search query.
     ///
     /// # Returns
     ///
@@ -179,16 +213,52 @@ impl State {
     /// # Returns
     ///
     /// Zero-based index; values below [`LEVELS`] length address severity levels,
-    /// values at or above address known tags.
+    /// values at or above address filtered tags.
     #[must_use]
     pub(crate) fn cursor(&self) -> usize {
         self.cursor
+    }
+
+    /// Returns the current search query string.
+    ///
+    /// # Returns
+    ///
+    /// An empty string when no search is active.
+    #[must_use]
+    pub(crate) fn search_query(&self) -> &str {
+        self.search.value()
+    }
+
+    /// Returns the cursor position within the search query as a byte offset.
+    #[must_use]
+    pub(crate) fn search_cursor(&self) -> usize {
+        self.search.cursor_pos()
+    }
+
+    /// Applies a text-editing key event to the search input.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key event to process.
+    pub(crate) fn apply_search_key(&mut self, key: KeyEvent) {
+        self.search.apply_key(key);
     }
 }
 
 impl Default for State {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+impl State {
+    pub(crate) fn push_search_char(&mut self, c: char) {
+        self.search.push_char(c);
+    }
+
+    pub(crate) fn pop_search_char(&mut self) {
+        self.search.backspace();
     }
 }
 
@@ -215,6 +285,23 @@ mod tests {
         let mut s = State::new();
         s.record_tag("");
         assert!(s.known_tags().is_empty());
+    }
+
+    #[test]
+    fn esp_agent_tag_hidden_by_default() {
+        let mut s = State::new();
+        s.record_tag("esp_agent");
+        assert!(s.known_tags().contains(&"esp_agent".to_owned()));
+        assert!(s.is_tag_hidden("esp_agent"));
+    }
+
+    #[test]
+    fn esp_agent_tag_can_be_toggled_visible() {
+        let mut s = State::new();
+        s.record_tag("esp_agent");
+        s.move_cursor(LEVELS.len().cast_signed());
+        s.toggle_at_cursor();
+        assert!(!s.is_tag_hidden("esp_agent"));
     }
 
     #[test]
@@ -291,5 +378,50 @@ mod tests {
         assert_eq!(s.cursor(), 0);
         s.move_cursor(100);
         assert_eq!(s.cursor(), LEVELS.len() + 3 - 1);
+    }
+
+    #[test]
+    fn known_tags_returns_all() {
+        let mut s = State::new();
+        s.record_tag("wifi");
+        s.record_tag("i2c");
+        s.record_tag("esp_agent");
+        assert_eq!(s.known_tags(), &["wifi", "i2c", "esp_agent"]);
+    }
+
+    #[test]
+    fn known_tags_ignores_search_query() {
+        let mut s = State::new();
+        s.record_tag("WiFi");
+        s.record_tag("i2c");
+        s.record_tag("wifi_task");
+        s.push_search_char('w');
+        s.push_search_char('i');
+        assert_eq!(s.known_tags(), &["WiFi", "i2c", "wifi_task"]);
+    }
+
+    #[test]
+    fn push_and_pop_search_char() {
+        let mut s = State::new();
+        s.push_search_char('w');
+        s.push_search_char('i');
+        assert_eq!(s.search_query(), "wi");
+        s.pop_search_char();
+        assert_eq!(s.search_query(), "w");
+        s.pop_search_char();
+        assert_eq!(s.search_query(), "");
+        s.pop_search_char();
+        assert_eq!(s.search_query(), "");
+    }
+
+    #[test]
+    fn search_persists_on_popup_close() {
+        let mut s = State::new();
+        s.toggle_popup();
+        s.push_search_char('w');
+        assert_eq!(s.search_query(), "w");
+        s.toggle_popup();
+        assert!(!s.is_popup_open());
+        assert_eq!(s.search_query(), "w");
     }
 }

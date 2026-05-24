@@ -32,18 +32,19 @@
 - [x] C ABI: `esp_agent_configure(interval_ms)` for optional config override
 - [x] `.init_array` constructor always included; auto-starts task with defaults
 - [x] `cargo xtask build-agent`: cross-compiles `.a` for all five ESP32 targets
-- [ ] Host-side `esp_agent` tag detection and telemetry parsing
-- [ ] System Inspector pane: heap gauges, per-core CPU bars, task list
-- [ ] Partition table viewer in Inspector pane
-- [ ] Agent detection / graceful absence ("agent not detected" prompt)
-- [ ] `esp-tui agent install` CLI subcommand (deliver pre-built `.a` to user project)
-- [ ] Pane focus: introduce a `FocusedPane` enum so scroll and resize operations target the active pane; review and reassign conflicting keybindings (e.g. `Tab` currently opens the filter popup) at that time
-- [ ] Per-pane independent scrolling once Inspector has scrollable content
-- [ ] Per-pane independent resizing (adjust split ratio with keybindings)
-- [ ] Split `app.rs`: move `run_inner`, `begin_connect`, `spawn_port_poller`, `handle_ports_detected`, and `apply_scan` into a new `runner.rs`; `app.rs` becomes a pure state container. The seam already exists but the split is not worth the churn until agent state grows the file further.
+- [x] Host-side `esp_agent` tag detection and telemetry parsing
+- [x] System Inspector pane: heap gauges, per-core CPU bars, task list
+- [x] Partition table viewer in Inspector pane
+- [x] Agent detection / graceful absence ("Waiting for esp-agent..." / "Connect a device to begin.")
+- [x] Pane focus: `Tab` cycles Monitor/Inspector; focused pane shows cyan border; `Ctrl+F` opens filter
+- [x] Per-pane independent scrolling (Inspector scroll targets task list)
+- [x] Split `app.rs`: move `run_inner`, `begin_connect`, `spawn_port_poller`, `handle_ports_detected`, and `apply_scan` into a new `runner.rs`; `app.rs` becomes a pure state container.
 
 ## Phase 4: Polish
 
+- [ ] `esp-tui agent install` CLI subcommand (deliver pre-built `.a` to user project)
+- [ ] Per-pane independent resizing (adjust split ratio with keybindings)
+- [ ] Consider surfacing currently parsed-but-unused agent fields in the inspector: reset reason (`Startup::reason`), core count (`Startup::cores`), silicon revision (`Startup::revision`), heap fragmentation (`Frame::heap_frag`), and frame timestamp (`Frame::timestamp_ms`)
 - [ ] Revisit build system: once a release mechanism is in place (pre-built `.a` assets on GitHub Releases), evaluate whether `cargo xtask build-agent` is still the right developer-facing entry point, whether CI artifact caching is worth adding, and whether any of the current workarounds (`crate-type = ["lib", "staticlib"]`, `target_os` guards, `load_esp_env` parsing) can be simplified
 - [ ] Revisit Rust-native integration: evaluate whether to publish `esp-agent` as a Cargo dependency with a safe `configure()` API (requires solving panic handler conflicts with `esp-idf-sys` and the linker inclusion problem without user-side `build.rs` changes)
 

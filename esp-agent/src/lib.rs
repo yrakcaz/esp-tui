@@ -12,8 +12,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(any(target_os = "none", target_os = "espidf"))]
 mod ffi;
-#[cfg(any(target_os = "none", target_os = "espidf", test))]
-mod fmt;
 #[cfg(any(target_os = "none", target_os = "espidf"))]
 mod task;
 

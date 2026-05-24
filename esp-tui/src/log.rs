@@ -94,14 +94,16 @@ impl TryFrom<&str> for Level {
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
     level: Level,
+    timestamp_ms: u32,
     tag: String,
     message: String,
 }
 
 impl Entry {
-    fn parsed(level: Level, tag: &str, message: &str) -> Self {
+    fn parsed(level: Level, timestamp_ms: u32, tag: &str, message: &str) -> Self {
         Self {
             level,
+            timestamp_ms,
             tag: tag.trim().to_owned(),
             message: message.to_owned(),
         }
@@ -110,6 +112,7 @@ impl Entry {
     fn from_raw_line(message: &str) -> Self {
         Self {
             level: Level::Verbose,
+            timestamp_ms: 0,
             tag: String::new(),
             message: message.to_owned(),
         }
@@ -119,6 +122,13 @@ impl Entry {
     #[must_use]
     pub(crate) fn level(&self) -> Level {
         self.level
+    }
+
+    /// Returns the ESP-IDF tick count at the time this line was logged, in
+    /// milliseconds. Zero for raw (unparsed) lines and bracket-format lines.
+    #[must_use]
+    pub(crate) fn timestamp_ms(&self) -> u32 {
+        self.timestamp_ms
     }
 
     /// Returns the ESP-IDF tag, or an empty string for raw (unparsed) lines.
@@ -159,13 +169,16 @@ pub(crate) fn parse_line(line: &str) -> Entry {
                 .chars()
                 .next()
                 .and_then(|c| Level::try_from(c).ok())
-                .map(|level| Entry::parsed(level, &caps[3], &caps[4]))
+                .map(|level| {
+                    let ts: u32 = caps[2].parse().unwrap_or(0);
+                    Entry::parsed(level, ts, &caps[3], &caps[4])
+                })
         })
         .or_else(|| {
             RE_BRACKET.captures(s).and_then(|caps| {
                 Level::try_from(&caps[1])
                     .ok()
-                    .map(|level| Entry::parsed(level, &caps[2], &caps[3]))
+                    .map(|level| Entry::parsed(level, 0, &caps[2], &caps[3]))
             })
         })
         .unwrap_or_else(|| Entry::from_raw_line(s))
@@ -181,6 +194,7 @@ mod tests {
         assert_eq!(e.level(), Level::Info);
         assert_eq!(e.tag(), "wifi");
         assert_eq!(e.message(), "Connected to AP");
+        assert_eq!(e.timestamp_ms(), 1234);
     }
 
     #[test]
@@ -197,6 +211,13 @@ mod tests {
         assert_eq!(e.level(), Level::Verbose);
         assert_eq!(e.tag(), "");
         assert_eq!(e.message(), "some raw output");
+        assert_eq!(e.timestamp_ms(), 0);
+    }
+
+    #[test]
+    fn bracket_format_timestamp_is_zero() {
+        let e = parse_line("[INFO] esp_netif_handlers: sta ip: 192.168.1.1");
+        assert_eq!(e.timestamp_ms(), 0);
     }
 
     #[test]

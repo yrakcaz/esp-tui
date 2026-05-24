@@ -545,6 +545,17 @@ dependencies = [
 [[package]]
 name = "esp-agent"
 version = "0.1.0"
+dependencies = [
+ "esp-agent-msg",
+ "heapless",
+]
+
+[[package]]
+name = "esp-agent-msg"
+version = "0.1.0"
+dependencies = [
+ "heapless",
+]
 
 [[package]]
 name = "esp-idf-part"
@@ -571,7 +582,9 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "esp-agent-msg",
  "espflash",
+ "heapless",
  "ratatui",
  "regex",
  "serialport",

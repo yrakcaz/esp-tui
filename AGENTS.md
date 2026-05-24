@@ -126,7 +126,9 @@ ESP32 developer workstation for the terminal. A persistent ratatui TUI combining
 ### Formatting & Linting
 - Run `cargo fmt` after every code change (`max_width = 85` in `.rustfmt.toml`)
 - Run `cargo clippy` and fix all warnings; `clippy::all`, `clippy::cargo`, and `clippy::pedantic` are denied via `[workspace.lints]` in `Cargo.toml`
+- Prefer fixing the underlying code over suppressing a lint with `#[allow(...)]`; use an attribute only when the lint is a known false positive or the idiomatic fix would make the code meaningfully worse
 - Follow standard Rust naming conventions (`snake_case` for functions/modules, `PascalCase` for types)
+- Write code that is consistent with the surrounding file: match existing naming patterns, error-handling style, and abstraction level; Rust idiomacy and internal consistency are both valued
 
 ### Testing
 - Maximize code coverage: every new function or behavior should have corresponding tests
