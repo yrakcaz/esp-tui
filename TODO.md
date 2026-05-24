@@ -34,7 +34,7 @@
 - [x] `cargo xtask build-agent`: cross-compiles `.a` for all five ESP32 targets
 - [x] Host-side `esp_agent` tag detection and telemetry parsing
 - [x] System Inspector pane: heap gauges, per-core CPU bars, task list
-- [ ] Partition table viewer in Inspector pane
+- [x] Partition table viewer in Inspector pane
 - [x] Agent detection / graceful absence ("Waiting for esp-agent..." / "Connect a device to begin.")
 - [ ] `esp-tui agent install` CLI subcommand (deliver pre-built `.a` to user project)
 - [x] Pane focus: `Tab` cycles Monitor/Inspector; focused pane shows cyan border; `Ctrl+F` opens filter

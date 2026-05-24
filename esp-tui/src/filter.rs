@@ -90,7 +90,7 @@ impl State {
             toggle_in_set(&mut self.hidden_levels, LEVELS[self.cursor]);
         } else {
             let tag_idx = self.cursor - LEVELS.len();
-            let tag = self.known_tags_iter().nth(tag_idx).map(str::to_owned);
+            let tag = self.known_tags.get(tag_idx).cloned();
             if let Some(tag) = tag {
                 toggle_in_set(&mut self.hidden_tags, tag);
             }
@@ -104,7 +104,7 @@ impl State {
     ///
     /// * `delta` - Positive to move down, negative to move up.
     pub(crate) fn move_cursor(&mut self, delta: isize) {
-        let total = LEVELS.len() + self.known_tags_iter().count();
+        let total = LEVELS.len() + self.known_tags.len();
         self.cursor = self
             .cursor
             .saturating_add_signed(delta)
@@ -159,7 +159,8 @@ impl State {
         self.search_focused
     }
 
-    /// Returns all tags seen so far, in insertion order.
+    /// Returns all tags seen so far, in insertion order. This list is never
+    /// filtered by the active search query.
     ///
     /// # Returns
     ///
@@ -241,15 +242,6 @@ impl State {
     /// * `key` - The key event to process.
     pub(crate) fn apply_search_key(&mut self, key: KeyEvent) {
         self.search.apply_key(key);
-    }
-
-    /// Returns an iterator over all known tags in insertion order.
-    ///
-    /// # Returns
-    ///
-    /// An iterator yielding tag strings in the order they were first recorded.
-    pub(crate) fn known_tags_iter(&self) -> impl Iterator<Item = &str> {
-        self.known_tags.iter().map(String::as_str)
     }
 }
 
@@ -389,25 +381,23 @@ mod tests {
     }
 
     #[test]
-    fn known_tags_iter_returns_all() {
+    fn known_tags_returns_all() {
         let mut s = State::new();
         s.record_tag("wifi");
         s.record_tag("i2c");
         s.record_tag("esp_agent");
-        let tags: Vec<&str> = s.known_tags_iter().collect();
-        assert_eq!(tags, vec!["wifi", "i2c", "esp_agent"]);
+        assert_eq!(s.known_tags(), &["wifi", "i2c", "esp_agent"]);
     }
 
     #[test]
-    fn known_tags_iter_ignores_search_query() {
+    fn known_tags_ignores_search_query() {
         let mut s = State::new();
         s.record_tag("WiFi");
         s.record_tag("i2c");
         s.record_tag("wifi_task");
         s.push_search_char('w');
         s.push_search_char('i');
-        let tags: Vec<&str> = s.known_tags_iter().collect();
-        assert_eq!(tags, vec!["WiFi", "i2c", "wifi_task"]);
+        assert_eq!(s.known_tags(), &["WiFi", "i2c", "wifi_task"]);
     }
 
     #[test]

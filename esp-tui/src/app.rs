@@ -146,7 +146,8 @@ impl App {
             self.filter.record_tag(entry.tag());
             if entry.tag() == agent_msg::TAG {
                 self.agent_last_seen = Some(Instant::now());
-                match agent_msg::parse::parse(entry.message()) {
+                match agent_msg::parse::parse(entry.timestamp_ms(), entry.message())
+                {
                     Some(agent_msg::Message::Frame(f)) => {
                         self.inspector_scroll = self
                             .inspector_scroll
@@ -974,12 +975,10 @@ mod tests {
     }
 
     fn unique_temp_path(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "{name}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
-        ))
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("{name}-{n}"))
     }
 
     fn ctrl(code: KeyCode) -> KeyEvent {
@@ -2470,5 +2469,51 @@ mod tests {
         assert_eq!(app.scroll(), 0);
         app.handle_key(key(KeyCode::PageUp));
         assert_eq!(app.inspector_scroll(), 0);
+    }
+
+    #[test]
+    fn push_line_agent_frame_populated() {
+        let mut app = App::new(None);
+        assert!(app.agent_frame().is_none());
+        push_agent_frame(&mut app, 0);
+        assert!(app.agent_frame().is_some());
+    }
+
+    #[test]
+    fn push_line_agent_startup_populated() {
+        let mut app = App::new(None);
+        assert!(app.agent_startup().is_none());
+        app.push_line(
+            "V (100) esp_agent: start reason=poweron chip=esp32s3 \
+             cores=2 rev=1 mac=AA:BB:CC:DD:EE:FF flash=0x400000",
+        );
+        assert!(app.agent_startup().is_some());
+    }
+
+    #[test]
+    fn push_line_agent_last_seen_set() {
+        let mut app = App::new(None);
+        assert!(app.agent_last_seen().is_none());
+        push_agent_frame(&mut app, 0);
+        assert!(app.agent_last_seen().is_some());
+    }
+
+    #[test]
+    fn disconnect_clears_agent_data_and_connected_at() {
+        let mut app = App::new(Some("COM1".into()));
+        push_agent_frame(&mut app, 0);
+        assert!(app.agent_last_seen().is_some());
+        app.disconnect();
+        assert!(app.agent_last_seen().is_none());
+        assert!(app.agent_frame().is_none());
+        assert!(app.connected_at().is_none());
+    }
+
+    #[test]
+    fn set_port_records_connected_at() {
+        let mut app = App::new(None);
+        assert!(app.connected_at().is_none());
+        app.set_port("COM1".into());
+        assert!(app.connected_at().is_some());
     }
 }

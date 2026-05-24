@@ -11,23 +11,24 @@ use crate::{
 ///
 /// # Arguments
 ///
+/// * `timestamp_ms` - Tick count from the ESP-IDF log prefix, in milliseconds.
 /// * `message` - Message content string.
 ///
 /// # Returns
 ///
 /// The parsed [`Message`], or `None` if the input could not be parsed.
 #[must_use]
-pub fn parse(message: &str) -> Option<Message> {
+pub fn parse(timestamp_ms: u32, message: &str) -> Option<Message> {
     if message.starts_with("start ") {
         parse_startup(message).map(Message::Startup)
     } else if message == "parts" || message.starts_with("parts ") {
         parse_partitions(message).map(Message::Partitions)
     } else {
-        parse_frame(message).map(Message::Frame)
+        parse_frame(timestamp_ms, message).map(Message::Frame)
     }
 }
 
-fn parse_frame(msg: &str) -> Option<Frame> {
+fn parse_frame(timestamp_ms: u32, msg: &str) -> Option<Frame> {
     let (metrics_part, tasks_str) = msg.split_once(" tasks=")?;
 
     let mut heap_free = None;
@@ -93,7 +94,7 @@ fn parse_frame(msg: &str) -> Option<Frame> {
     }
 
     Some(Frame {
-        timestamp_ms: 0,
+        timestamp_ms,
         heap_free: heap_free?,
         heap_total: heap_total?,
         heap_min_free: heap_min_free?,
@@ -115,13 +116,13 @@ fn parse_task(s: &str) -> Option<Task> {
     let prio_str = it.next()?;
 
     let state = match state_str {
-        "R" => TaskState::Running,
-        "r" => TaskState::Ready,
-        "B" => TaskState::Blocked,
-        "S" => TaskState::Suspended,
-        "D" => TaskState::Deleted,
-        _ => return None,
-    };
+        "R" => Some(TaskState::Running),
+        "r" => Some(TaskState::Ready),
+        "B" => Some(TaskState::Blocked),
+        "S" => Some(TaskState::Suspended),
+        "D" => Some(TaskState::Deleted),
+        _ => None,
+    }?;
 
     let mut name: heapless::String<MAX_NAME_LEN> = heapless::String::new();
     let _ = name.push_str(name_str);
@@ -180,16 +181,16 @@ fn parse_startup(msg: &str) -> Option<Startup> {
 }
 
 fn parse_mac(s: &str) -> Option<[u8; 6]> {
-    let mut mac = [0u8; 6];
-    let mut count = 0usize;
-    for part in s.split(':') {
-        if count >= 6 {
-            return None;
-        }
-        mac[count] = u8::from_str_radix(part, 16).ok()?;
-        count += 1;
-    }
-    (count == 6).then_some(mac)
+    let mut it = s.split(':');
+    let mac = [
+        u8::from_str_radix(it.next()?, 16).ok()?,
+        u8::from_str_radix(it.next()?, 16).ok()?,
+        u8::from_str_radix(it.next()?, 16).ok()?,
+        u8::from_str_radix(it.next()?, 16).ok()?,
+        u8::from_str_radix(it.next()?, 16).ok()?,
+        u8::from_str_radix(it.next()?, 16).ok()?,
+    ];
+    it.next().is_none().then_some(mac)
 }
 
 fn parse_reset_reason(s: &str) -> ResetReason {
@@ -261,7 +262,7 @@ mod tests {
         let n = fmt::format_telemetry_line(frame, &mut buf).unwrap();
         let line = core::str::from_utf8(&buf[..n]).unwrap();
         let msg = strip_prefix(line);
-        match parse(msg).unwrap() {
+        match parse(0, msg).unwrap() {
             Message::Frame(f) => f,
             other => panic!("expected Frame, got {other:?}"),
         }
@@ -272,7 +273,7 @@ mod tests {
         let n = fmt::format_start_line(0, startup, &mut buf).unwrap();
         let line = core::str::from_utf8(&buf[..n]).unwrap();
         let msg = strip_prefix(line);
-        match parse(msg).unwrap() {
+        match parse(0, msg).unwrap() {
             Message::Startup(s) => s,
             other => panic!("expected Startup, got {other:?}"),
         }
@@ -415,6 +416,7 @@ mod tests {
             ResetReason::Brownout,
             ResetReason::DeepSleep,
             ResetReason::External,
+            ResetReason::Unknown,
         ];
         for reason in reasons {
             let mut chip = heapless::String::new();
@@ -464,7 +466,7 @@ mod tests {
         let n = fmt::format_parts_line(0, &parts, &mut buf).unwrap();
         let line = core::str::from_utf8(&buf[..n]).unwrap();
         let msg = strip_prefix(line);
-        let parsed = match parse(msg).unwrap() {
+        let parsed = match parse(0, msg).unwrap() {
             Message::Partitions(p) => p,
             other => panic!("expected Partitions, got {other:?}"),
         };
@@ -480,7 +482,7 @@ mod tests {
 
     #[test]
     fn parse_empty_parts_line() {
-        match parse("parts").unwrap() {
+        match parse(0, "parts").unwrap() {
             Message::Partitions(p) => assert!(p.is_empty()),
             other => panic!("expected Partitions, got {other:?}"),
         }
@@ -489,16 +491,19 @@ mod tests {
     #[test]
     fn parse_malformed_returns_none() {
         assert!(parse(
+            0,
             "heap=notanumber/327680 min=0 frag=0 iram=0 psram=0 cpu=0 tasks="
         )
         .is_none());
-        assert!(parse("start ").is_none());
+        assert!(parse(0, "start ").is_none());
     }
 
     #[test]
     fn parse_frame_optional_fields_absent() {
-        let frame =
-            parse("heap=100/200 min=50 frag=30 iram=10 psram=0 cpu=10 tasks=");
+        let frame = parse(
+            0,
+            "heap=100/200 min=50 frag=30 iram=10 psram=0 cpu=10 tasks=",
+        );
         let f = match frame.unwrap() {
             Message::Frame(f) => f,
             other => panic!("{other:?}"),
@@ -533,7 +538,7 @@ mod tests {
             ),
         ];
         for (s, expected) in cases {
-            let f = match parse(s).unwrap() {
+            let f = match parse(0, s).unwrap() {
                 Message::Frame(f) => f,
                 other => panic!("{other:?}"),
             };

@@ -386,10 +386,10 @@ fn frame_metric_lines(
         ));
     }
     lines.push(Line::from(""));
-    for (i, &usage) in f.cpu_usage.iter().enumerate() {
+    lines.extend(f.cpu_usage.iter().enumerate().map(|(i, &usage)| {
         let cpu_ratio = f64::from(usage) / 100.0;
         let cpu_color = cpu_bar_color(usage);
-        lines.push(mline(
+        mline(
             vec![
                 Span::styled(format!("CPU{i}  "), label),
                 Span::styled(
@@ -399,8 +399,8 @@ fn frame_metric_lines(
                 Span::styled(format!("  {usage}%"), value_style),
             ],
             col_width,
-        ));
-    }
+        )
+    }));
     if let Some(rssi) = f.wifi_rssi {
         lines.push(Line::from(""));
         lines.push(mline(
@@ -567,10 +567,7 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) 
     app.set_inspector_max_scroll(max_scroll);
     let skip = app.inspector_scroll().min(max_scroll);
 
-    frame.render_widget(
-        Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()),
-        content_area,
-    );
+    frame.render_widget(Paragraph::new(lines[skip..].to_vec()), content_area);
 }
 
 fn word_wrap(text: &str, width: usize) -> Vec<String> {
@@ -612,32 +609,33 @@ fn truncate_line(s: impl Into<String>, max_chars: usize) -> String {
 fn truncate_line_spans(line: Line<'_>, max_chars: usize) -> Line<'_> {
     let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
     if total <= max_chars {
-        return line;
-    }
-    let budget = max_chars.saturating_sub(1);
-    let mut out: Vec<Span<'_>> = Vec::new();
-    let mut used = 0usize;
-    for span in line.spans {
-        if used >= budget {
-            break;
+        line
+    } else {
+        let budget = max_chars.saturating_sub(1);
+        let mut out: Vec<Span<'_>> = Vec::new();
+        let mut used = 0usize;
+        for span in line.spans {
+            if used >= budget {
+                break;
+            }
+            let count = span.content.chars().count();
+            if used + count <= budget {
+                used += count;
+                out.push(span);
+            } else {
+                let need = budget - used;
+                let cut = span
+                    .content
+                    .char_indices()
+                    .nth(need)
+                    .map_or(span.content.len(), |(i, _)| i);
+                out.push(Span::styled(span.content[..cut].to_string(), span.style));
+                used = budget;
+            }
         }
-        let count = span.content.chars().count();
-        if used + count <= budget {
-            used += count;
-            out.push(span);
-        } else {
-            let need = budget - used;
-            let cut = span
-                .content
-                .char_indices()
-                .nth(need)
-                .map_or(span.content.len(), |(i, _)| i);
-            out.push(Span::styled(span.content[..cut].to_string(), span.style));
-            used = budget;
-        }
+        out.push(Span::raw("…"));
+        Line::from(out)
     }
-    out.push(Span::raw("…"));
-    Line::from(out)
 }
 
 fn format_bytes(bytes: u32) -> String {
@@ -1002,7 +1000,8 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
 
     let filter = app.filter();
     let levels = filter::State::levels();
-    let all_tags: Vec<&str> = filter.known_tags_iter().collect();
+    let all_tags: Vec<&str> =
+        filter.known_tags().iter().map(String::as_str).collect();
     let any_tags = !filter.known_tags().is_empty();
     let search_focused = filter.is_search_focused();
 

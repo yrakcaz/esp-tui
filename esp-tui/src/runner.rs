@@ -34,10 +34,10 @@ fn begin_connect(port: &str, baud: u32, tx: &mpsc::UnboundedSender<event::Messag
     let (src_tx, src_rx) = watch::channel(false);
     let port_name = port.to_owned();
     let tx_task = tx.clone();
-    let _handle = tokio::task::spawn_blocking(move || {
+    drop(tokio::task::spawn_blocking(move || {
         serial::Port::new(&port_name, baud)
             .connect_and_read(&tx_task, &src_rx, src_tx);
-    });
+    }));
 }
 
 // After flash/erase the chip is already reset by espflash and device info was
@@ -52,7 +52,7 @@ fn begin_reconnect(
     let (src_tx, src_rx) = watch::channel(false);
     let port_name = port.to_owned();
     let tx_task = tx.clone();
-    let _handle = tokio::task::spawn_blocking(move || {
+    drop(tokio::task::spawn_blocking(move || {
         // Wait for the chip to finish its espflash-initiated reset and for any
         // USB re-enumeration to settle before asserting our own reset.
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -60,7 +60,7 @@ fn begin_reconnect(
         std::thread::sleep(std::time::Duration::from_millis(500));
         serial::Port::new(&port_name, baud)
             .connect_and_read(&tx_task, &src_rx, src_tx);
-    });
+    }));
 }
 
 fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
