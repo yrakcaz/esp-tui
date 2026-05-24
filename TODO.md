@@ -44,6 +44,7 @@
 
 - [ ] `esp-tui agent install` CLI subcommand (deliver pre-built `.a` to user project)
 - [ ] Per-pane independent resizing (adjust split ratio with keybindings)
+- [ ] Consider surfacing currently parsed-but-unused agent fields in the inspector: reset reason (`Startup::reason`), core count (`Startup::cores`), silicon revision (`Startup::revision`), heap fragmentation (`Frame::heap_frag`), and frame timestamp (`Frame::timestamp_ms`)
 - [ ] Revisit build system: once a release mechanism is in place (pre-built `.a` assets on GitHub Releases), evaluate whether `cargo xtask build-agent` is still the right developer-facing entry point, whether CI artifact caching is worth adding, and whether any of the current workarounds (`crate-type = ["lib", "staticlib"]`, `target_os` guards, `load_esp_env` parsing) can be simplified
 - [ ] Revisit Rust-native integration: evaluate whether to publish `esp-agent` as a Cargo dependency with a safe `configure()` API (requires solving panic handler conflicts with `esp-idf-sys` and the linker inclusion problem without user-side `build.rs` changes)
 
