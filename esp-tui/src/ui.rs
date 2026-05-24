@@ -550,24 +550,19 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) 
     let col_width = usize::from(content_area.width);
     if app.port_name().is_none() {
         frame.render_widget(
-            Paragraph::new(truncate_line(
-                "Connect a device to begin.".to_owned(),
-                col_width,
-            ))
-            .style(Style::default().fg(Color::DarkGray)),
+            Paragraph::new("Connect a device to begin.")
+                .style(Style::default().fg(Color::DarkGray))
+                .wrap(ratatui::widgets::Wrap { trim: false }),
             content_area,
         );
-        return;
+    } else {
+        let lines = build_inspector_lines(app, col_width);
+        let viewport = usize::from(content_area.height);
+        let max_scroll = lines.len().saturating_sub(viewport);
+        app.set_inspector_max_scroll(max_scroll);
+        let skip = app.inspector_scroll().min(max_scroll);
+        frame.render_widget(Paragraph::new(lines[skip..].to_vec()), content_area);
     }
-
-    let lines = build_inspector_lines(app, col_width);
-
-    let viewport = usize::from(content_area.height);
-    let max_scroll = lines.len().saturating_sub(viewport);
-    app.set_inspector_max_scroll(max_scroll);
-    let skip = app.inspector_scroll().min(max_scroll);
-
-    frame.render_widget(Paragraph::new(lines[skip..].to_vec()), content_area);
 }
 
 fn word_wrap(text: &str, width: usize) -> Vec<String> {
