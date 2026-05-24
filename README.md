@@ -30,14 +30,14 @@ Works with any ESP32 firmware: C, C++, Rust, Arduino.
 - `--baud <rate>` CLI flag
 - Port auto-reconnect after flash or erase
 
-**Phase 3 (current)**
+**Phase 3**
 
 - `esp-agent`: a zero-dependency `no_std` static library you link into ESP32 firmware
 - Auto-starts a FreeRTOS task on boot via an `.init_array` constructor; no changes to `app_main` required
 - Emits heap, CPU, WiFi RSSI, NVS, and task-list telemetry as ESP-IDF VERBOSE log lines (tag `esp_agent`); parsed by esp-tui to populate the System Inspector pane, and readable in any serial monitor
 - Optional override via `esp_agent_configure(interval_ms)` for custom sampling interval
 - Builds a `.a` for all five ESP32 targets via `cargo xtask build agent` (ESP32, S2, S3, C3, C6)
-- System Inspector pane with live heap gauges, per-core CPU bars, WiFi RSSI, NVS usage, and a scrollable task table; graceful fallback messages when no device or agent is connected
+- System Inspector pane with live heap gauges, per-core CPU bars, WiFi RSSI, NVS usage, scrollable task table, and partition table viewer; graceful fallback messages when no device or agent is connected
 - Pane focus system: `Tab` cycles between the Serial Monitor and System Inspector; `Ctrl-F` opens the filter popup with a live search bar for tag filtering
 
 ---
@@ -275,5 +275,5 @@ See the [Development](#development) section above.
 |---|---|---|
 | 1 | Serial monitor MVP | Complete |
 | 2 | Flash integration (espflash, progress bar, board info) | Complete |
-| 3 | `esp-agent` embedded library + System Inspector pane | In progress |
+| 3 | `esp-agent` embedded library + System Inspector pane | Complete |
 | 4 | Polish | Planned |
