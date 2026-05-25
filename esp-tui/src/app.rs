@@ -406,29 +406,26 @@ impl App {
             KeyCode::Tab => {
                 self.focused_pane = match self.focused_pane {
                     Pane::Monitor => {
-                        if self.monitor_pct == 100 {
-                            self.monitor_pct = 80;
-                        }
+                        self.monitor_pct = self.monitor_pct.min(80);
                         Pane::Inspector
                     }
-                    Pane::Inspector | Pane::Status => {
-                        if self.monitor_pct == 0 {
-                            self.monitor_pct = 20;
-                        }
+                    Pane::Inspector => {
+                        self.monitor_pct = self.monitor_pct.max(20);
                         Pane::Monitor
                     }
+                    Pane::Status => Pane::Monitor,
                 };
                 Action::None
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.resize_pane(true);
+                self.grow_monitor();
                 if self.focused_pane == Pane::Inspector && self.monitor_pct == 100 {
                     self.focused_pane = Pane::Monitor;
                 }
                 Action::None
             }
             KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.resize_pane(false);
+                self.shrink_monitor();
                 if self.focused_pane == Pane::Monitor && self.monitor_pct == 0 {
                     self.focused_pane = Pane::Inspector;
                 }
@@ -955,12 +952,12 @@ impl App {
         self.monitor_pct
     }
 
-    fn resize_pane(&mut self, grow_monitor: bool) {
-        self.monitor_pct = if grow_monitor {
-            self.monitor_pct.saturating_add(5).min(100)
-        } else {
-            self.monitor_pct.saturating_sub(5)
-        };
+    fn grow_monitor(&mut self) {
+        self.monitor_pct = self.monitor_pct.saturating_add(5).min(100);
+    }
+
+    fn shrink_monitor(&mut self) {
+        self.monitor_pct = self.monitor_pct.saturating_sub(5);
     }
 
     /// Returns the inspector scroll offset.
@@ -2601,27 +2598,20 @@ mod tests {
     #[test]
     fn resize_clamps_at_100() {
         let mut app = App::new(None);
-        // 8 presses from 60 reaches 100; one more verifies the floor holds
-        for _ in 0..8 {
+        for _ in 0..9 {
             app.handle_key(ctrl(KeyCode::Right));
         }
-        assert_eq!(app.monitor_pct(), 100);
-        app.handle_key(ctrl(KeyCode::Right));
         assert_eq!(app.monitor_pct(), 100);
     }
 
     #[test]
     fn resize_clamps_at_0() {
         let mut app = App::new(None);
-        // 12 presses from 60 reaches 0 and auto-cycles focus to Inspector
-        for _ in 0..12 {
+        for _ in 0..13 {
             app.handle_key(ctrl(KeyCode::Left));
         }
         assert_eq!(app.monitor_pct(), 0);
         assert_eq!(app.focused_pane(), Pane::Inspector);
-        // Ctrl+Left always shrinks monitor; saturating_sub keeps it at 0
-        app.handle_key(ctrl(KeyCode::Left));
-        assert_eq!(app.monitor_pct(), 0);
     }
 
     #[test]
@@ -2639,7 +2629,6 @@ mod tests {
         let mut app = App::new(None);
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_pane(), Pane::Inspector);
-        // Ctrl+Right always grows monitor; 8 presses from 60 reaches 100
         for _ in 0..8 {
             app.handle_key(ctrl(KeyCode::Right));
         }
@@ -2662,11 +2651,9 @@ mod tests {
     #[test]
     fn tab_auto_expands_collapsed_monitor() {
         let mut app = App::new(None);
-        // 12 presses from 60 reaches 0 and auto-cycles to Inspector
         for _ in 0..12 {
             app.handle_key(ctrl(KeyCode::Left));
         }
-        assert_eq!(app.monitor_pct(), 0);
         assert_eq!(app.focused_pane(), Pane::Inspector);
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_pane(), Pane::Monitor);

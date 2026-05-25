@@ -590,8 +590,13 @@ fn word_wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-fn clip_title(title: &str, area_width: u16) -> String {
-    truncate_line(title, usize::from(area_width).saturating_sub(2))
+fn clip_title(title: &str, area_width: u16) -> std::borrow::Cow<'_, str> {
+    let max = usize::from(area_width).saturating_sub(2);
+    if title.chars().count() <= max {
+        std::borrow::Cow::Borrowed(title)
+    } else {
+        std::borrow::Cow::Owned(truncate_line(title, max))
+    }
 }
 
 fn truncate_line(s: impl Into<String>, max_chars: usize) -> String {
@@ -1383,6 +1388,30 @@ mod tests {
     fn truncate_line_handles_multibyte() {
         let s = "héllo".to_string();
         assert_eq!(super::truncate_line(s, 4), "hél…");
+    }
+
+    #[test]
+    fn clip_title_returns_borrowed_when_fits() {
+        let title = " Status ";
+        let result = super::clip_title(title, 20);
+        assert_eq!(result, title);
+    }
+
+    #[test]
+    fn clip_title_truncates_when_area_too_narrow() {
+        let result = super::clip_title(" Serial Monitor ", 12);
+        assert!(result.ends_with('…'));
+        assert!(result.len() < " Serial Monitor ".len());
+    }
+
+    #[test]
+    fn clip_title_zero_width_area_yields_ellipsis() {
+        assert_eq!(super::clip_title(" System Inspector ", 0), "…");
+    }
+
+    #[test]
+    fn clip_title_area_of_two_yields_ellipsis() {
+        assert_eq!(super::clip_title(" System Inspector ", 2), "…");
     }
 
     #[test]
