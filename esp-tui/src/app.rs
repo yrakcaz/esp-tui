@@ -73,6 +73,7 @@ pub(crate) struct App {
     inspector_scroll: usize,
     inspector_max_scroll: Cell<usize>,
     focused_pane: Pane,
+    monitor_pct: u16,
     filter: filter::State,
     port_name: Option<String>,
     port_cmd_tx: Option<std::sync::mpsc::Sender<serial::PortCommand>>,
@@ -113,6 +114,7 @@ impl App {
             inspector_scroll: 0,
             inspector_max_scroll: Cell::new(0),
             focused_pane: Pane::Monitor,
+            monitor_pct: 60,
             filter: filter::State::new(),
             port_name,
             port_cmd_tx: None,
@@ -403,10 +405,30 @@ impl App {
             KeyCode::Char('c') => Action::ScanPorts,
             KeyCode::Tab => {
                 self.focused_pane = match self.focused_pane {
-                    Pane::Monitor => Pane::Inspector,
-                    Pane::Inspector => Pane::Status,
+                    Pane::Monitor => {
+                        self.monitor_pct = self.monitor_pct.min(80);
+                        Pane::Inspector
+                    }
+                    Pane::Inspector => {
+                        self.monitor_pct = self.monitor_pct.max(20);
+                        Pane::Monitor
+                    }
                     Pane::Status => Pane::Monitor,
                 };
+                Action::None
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.grow_monitor();
+                if self.focused_pane == Pane::Inspector && self.monitor_pct == 100 {
+                    self.focused_pane = Pane::Monitor;
+                }
+                Action::None
+            }
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.shrink_monitor();
+                if self.focused_pane == Pane::Monitor && self.monitor_pct == 0 {
+                    self.focused_pane = Pane::Inspector;
+                }
                 Action::None
             }
             KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
@@ -920,6 +942,24 @@ impl App {
         self.focused_pane
     }
 
+    /// Returns the Serial Monitor pane width as a percentage of the main area.
+    ///
+    /// # Returns
+    ///
+    /// A value in `[0, 100]`; the Inspector pane takes `100 - monitor_pct`.
+    #[must_use]
+    pub(crate) fn monitor_pct(&self) -> u16 {
+        self.monitor_pct
+    }
+
+    fn grow_monitor(&mut self) {
+        self.monitor_pct = self.monitor_pct.saturating_add(5).min(100);
+    }
+
+    fn shrink_monitor(&mut self) {
+        self.monitor_pct = self.monitor_pct.saturating_sub(5);
+    }
+
     /// Returns the inspector scroll offset.
     ///
     /// # Returns
@@ -1405,8 +1445,6 @@ mod tests {
         assert_eq!(app.focused_pane(), Pane::Monitor);
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_pane(), Pane::Inspector);
-        app.handle_key(key(KeyCode::Tab));
-        assert_eq!(app.focused_pane(), Pane::Status);
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_pane(), Pane::Monitor);
     }
@@ -2515,5 +2553,110 @@ mod tests {
         assert!(app.connected_at().is_none());
         app.set_port("COM1".into());
         assert!(app.connected_at().is_some());
+    }
+
+    #[test]
+    fn monitor_pct_initial_value() {
+        let app = App::new(None);
+        assert_eq!(app.monitor_pct(), 60);
+    }
+
+    #[test]
+    fn ctrl_right_grows_monitor_when_focused() {
+        let mut app = App::new(None);
+        assert_eq!(app.focused_pane(), Pane::Monitor);
+        app.handle_key(ctrl(KeyCode::Right));
+        assert_eq!(app.monitor_pct(), 65);
+    }
+
+    #[test]
+    fn ctrl_left_shrinks_monitor_when_focused() {
+        let mut app = App::new(None);
+        assert_eq!(app.focused_pane(), Pane::Monitor);
+        app.handle_key(ctrl(KeyCode::Left));
+        assert_eq!(app.monitor_pct(), 55);
+    }
+
+    #[test]
+    fn ctrl_right_with_inspector_focused_grows_monitor() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_pane(), Pane::Inspector);
+        app.handle_key(ctrl(KeyCode::Right));
+        assert_eq!(app.monitor_pct(), 65);
+    }
+
+    #[test]
+    fn ctrl_left_with_inspector_focused_shrinks_monitor() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_pane(), Pane::Inspector);
+        app.handle_key(ctrl(KeyCode::Left));
+        assert_eq!(app.monitor_pct(), 55);
+    }
+
+    #[test]
+    fn resize_clamps_at_100() {
+        let mut app = App::new(None);
+        for _ in 0..9 {
+            app.handle_key(ctrl(KeyCode::Right));
+        }
+        assert_eq!(app.monitor_pct(), 100);
+    }
+
+    #[test]
+    fn resize_clamps_at_0() {
+        let mut app = App::new(None);
+        for _ in 0..13 {
+            app.handle_key(ctrl(KeyCode::Left));
+        }
+        assert_eq!(app.monitor_pct(), 0);
+        assert_eq!(app.focused_pane(), Pane::Inspector);
+    }
+
+    #[test]
+    fn ctrl_left_on_monitor_auto_cycles_to_inspector_at_zero() {
+        let mut app = App::new(None);
+        for _ in 0..12 {
+            app.handle_key(ctrl(KeyCode::Left));
+        }
+        assert_eq!(app.monitor_pct(), 0);
+        assert_eq!(app.focused_pane(), Pane::Inspector);
+    }
+
+    #[test]
+    fn ctrl_right_on_inspector_auto_cycles_to_monitor_at_hundred() {
+        let mut app = App::new(None);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_pane(), Pane::Inspector);
+        for _ in 0..8 {
+            app.handle_key(ctrl(KeyCode::Right));
+        }
+        assert_eq!(app.monitor_pct(), 100);
+        assert_eq!(app.focused_pane(), Pane::Monitor);
+    }
+
+    #[test]
+    fn tab_auto_expands_collapsed_inspector() {
+        let mut app = App::new(None);
+        for _ in 0..8 {
+            app.handle_key(ctrl(KeyCode::Right));
+        }
+        assert_eq!(app.monitor_pct(), 100);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_pane(), Pane::Inspector);
+        assert_eq!(app.monitor_pct(), 80);
+    }
+
+    #[test]
+    fn tab_auto_expands_collapsed_monitor() {
+        let mut app = App::new(None);
+        for _ in 0..12 {
+            app.handle_key(ctrl(KeyCode::Left));
+        }
+        assert_eq!(app.focused_pane(), Pane::Inspector);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.focused_pane(), Pane::Monitor);
+        assert_eq!(app.monitor_pct(), 20);
     }
 }
