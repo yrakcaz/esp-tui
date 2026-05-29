@@ -37,7 +37,7 @@ Works with any ESP32 firmware: C, C++, Rust, Arduino.
 - Emits heap, CPU, WiFi RSSI, NVS, and task-list telemetry as ESP-IDF VERBOSE log lines (tag `esp_agent`); parsed by esp-tui to populate the System Inspector pane, and readable in any serial monitor
 - Optional override via `esp_agent_configure(interval_ms)` for custom sampling interval
 - Builds a `.a` for all five ESP32 targets via `cargo xtask build agent` (ESP32, S2, S3, C3, C6)
-- System Inspector pane with live heap gauges, per-core CPU bars, WiFi RSSI, NVS usage, scrollable task table, and partition table viewer; graceful fallback messages when no device or agent is connected
+- System Inspector pane with live heap gauges (free/total/low-water/largest block), per-core CPU bars with ASCII sparklines showing the last 60 samples, WiFi RSSI and channel, NVS usage, uptime, scrollable task table, and partition table viewer; board info section shows chip model, cores, silicon revision, reset reason, flash size, and MAC; graceful fallback messages when no device or agent is connected
 - Pane focus system: `Tab` cycles between the Serial Monitor and System Inspector; `Ctrl-F` opens the filter popup with a live search bar for tag filtering
 
 ---
@@ -262,7 +262,7 @@ The periodic telemetry line is emitted every sampling interval:
 V (12345) esp_agent: heap=142336/327680 min=98304 frag=65536 iram=45056 psram=0 cpu=23,45 wifi=-65 nvs=45/512 tasks=main:R:3200:1,wifi_task:B:1856:5
 ```
 
-Fields: `heap=free/total` (bytes), `min` (heap low-water mark), `frag` (largest contiguous free block), `iram` (internal SRAM free), `psram` (PSRAM free, `0` if absent), `cpu` (per-core usage %, comma-separated), `wifi` (RSSI in dBm, omitted if not connected), `nvs=used/total` entries (omitted if NVS not initialised), `tasks` as comma-separated `name:state:stack_hwm:priority` (state chars: `R`=running `r`=ready `B`=blocked `S`=suspended `D`=deleted).
+Fields: `heap=free/total` (bytes), `min` (heap low-water mark), `frag` (largest contiguous free block), `iram` (internal SRAM free), `psram` (PSRAM free, `0` if absent), `cpu` (per-core usage %, comma-separated), `wifi` (RSSI in dBm, omitted if not connected), `wifi_ch` (WiFi channel number, omitted if not connected), `nvs=used/total` entries (omitted if NVS not initialised), `tasks` as comma-separated `name:state:stack_hwm:priority` (state chars: `R`=running `r`=ready `B`=blocked `S`=suspended `D`=deleted).
 
 **Building from source**
 

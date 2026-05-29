@@ -87,6 +87,8 @@ pub struct Frame {
     pub cpu_usage: heapless::Vec<u8, 2>,
     /// Wi-Fi station RSSI in dBm; `None` if not connected.
     pub wifi_rssi: Option<i32>,
+    /// Wi-Fi channel number; `None` if not connected.
+    pub wifi_channel: Option<u8>,
     /// NVS used and total entry counts; `None` if NVS is not initialised.
     pub nvs: Option<(u32, u32)>,
     /// `FreeRTOS` task list.

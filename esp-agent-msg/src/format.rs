@@ -137,10 +137,10 @@ pub fn format_start_line(
 /// Formats a periodic telemetry line into `out`.
 ///
 /// Output: `V ({ms}) esp_agent: heap=F/T min=M frag=G iram=I psram=P
-/// cpu=C0[,C1] [wifi=R] [nvs=U/N] tasks=name:S:hwm:prio,...\r\n`
+/// cpu=C0[,C1] [wifi=R] [wifi_ch=C] [nvs=U/N] tasks=name:S:hwm:prio,...\r\n`
 ///
-/// The `wifi=` field is omitted when `frame.wifi_rssi` is `None`.
-/// The `nvs=` field is omitted when `frame.nvs` is `None`.
+/// The `wifi=` and `wifi_ch=` fields are omitted when the corresponding
+/// `Option` is `None`. The `nvs=` field is omitted when `frame.nvs` is `None`.
 ///
 /// # Arguments
 ///
@@ -182,6 +182,10 @@ pub fn format_telemetry_line(frame: &Frame, out: &mut [u8]) -> Option<usize> {
                 )))
         && frame.wifi_rssi.is_none_or(|rssi| {
             write_bytes(b" wifi=", out, &mut pos) && write_i32(rssi, out, &mut pos)
+        })
+        && frame.wifi_channel.is_none_or(|ch| {
+            write_bytes(b" wifi_ch=", out, &mut pos)
+                && write_u32(u32::from(ch), out, &mut pos)
         })
         && frame.nvs.is_none_or(|(used, total)| {
             write_bytes(b" nvs=", out, &mut pos)
@@ -283,6 +287,7 @@ mod tests {
             heap_psram: 0,
             cpu_usage,
             wifi_rssi,
+            wifi_channel: None,
             nvs,
             tasks: heapless::Vec::new(),
         }
@@ -444,6 +449,28 @@ mod tests {
         let n = format_telemetry_line(&frame, &mut buf).unwrap();
         let s = str_of(&buf, n);
         assert!(!s.contains("wifi="), "{s}");
+    }
+
+    #[test]
+    fn format_telemetry_line_wifi_channel_present() {
+        let frame = Frame {
+            wifi_rssi: Some(-70),
+            wifi_channel: Some(6),
+            ..make_frame(2, None, None)
+        };
+        let mut buf = [0u8; MAX_LINE];
+        let n = format_telemetry_line(&frame, &mut buf).unwrap();
+        let s = str_of(&buf, n);
+        assert!(s.contains("wifi_ch=6"), "{s}");
+    }
+
+    #[test]
+    fn format_telemetry_line_wifi_channel_absent_when_none() {
+        let frame = make_frame(2, None, None);
+        let mut buf = [0u8; MAX_LINE];
+        let n = format_telemetry_line(&frame, &mut buf).unwrap();
+        let s = str_of(&buf, n);
+        assert!(!s.contains("wifi_ch="), "{s}");
     }
 
     #[test]
