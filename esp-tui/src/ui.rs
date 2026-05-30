@@ -263,74 +263,78 @@ fn render_filter_bar(
     );
 }
 
-fn startup_extra_lines(
+fn reset_line(
     s: &agent_msg::Startup,
     label: Style,
     col_width: usize,
-) -> Vec<Line<'static>> {
-    vec![
-        truncate_line_spans(
-            Line::from(vec![
-                Span::styled("Cores  ", label),
-                Span::raw(s.cores.to_string()),
-            ]),
-            col_width,
-        ),
-        truncate_line_spans(
-            Line::from(vec![
-                Span::styled("Rev    ", label),
-                Span::raw(s.revision.to_string()),
-            ]),
-            col_width,
-        ),
-        truncate_line_spans(
-            Line::from(vec![
-                Span::styled("Reset  ", label),
-                Span::raw(reset_reason_label(s.reason)),
-            ]),
-            col_width,
-        ),
-    ]
+) -> Line<'static> {
+    truncate_line_spans(
+        Line::from(vec![
+            Span::styled("Reset  ", label),
+            Span::raw(reset_reason_label(s.reason)),
+        ]),
+        col_width,
+    )
+}
+
+fn cores_line(cores: u8, label: Style, col_width: usize) -> Line<'static> {
+    truncate_line_spans(
+        Line::from(vec![
+            Span::styled("Cores  ", label),
+            Span::raw(cores.to_string()),
+        ]),
+        col_width,
+    )
 }
 
 fn board_info_lines(app: &App, label: Style, col_width: usize) -> Vec<Line<'_>> {
     if let Some(info) = app.device_info() {
-        let mut lines = vec![
-            truncate_line_spans(
-                Line::from(vec![
-                    Span::styled("Board  ", label),
-                    Span::raw(info.chip()),
-                ]),
-                col_width,
-            ),
-            truncate_line_spans(
-                Line::from(vec![
-                    Span::styled("Flash  ", label),
-                    Span::raw(info.flash_size()),
-                ]),
-                col_width,
-            ),
-            truncate_line_spans(
-                Line::from(vec![
-                    Span::styled("MAC    ", label),
-                    Span::raw(info.mac_address()),
-                ]),
-                col_width,
-            ),
-        ];
-        if let Some(s) = app.agent_startup() {
-            lines.extend(startup_extra_lines(s, label, col_width));
+        let startup = app.agent_startup();
+        let mut lines = vec![truncate_line_spans(
+            Line::from(vec![Span::styled("Board  ", label), Span::raw(info.chip())]),
+            col_width,
+        )];
+        if let Some(s) = startup {
+            lines.push(cores_line(s.cores, label, col_width));
+        }
+        lines.push(truncate_line_spans(
+            Line::from(vec![
+                Span::styled("Flash  ", label),
+                Span::raw(info.flash_size()),
+            ]),
+            col_width,
+        ));
+        lines.push(truncate_line_spans(
+            Line::from(vec![
+                Span::styled("MAC    ", label),
+                Span::raw(info.mac_address()),
+            ]),
+            col_width,
+        ));
+        if let Some(s) = startup {
+            lines.push(reset_line(s, label, col_width));
         }
         lines
     } else if let Some(s) = app.agent_startup() {
-        let mut lines = vec![
+        let board_label = if s.revision > 0 {
+            format!(
+                "{} (rev v{}.{})",
+                s.chip,
+                s.revision / 100,
+                s.revision % 100
+            )
+        } else {
+            s.chip.to_string()
+        };
+        vec![
             truncate_line_spans(
                 Line::from(vec![
                     Span::styled("Board  ", label),
-                    Span::raw(s.chip.as_str()),
+                    Span::raw(board_label),
                 ]),
                 col_width,
             ),
+            cores_line(s.cores, label, col_width),
             truncate_line_spans(
                 Line::from(vec![
                     Span::styled("Flash  ", label),
@@ -345,9 +349,8 @@ fn board_info_lines(app: &App, label: Style, col_width: usize) -> Vec<Line<'_>> 
                 ]),
                 col_width,
             ),
-        ];
-        lines.extend(startup_extra_lines(s, label, col_width));
-        lines
+            reset_line(s, label, col_width),
+        ]
     } else {
         vec![]
     }
@@ -438,7 +441,7 @@ fn heap_section_lines(
     if !heap_history.is_empty() {
         lines.push(mline(
             vec![
-                Span::styled("      ", label),
+                Span::styled(" hist ", label),
                 Span::styled(
                     sparkline_str(heap_history, f.heap_total, sparkline_w),
                     agent_bar_style(is_stale, Color::Green),
@@ -450,7 +453,7 @@ fn heap_section_lines(
     lines
 }
 
-fn wifi_nvs_uptime_lines(
+fn wifi_nvs_lines(
     f: &agent_msg::Frame,
     label: Style,
     value_style: Style,
@@ -479,13 +482,6 @@ fn wifi_nvs_uptime_lines(
             col_width,
         ));
     }
-    lines.push(mline(
-        vec![
-            Span::styled("Up    ", label),
-            Span::styled(format_uptime(f.timestamp_ms), value_style),
-        ],
-        col_width,
-    ));
     lines
 }
 
@@ -526,7 +522,7 @@ fn frame_metric_lines(
         if !cpu_history[i].is_empty() {
             lines.push(mline(
                 vec![
-                    Span::styled("      ", label),
+                    Span::styled(" hist ", label),
                     Span::styled(
                         sparkline_str(&cpu_history[i], 100, sparkline_w),
                         agent_bar_style(is_stale, cpu_color),
@@ -536,7 +532,7 @@ fn frame_metric_lines(
             ));
         }
     });
-    lines.extend(wifi_nvs_uptime_lines(f, label, value_style, col_width));
+    lines.extend(wifi_nvs_lines(f, label, value_style, col_width));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "Tasks",
@@ -559,6 +555,16 @@ fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
     let label = Style::default().fg(Color::DarkGray);
     let value_style = if is_stale { label } else { Style::default() };
     let mut lines: Vec<Line<'a>> = board_info_lines(app, label, col_width);
+
+    if let Some(f) = app.agent_frame() {
+        lines.push(mline(
+            vec![
+                Span::styled("Up     ", label),
+                Span::styled(format_uptime(f.timestamp_ms), value_style),
+            ],
+            col_width,
+        ));
+    }
 
     if let Some(parts) = app.agent_partitions() {
         lines.push(Line::from(""));
@@ -825,13 +831,16 @@ fn sparkline_str(
 ) -> String {
     const LEVELS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let max = u64::from(max_val.max(1));
-    let skip = data.len().saturating_sub(width);
     let pad = width.saturating_sub(data.len().min(width));
-    std::iter::repeat_n(' ', pad)
-        .chain(data.iter().skip(skip).map(|&v| {
-            let idx = (u64::from(v) * 8 / max).min(8) as usize;
+    // Newest sample is on the left; old data scrolls right and falls off.
+    data.iter()
+        .rev()
+        .take(width)
+        .map(|&v| {
+            let idx = (u64::from(v) * 8 / max).min(8).max(u64::from(v > 0)) as usize;
             LEVELS[idx]
-        }))
+        })
+        .chain(std::iter::repeat_n(' ', pad))
         .collect()
 }
 
@@ -1681,30 +1690,33 @@ mod tests {
     }
 
     #[test]
-    fn sparkline_str_ascending_data_produces_ascending_chars() {
+    fn sparkline_str_ascending_data_newest_shown_first() {
+        // data: oldest=0 .. newest=100; after reversal left=newest=100, right=oldest=0
         let data: std::collections::VecDeque<u32> = vec![0, 25, 50, 75, 100].into();
         let s = super::sparkline_str(&data, 100, 5);
         let chars: Vec<char> = s.chars().collect();
         for window in chars.windows(2) {
-            assert!(window[0] <= window[1], "not ascending: {s}");
+            assert!(window[0] >= window[1], "not descending (newest-left): {s}");
         }
     }
 
     #[test]
-    fn sparkline_str_pads_left_when_less_data_than_width() {
+    fn sparkline_str_pads_right_when_less_data_than_width() {
+        // newest item appears at position 0 (left); padding fills the right
         let data: std::collections::VecDeque<u32> = vec![100].into();
         let s = super::sparkline_str(&data, 100, 5);
         assert_eq!(s.chars().count(), 5);
-        assert_eq!(&s[..4], "    ");
-        assert_eq!(&s[4..], "█");
+        assert_eq!(s.chars().next().unwrap(), '█');
+        assert_eq!(&s[3..], "    ");
     }
 
     #[test]
-    fn sparkline_str_truncates_left_when_more_data_than_width() {
+    fn sparkline_str_keeps_newest_when_truncating() {
+        // only the two newest items (100, 0) fit; newest is on the left
         let data: std::collections::VecDeque<u32> = vec![0, 0, 0, 100].into();
         let s = super::sparkline_str(&data, 100, 2);
         assert_eq!(s.chars().count(), 2);
-        assert_eq!(s.chars().last().unwrap(), '█');
+        assert_eq!(s.chars().next().unwrap(), '█');
     }
 
     #[test]

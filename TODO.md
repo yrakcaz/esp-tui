@@ -56,6 +56,7 @@
 - [ ] Defmt binary log format support
 - [ ] Multi-device tab switching
 - [ ] `esp-tui.toml` config file (port, baud, ELF path, buffer size, agent options)
+- [ ] Additional CLI flags: e.g. `--pane monitor|inspector` to open with only one pane visible, and similar startup-layout options
 - [ ] Configurable keybindings, potentially with preset modes (e.g. vim, emacs); keybindings like j/k were intentionally left out for now pending this
 - [ ] Configurable color scheme (log level colors, UI chrome) via esp-tui.toml
 - [ ] `--project` flag to auto-detect ELF from Cargo project
