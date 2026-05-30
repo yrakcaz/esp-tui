@@ -263,26 +263,27 @@ fn render_filter_bar(
     );
 }
 
+fn mline(spans: Vec<Span<'static>>, col_width: usize) -> Line<'static> {
+    truncate_line_spans(Line::from(spans), col_width)
+}
+
 fn reset_line(
     s: &agent_msg::Startup,
     label: Style,
     col_width: usize,
 ) -> Line<'static> {
-    truncate_line_spans(
-        Line::from(vec![
+    mline(
+        vec![
             Span::styled("Reset  ", label),
             Span::raw(reset_reason_label(s.reason)),
-        ]),
+        ],
         col_width,
     )
 }
 
 fn cores_line(cores: u8, label: Style, col_width: usize) -> Line<'static> {
-    truncate_line_spans(
-        Line::from(vec![
-            Span::styled("Cores  ", label),
-            Span::raw(cores.to_string()),
-        ]),
+    mline(
+        vec![Span::styled("Cores  ", label), Span::raw(cores.to_string())],
         col_width,
     )
 }
@@ -327,26 +328,20 @@ fn board_info_lines(app: &App, label: Style, col_width: usize) -> Vec<Line<'_>> 
             s.chip.to_string()
         };
         vec![
-            truncate_line_spans(
-                Line::from(vec![
-                    Span::styled("Board  ", label),
-                    Span::raw(board_label),
-                ]),
+            mline(
+                vec![Span::styled("Board  ", label), Span::raw(board_label)],
                 col_width,
             ),
             cores_line(s.cores, label, col_width),
-            truncate_line_spans(
-                Line::from(vec![
+            mline(
+                vec![
                     Span::styled("Flash  ", label),
                     Span::raw(format_bytes(s.flash_size)),
-                ]),
+                ],
                 col_width,
             ),
-            truncate_line_spans(
-                Line::from(vec![
-                    Span::styled("MAC    ", label),
-                    Span::raw(format_mac(s.mac)),
-                ]),
+            mline(
+                vec![Span::styled("MAC    ", label), Span::raw(format_mac(s.mac))],
                 col_width,
             ),
             reset_line(s, label, col_width),
@@ -354,10 +349,6 @@ fn board_info_lines(app: &App, label: Style, col_width: usize) -> Vec<Line<'_>> 
     } else {
         vec![]
     }
-}
-
-fn mline(spans: Vec<Span<'static>>, col_width: usize) -> Line<'static> {
-    truncate_line_spans(Line::from(spans), col_width)
 }
 
 fn cpu_bar_color(usage: u8) -> Color {
@@ -377,8 +368,8 @@ fn heap_section_lines(
     is_stale: bool,
     col_width: usize,
     heap_history: &std::collections::VecDeque<u32>,
-    sparkline_w: usize,
 ) -> Vec<Line<'static>> {
+    let sparkline_w = (col_width.saturating_sub(6)).min(30);
     let heap_ratio = f64::from(f.heap_free) / f64::from(f.heap_total.max(1));
     let mut lines = vec![
         mline(
@@ -495,15 +486,8 @@ fn frame_metric_lines(
     cpu_history: &[std::collections::VecDeque<u32>; 2],
 ) -> Vec<Line<'static>> {
     let sparkline_w = (col_width.saturating_sub(6)).min(30);
-    let mut lines = heap_section_lines(
-        f,
-        label,
-        value_style,
-        is_stale,
-        col_width,
-        heap_history,
-        sparkline_w,
-    );
+    let mut lines =
+        heap_section_lines(f, label, value_style, is_stale, col_width, heap_history);
     lines.push(Line::from(""));
     f.cpu_usage.iter().enumerate().for_each(|(i, &usage)| {
         let cpu_ratio = f64::from(usage) / 100.0;
@@ -554,9 +538,10 @@ fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
         .is_some_and(|t| t.elapsed() > Duration::from_secs(5));
     let label = Style::default().fg(Color::DarkGray);
     let value_style = if is_stale { label } else { Style::default() };
+    let frame = app.agent_frame();
     let mut lines: Vec<Line<'a>> = board_info_lines(app, label, col_width);
 
-    if let Some(f) = app.agent_frame() {
+    if let Some(f) = frame {
         lines.push(mline(
             vec![
                 Span::styled("Up     ", label),
@@ -601,7 +586,7 @@ fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
         }));
     }
 
-    if let Some(f) = app.agent_frame() {
+    if let Some(f) = frame {
         lines.push(Line::from(""));
         lines.extend(frame_metric_lines(
             f,
@@ -837,7 +822,8 @@ fn sparkline_str(
         .rev()
         .take(width)
         .map(|&v| {
-            let idx = (u64::from(v) * 8 / max).min(8).max(u64::from(v > 0)) as usize;
+            let raw = (u64::from(v) * 8 / max).min(8) as usize;
+            let idx = if v > 0 { raw.max(1) } else { raw };
             LEVELS[idx]
         })
         .chain(std::iter::repeat_n(' ', pad))

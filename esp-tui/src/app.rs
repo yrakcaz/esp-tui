@@ -171,15 +171,13 @@ impl App {
                             f.heap_free,
                             SPARKLINE_LEN,
                         );
-                        f.cpu_usage.iter().enumerate().take(2).for_each(
-                            |(i, &usage)| {
-                                push_history(
-                                    &mut self.cpu_history[i],
-                                    u32::from(usage),
-                                    SPARKLINE_LEN,
-                                );
-                            },
-                        );
+                        f.cpu_usage.iter().enumerate().for_each(|(i, &usage)| {
+                            push_history(
+                                &mut self.cpu_history[i],
+                                u32::from(usage),
+                                SPARKLINE_LEN,
+                            );
+                        });
                         self.agent_frame = Some(f);
                     }
                     Some(agent_msg::Message::Startup(s)) => {
