@@ -13,6 +13,7 @@ use crate::{elf, filter, flash, log, port, serial};
 pub(crate) const BUFFER_SIZE: usize = 10_000;
 const STATUS_TTL_SECS: u64 = 3;
 pub(crate) const DEFAULT_BAUD: u32 = 115_200;
+/// Number of samples retained per channel in the heap and CPU sparkline history buffers.
 pub(crate) const SPARKLINE_LEN: usize = 60;
 
 /// Outcome of a keypress that requires I/O, returned to the event loop to act on.

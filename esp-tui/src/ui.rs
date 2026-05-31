@@ -325,7 +325,7 @@ fn board_info_lines(app: &App, label: Style, col_width: usize) -> Vec<Line<'_>> 
                 s.revision % 100
             )
         } else {
-            s.chip.to_string()
+            s.chip.as_str().to_owned()
         };
         vec![
             mline(
@@ -368,8 +368,8 @@ fn heap_section_lines(
     is_stale: bool,
     col_width: usize,
     heap_history: &std::collections::VecDeque<u32>,
+    sparkline_w: usize,
 ) -> Vec<Line<'static>> {
-    let sparkline_w = (col_width.saturating_sub(6)).min(30);
     let heap_ratio = f64::from(f.heap_free) / f64::from(f.heap_total.max(1));
     let mut lines = vec![
         mline(
@@ -486,8 +486,15 @@ fn frame_metric_lines(
     cpu_history: &[std::collections::VecDeque<u32>; 2],
 ) -> Vec<Line<'static>> {
     let sparkline_w = (col_width.saturating_sub(6)).min(30);
-    let mut lines =
-        heap_section_lines(f, label, value_style, is_stale, col_width, heap_history);
+    let mut lines = heap_section_lines(
+        f,
+        label,
+        value_style,
+        is_stale,
+        col_width,
+        heap_history,
+        sparkline_w,
+    );
     lines.push(Line::from(""));
     f.cpu_usage.iter().enumerate().for_each(|(i, &usage)| {
         let cpu_ratio = f64::from(usage) / 100.0;
