@@ -371,34 +371,44 @@ fn heap_section_lines(
     sparkline_w: usize,
 ) -> Vec<Line<'static>> {
     let heap_ratio = f64::from(f.heap_free) / f64::from(f.heap_total.max(1));
-    let mut lines = vec![
-        mline(
+    let mut lines = vec![mline(
+        vec![
+            Span::styled("Heap  ", label),
+            Span::styled(
+                inspector_bar(heap_ratio, INSPECTOR_BAR_W),
+                agent_bar_style(is_stale, Color::Green),
+            ),
+            Span::styled(
+                format!(
+                    "  {}/{}",
+                    format_bytes(f.heap_free),
+                    format_bytes(f.heap_total)
+                ),
+                value_style,
+            ),
+        ],
+        col_width,
+    )];
+    if !heap_history.is_empty() {
+        lines.push(mline(
             vec![
-                Span::styled("Heap  ", label),
+                Span::styled(" hist ", label),
                 Span::styled(
-                    inspector_bar(heap_ratio, INSPECTOR_BAR_W),
+                    sparkline_str(heap_history, f.heap_total, sparkline_w),
                     agent_bar_style(is_stale, Color::Green),
                 ),
-                Span::styled(
-                    format!(
-                        "  {}/{}",
-                        format_bytes(f.heap_free),
-                        format_bytes(f.heap_total)
-                    ),
-                    value_style,
-                ),
             ],
             col_width,
-        ),
-        mline(
-            vec![
-                Span::styled("Min   ", label),
-                Span::styled(format_bytes(f.heap_min_free), value_style),
-                Span::styled(" low-water", label),
-            ],
-            col_width,
-        ),
-    ];
+        ));
+    }
+    lines.push(mline(
+        vec![
+            Span::styled("Min   ", label),
+            Span::styled(format_bytes(f.heap_min_free), value_style),
+            Span::styled(" low-water", label),
+        ],
+        col_width,
+    ));
     if f.heap_frag > 0 {
         lines.push(mline(
             vec![
@@ -425,18 +435,6 @@ fn heap_section_lines(
                 Span::styled("PSRAM ", label),
                 Span::styled(format_bytes(f.heap_psram), value_style),
                 Span::styled(" free", label),
-            ],
-            col_width,
-        ));
-    }
-    if !heap_history.is_empty() {
-        lines.push(mline(
-            vec![
-                Span::styled(" hist ", label),
-                Span::styled(
-                    sparkline_str(heap_history, f.heap_total, sparkline_w),
-                    agent_bar_style(is_stale, Color::Green),
-                ),
             ],
             col_width,
         ));
@@ -524,18 +522,87 @@ fn frame_metric_lines(
         }
     });
     lines.extend(wifi_nvs_lines(f, label, value_style, col_width));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "Tasks",
-        label.add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(Span::styled(
-        truncate_line(
-            format!("{:<16}  {:<9}  {:<7}  {}", "Name", "State", "Stack", "Prio"),
-            col_width,
-        ),
-        label,
-    )));
+    lines
+}
+
+fn partition_lines(
+    parts: &heapless::Vec<agent_msg::Partition, { agent_msg::MAX_PARTITIONS }>,
+    label: Style,
+    value_style: Style,
+    col_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Partitions",
+            label.add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            truncate_line(
+                format!("{:<16}  {:<6}  {:<10}  Size", "Label", "Type", "Offset"),
+                col_width,
+            ),
+            label,
+        )),
+    ];
+    lines.extend(parts.iter().map(|p| {
+        let type_str = match p.part_type {
+            agent_msg::PartType::App => "app",
+            agent_msg::PartType::Data => "data",
+            agent_msg::PartType::Unknown => "?",
+        };
+        Line::from(Span::styled(
+            truncate_line(
+                format!(
+                    "{:<16}  {:<6}  0x{:08x}  {}",
+                    p.label.as_str(),
+                    type_str,
+                    p.offset,
+                    format_bytes(p.size),
+                ),
+                col_width,
+            ),
+            value_style,
+        ))
+    }));
+    lines
+}
+
+fn task_lines(
+    tasks: &heapless::Vec<agent_msg::Task, { agent_msg::MAX_TASKS }>,
+    label: Style,
+    value_style: Style,
+    col_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("Tasks", label.add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            truncate_line(
+                format!(
+                    "{:<16}  {:<9}  {:<7}  {}",
+                    "Name", "State", "Stack", "Prio"
+                ),
+                col_width,
+            ),
+            label,
+        )),
+    ];
+    lines.extend(tasks.iter().map(|t| {
+        Line::from(Span::styled(
+            truncate_line(
+                format!(
+                    "{:<16}  {:<9}  {:<7}  {}",
+                    t.name.as_str(),
+                    task_state_label(t.state),
+                    format_bytes(t.hwm),
+                    t.priority,
+                ),
+                col_width,
+            ),
+            value_style,
+        ))
+    }));
     lines
 }
 
@@ -556,44 +623,6 @@ fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
             ],
             col_width,
         ));
-    }
-
-    if let Some(parts) = app.agent_partitions() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Partitions",
-            label.add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(Span::styled(
-            truncate_line(
-                format!("{:<16}  {:<6}  {:<10}  Size", "Label", "Type", "Offset"),
-                col_width,
-            ),
-            label,
-        )));
-        lines.extend(parts.iter().map(|p| {
-            let type_str = match p.part_type {
-                agent_msg::PartType::App => "app",
-                agent_msg::PartType::Data => "data",
-                agent_msg::PartType::Unknown => "?",
-            };
-            Line::from(Span::styled(
-                truncate_line(
-                    format!(
-                        "{:<16}  {:<6}  0x{:08x}  {}",
-                        p.label.as_str(),
-                        type_str,
-                        p.offset,
-                        format_bytes(p.size),
-                    ),
-                    col_width,
-                ),
-                value_style,
-            ))
-        }));
-    }
-
-    if let Some(f) = frame {
         lines.push(Line::from(""));
         lines.extend(frame_metric_lines(
             f,
@@ -604,21 +633,10 @@ fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
             app.heap_history(),
             app.cpu_history(),
         ));
-        lines.extend(f.tasks.iter().map(|t| {
-            Line::from(Span::styled(
-                truncate_line(
-                    format!(
-                        "{:<16}  {:<9}  {:<7}  {}",
-                        t.name.as_str(),
-                        task_state_label(t.state),
-                        format_bytes(t.hwm),
-                        t.priority,
-                    ),
-                    col_width,
-                ),
-                value_style,
-            ))
-        }));
+        if let Some(parts) = app.agent_partitions() {
+            lines.extend(partition_lines(parts, label, value_style, col_width));
+        }
+        lines.extend(task_lines(&f.tasks, label, value_style, col_width));
     } else {
         let baseline = app.agent_last_seen().or_else(|| app.connected_at());
         let timed_out =

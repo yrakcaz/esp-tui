@@ -52,7 +52,8 @@
 - [ ] On macOS, filter `cu.*` entries from port detection: only `tty.*` devices should appear in the selector and auto-connect logic, since `cu.*` is not the correct interface for ESP32 serial communication
 - [ ] Panic/backtrace decoder: addr2line + ELF symbol resolution
 - [x] Historical sparklines for heap and CPU over last N seconds
-- [x] WiFi stats in inspector (RSSI, channel, TX/RX counts)
+- [x] WiFi stats in inspector: RSSI and channel
+- [ ] WiFi TX/RX packet counts in inspector: requires `esp_netif_get_stats`, not available until ESP-IDF v5.4
 - [ ] Defmt binary log format support
 - [ ] Multi-device tab switching
 - [ ] `esp-tui.toml` config file (port, baud, ELF path, buffer size, agent options)
