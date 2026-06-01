@@ -305,11 +305,15 @@ fn run_iteration(
     }
     *prev_total_runtime = curr_total_runtime;
 
-    let wifi_rssi = {
+    let (wifi_rssi, wifi_channel) = {
         let mut ap: WifiApRecord = unsafe { core::mem::zeroed() };
         // SAFETY: ap is properly sized; returns non-zero if WiFi not connected.
         let ret = unsafe { ffi::esp_wifi_sta_get_ap_info(&raw mut ap) };
-        (ret == 0).then_some(i32::from(ap.rssi))
+        if ret == 0 {
+            (Some(i32::from(ap.rssi)), Some(ap.primary))
+        } else {
+            (None, None)
+        }
     };
 
     let nvs = {
@@ -344,6 +348,7 @@ fn run_iteration(
         heap_psram,
         cpu_usage,
         wifi_rssi,
+        wifi_channel,
         nvs,
         tasks,
     };

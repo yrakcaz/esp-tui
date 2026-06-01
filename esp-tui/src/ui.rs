@@ -263,62 +263,92 @@ fn render_filter_bar(
     );
 }
 
+fn mline(spans: Vec<Span<'static>>, col_width: usize) -> Line<'static> {
+    truncate_line_spans(Line::from(spans), col_width)
+}
+
+fn reset_line(
+    s: &agent_msg::Startup,
+    label: Style,
+    col_width: usize,
+) -> Line<'static> {
+    mline(
+        vec![
+            Span::styled("Reset  ", label),
+            Span::raw(reset_reason_label(s.reason)),
+        ],
+        col_width,
+    )
+}
+
+fn cores_line(cores: u8, label: Style, col_width: usize) -> Line<'static> {
+    mline(
+        vec![Span::styled("Cores  ", label), Span::raw(cores.to_string())],
+        col_width,
+    )
+}
+
 fn board_info_lines(app: &App, label: Style, col_width: usize) -> Vec<Line<'_>> {
     if let Some(info) = app.device_info() {
-        vec![
-            truncate_line_spans(
-                Line::from(vec![
-                    Span::styled("Board  ", label),
-                    Span::raw(info.chip()),
-                ]),
-                col_width,
-            ),
-            truncate_line_spans(
-                Line::from(vec![
-                    Span::styled("Flash  ", label),
-                    Span::raw(info.flash_size()),
-                ]),
-                col_width,
-            ),
-            truncate_line_spans(
-                Line::from(vec![
-                    Span::styled("MAC    ", label),
-                    Span::raw(info.mac_address()),
-                ]),
-                col_width,
-            ),
-        ]
+        let startup = app.agent_startup();
+        let mut lines = vec![truncate_line_spans(
+            Line::from(vec![Span::styled("Board  ", label), Span::raw(info.chip())]),
+            col_width,
+        )];
+        if let Some(s) = startup {
+            lines.push(cores_line(s.cores, label, col_width));
+        }
+        lines.push(truncate_line_spans(
+            Line::from(vec![
+                Span::styled("Flash  ", label),
+                Span::raw(info.flash_size()),
+            ]),
+            col_width,
+        ));
+        lines.push(truncate_line_spans(
+            Line::from(vec![
+                Span::styled("MAC    ", label),
+                Span::raw(info.mac_address()),
+            ]),
+            col_width,
+        ));
+        if let Some(s) = startup {
+            lines.push(reset_line(s, label, col_width));
+        }
+        lines
     } else if let Some(s) = app.agent_startup() {
+        let board_label = if s.revision > 0 {
+            format!(
+                "{} (rev v{}.{})",
+                s.chip,
+                s.revision / 100,
+                s.revision % 100
+            )
+        } else {
+            s.chip.as_str().to_owned()
+        };
         vec![
-            truncate_line_spans(
-                Line::from(vec![
-                    Span::styled("Board  ", label),
-                    Span::raw(s.chip.as_str()),
-                ]),
+            mline(
+                vec![Span::styled("Board  ", label), Span::raw(board_label)],
                 col_width,
             ),
-            truncate_line_spans(
-                Line::from(vec![
+            cores_line(s.cores, label, col_width),
+            mline(
+                vec![
                     Span::styled("Flash  ", label),
                     Span::raw(format_bytes(s.flash_size)),
-                ]),
+                ],
                 col_width,
             ),
-            truncate_line_spans(
-                Line::from(vec![
-                    Span::styled("MAC    ", label),
-                    Span::raw(format_mac(s.mac)),
-                ]),
+            mline(
+                vec![Span::styled("MAC    ", label), Span::raw(format_mac(s.mac))],
                 col_width,
             ),
+            reset_line(s, label, col_width),
         ]
     } else {
         vec![]
     }
-}
-
-fn mline(spans: Vec<Span<'static>>, col_width: usize) -> Line<'static> {
-    truncate_line_spans(Line::from(spans), col_width)
 }
 
 fn cpu_bar_color(usage: u8) -> Color {
@@ -331,17 +361,17 @@ fn cpu_bar_color(usage: u8) -> Color {
     }
 }
 
-fn frame_metric_lines(
+fn heap_section_lines(
     f: &agent_msg::Frame,
     label: Style,
     value_style: Style,
     is_stale: bool,
     col_width: usize,
+    heap_history: &std::collections::VecDeque<u32>,
+    sparkline_w: usize,
 ) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
     let heap_ratio = f64::from(f.heap_free) / f64::from(f.heap_total.max(1));
-    lines.push(mline(
+    let mut lines = vec![mline(
         vec![
             Span::styled("Heap  ", label),
             Span::styled(
@@ -358,7 +388,19 @@ fn frame_metric_lines(
             ),
         ],
         col_width,
-    ));
+    )];
+    if !heap_history.is_empty() {
+        lines.push(mline(
+            vec![
+                Span::styled(" hist ", label),
+                Span::styled(
+                    sparkline_str(heap_history, f.heap_total, sparkline_w),
+                    agent_bar_style(is_stale, Color::Green),
+                ),
+            ],
+            col_width,
+        ));
+    }
     lines.push(mline(
         vec![
             Span::styled("Min   ", label),
@@ -367,6 +409,16 @@ fn frame_metric_lines(
         ],
         col_width,
     ));
+    if f.heap_frag > 0 {
+        lines.push(mline(
+            vec![
+                Span::styled("Lrg   ", label),
+                Span::styled(format_bytes(f.heap_frag), value_style),
+                Span::styled(" largest block", label),
+            ],
+            col_width,
+        ));
+    }
     if f.heap_iram > 0 {
         lines.push(mline(
             vec![
@@ -387,28 +439,25 @@ fn frame_metric_lines(
             col_width,
         ));
     }
-    lines.push(Line::from(""));
-    lines.extend(f.cpu_usage.iter().enumerate().map(|(i, &usage)| {
-        let cpu_ratio = f64::from(usage) / 100.0;
-        let cpu_color = cpu_bar_color(usage);
-        mline(
-            vec![
-                Span::styled(format!("CPU{i}  "), label),
-                Span::styled(
-                    inspector_bar(cpu_ratio, INSPECTOR_BAR_W),
-                    agent_bar_style(is_stale, cpu_color),
-                ),
-                Span::styled(format!("  {usage}%"), value_style),
-            ],
-            col_width,
-        )
-    }));
+    lines
+}
+
+fn wifi_nvs_lines(
+    f: &agent_msg::Frame,
+    label: Style,
+    value_style: Style,
+    col_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
     if let Some(rssi) = f.wifi_rssi {
+        let ch_suffix = f
+            .wifi_channel
+            .map_or_else(String::new, |ch| format!("  ch {ch}"));
         lines.push(Line::from(""));
         lines.push(mline(
             vec![
                 Span::styled("WiFi  ", label),
-                Span::styled(format!("{rssi} dBm"), value_style),
+                Span::styled(format!("{rssi} dBm{ch_suffix}"), value_style),
             ],
             col_width,
         ));
@@ -422,18 +471,138 @@ fn frame_metric_lines(
             col_width,
         ));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "Tasks",
-        label.add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(Span::styled(
-        truncate_line(
-            format!("{:<16}  {:<9}  {:<7}  {}", "Name", "State", "Stack", "Prio"),
-            col_width,
-        ),
+    lines
+}
+
+fn frame_metric_lines(
+    f: &agent_msg::Frame,
+    label: Style,
+    value_style: Style,
+    is_stale: bool,
+    col_width: usize,
+    heap_history: &std::collections::VecDeque<u32>,
+    cpu_history: &[std::collections::VecDeque<u32>; 2],
+) -> Vec<Line<'static>> {
+    let sparkline_w = (col_width.saturating_sub(6)).min(30);
+    let mut lines = heap_section_lines(
+        f,
         label,
-    )));
+        value_style,
+        is_stale,
+        col_width,
+        heap_history,
+        sparkline_w,
+    );
+    lines.push(Line::from(""));
+    f.cpu_usage.iter().enumerate().for_each(|(i, &usage)| {
+        let cpu_ratio = f64::from(usage) / 100.0;
+        let cpu_color = cpu_bar_color(usage);
+        lines.push(mline(
+            vec![
+                Span::styled(format!("CPU{i}  "), label),
+                Span::styled(
+                    inspector_bar(cpu_ratio, INSPECTOR_BAR_W),
+                    agent_bar_style(is_stale, cpu_color),
+                ),
+                Span::styled(format!("  {usage}%"), value_style),
+            ],
+            col_width,
+        ));
+        if !cpu_history[i].is_empty() {
+            lines.push(mline(
+                vec![
+                    Span::styled(" hist ", label),
+                    Span::styled(
+                        sparkline_str(&cpu_history[i], 100, sparkline_w),
+                        agent_bar_style(is_stale, cpu_color),
+                    ),
+                ],
+                col_width,
+            ));
+        }
+    });
+    lines.extend(wifi_nvs_lines(f, label, value_style, col_width));
+    lines
+}
+
+fn partition_lines(
+    parts: &heapless::Vec<agent_msg::Partition, { agent_msg::MAX_PARTITIONS }>,
+    label: Style,
+    value_style: Style,
+    col_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Partitions",
+            label.add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            truncate_line(
+                format!("{:<16}  {:<6}  {:<10}  Size", "Label", "Type", "Offset"),
+                col_width,
+            ),
+            label,
+        )),
+    ];
+    lines.extend(parts.iter().map(|p| {
+        let type_str = match p.part_type {
+            agent_msg::PartType::App => "app",
+            agent_msg::PartType::Data => "data",
+            agent_msg::PartType::Unknown => "?",
+        };
+        Line::from(Span::styled(
+            truncate_line(
+                format!(
+                    "{:<16}  {:<6}  0x{:08x}  {}",
+                    p.label.as_str(),
+                    type_str,
+                    p.offset,
+                    format_bytes(p.size),
+                ),
+                col_width,
+            ),
+            value_style,
+        ))
+    }));
+    lines
+}
+
+fn task_lines(
+    tasks: &heapless::Vec<agent_msg::Task, { agent_msg::MAX_TASKS }>,
+    label: Style,
+    value_style: Style,
+    col_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("Tasks", label.add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            truncate_line(
+                format!(
+                    "{:<16}  {:<9}  {:<7}  {}",
+                    "Name", "State", "Stack", "Prio"
+                ),
+                col_width,
+            ),
+            label,
+        )),
+    ];
+    lines.extend(tasks.iter().map(|t| {
+        Line::from(Span::styled(
+            truncate_line(
+                format!(
+                    "{:<16}  {:<9}  {:<7}  {}",
+                    t.name.as_str(),
+                    task_state_label(t.state),
+                    format_bytes(t.hwm),
+                    t.priority,
+                ),
+                col_width,
+            ),
+            value_style,
+        ))
+    }));
     lines
 }
 
@@ -443,44 +612,17 @@ fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
         .is_some_and(|t| t.elapsed() > Duration::from_secs(5));
     let label = Style::default().fg(Color::DarkGray);
     let value_style = if is_stale { label } else { Style::default() };
+    let frame = app.agent_frame();
     let mut lines: Vec<Line<'a>> = board_info_lines(app, label, col_width);
 
-    if let Some(parts) = app.agent_partitions() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Partitions",
-            label.add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(Span::styled(
-            truncate_line(
-                format!("{:<16}  {:<6}  {:<10}  Size", "Label", "Type", "Offset"),
-                col_width,
-            ),
-            label,
-        )));
-        lines.extend(parts.iter().map(|p| {
-            let type_str = match p.part_type {
-                agent_msg::PartType::App => "app",
-                agent_msg::PartType::Data => "data",
-                agent_msg::PartType::Unknown => "?",
-            };
-            Line::from(Span::styled(
-                truncate_line(
-                    format!(
-                        "{:<16}  {:<6}  0x{:08x}  {}",
-                        p.label.as_str(),
-                        type_str,
-                        p.offset,
-                        format_bytes(p.size),
-                    ),
-                    col_width,
-                ),
-                value_style,
-            ))
-        }));
-    }
-
-    if let Some(f) = app.agent_frame() {
+    if let Some(f) = frame {
+        lines.push(mline(
+            vec![
+                Span::styled("Up     ", label),
+                Span::styled(format_uptime(f.timestamp_ms), value_style),
+            ],
+            col_width,
+        ));
         lines.push(Line::from(""));
         lines.extend(frame_metric_lines(
             f,
@@ -488,22 +630,13 @@ fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
             value_style,
             is_stale,
             col_width,
+            app.heap_history(),
+            app.cpu_history(),
         ));
-        lines.extend(f.tasks.iter().map(|t| {
-            Line::from(Span::styled(
-                truncate_line(
-                    format!(
-                        "{:<16}  {:<9}  {:<7}  {}",
-                        t.name.as_str(),
-                        task_state_label(t.state),
-                        format_bytes(t.hwm),
-                        t.priority,
-                    ),
-                    col_width,
-                ),
-                value_style,
-            ))
-        }));
+        if let Some(parts) = app.agent_partitions() {
+            lines.extend(partition_lines(parts, label, value_style, col_width));
+        }
+        lines.extend(task_lines(&f.tasks, label, value_style, col_width));
     } else {
         let baseline = app.agent_last_seen().or_else(|| app.connected_at());
         let timed_out =
@@ -670,6 +803,56 @@ fn format_mac(mac: [u8; 6]) -> String {
         "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     )
+}
+
+fn reset_reason_label(reason: agent_msg::ResetReason) -> &'static str {
+    match reason {
+        agent_msg::ResetReason::PowerOn => "PowerOn",
+        agent_msg::ResetReason::Software => "Software",
+        agent_msg::ResetReason::Panic => "Panic",
+        agent_msg::ResetReason::IntWatchdog => "IntWatchdog",
+        agent_msg::ResetReason::TaskWatchdog => "TaskWatchdog",
+        agent_msg::ResetReason::Watchdog => "Watchdog",
+        agent_msg::ResetReason::Brownout => "Brownout",
+        agent_msg::ResetReason::DeepSleep => "DeepSleep",
+        agent_msg::ResetReason::External => "External",
+        agent_msg::ResetReason::Unknown => "Unknown",
+    }
+}
+
+fn format_uptime(ms: u32) -> String {
+    let total_secs = ms / 1000;
+    let h = total_secs / 3600;
+    let m = (total_secs % 3600) / 60;
+    let s = total_secs % 60;
+    if h > 0 {
+        format!("{h}h {m}m {s}s")
+    } else if m > 0 {
+        format!("{m}m {s}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
+fn sparkline_str(
+    data: &std::collections::VecDeque<u32>,
+    max_val: u32,
+    width: usize,
+) -> String {
+    const LEVELS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let max = u64::from(max_val.max(1));
+    let pad = width.saturating_sub(data.len().min(width));
+    // Newest sample is on the left; old data scrolls right and falls off.
+    data.iter()
+        .rev()
+        .take(width)
+        .map(|&v| {
+            let raw = (u64::from(v) * 8 / max).min(8) as usize;
+            let idx = if v > 0 { raw.max(1) } else { raw };
+            LEVELS[idx]
+        })
+        .chain(std::iter::repeat_n(' ', pad))
+        .collect()
 }
 
 fn task_state_label(state: agent_msg::TaskState) -> &'static str {
@@ -1448,5 +1631,124 @@ mod tests {
         assert_eq!(r.y, 20);
         assert_eq!(r.width, 20);
         assert_eq!(r.height, 10);
+    }
+
+    #[test]
+    fn reset_reason_label_covers_all_variants() {
+        use esp_agent_msg::ResetReason;
+        let cases = [
+            (ResetReason::PowerOn, "PowerOn"),
+            (ResetReason::Software, "Software"),
+            (ResetReason::Panic, "Panic"),
+            (ResetReason::IntWatchdog, "IntWatchdog"),
+            (ResetReason::TaskWatchdog, "TaskWatchdog"),
+            (ResetReason::Watchdog, "Watchdog"),
+            (ResetReason::Brownout, "Brownout"),
+            (ResetReason::DeepSleep, "DeepSleep"),
+            (ResetReason::External, "External"),
+            (ResetReason::Unknown, "Unknown"),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(super::reset_reason_label(reason), expected);
+        }
+    }
+
+    #[test]
+    fn format_uptime_seconds_only() {
+        assert_eq!(super::format_uptime(45_000), "45s");
+    }
+
+    #[test]
+    fn format_uptime_minutes_and_seconds() {
+        assert_eq!(super::format_uptime(125_000), "2m 5s");
+    }
+
+    #[test]
+    fn format_uptime_hours_minutes_seconds() {
+        assert_eq!(super::format_uptime(3_723_000), "1h 2m 3s");
+    }
+
+    #[test]
+    fn format_uptime_zero() {
+        assert_eq!(super::format_uptime(0), "0s");
+    }
+
+    #[test]
+    fn format_uptime_exactly_one_hour() {
+        assert_eq!(super::format_uptime(3_600_000), "1h 0m 0s");
+    }
+
+    #[test]
+    fn sparkline_str_empty_data_is_all_spaces() {
+        let data = std::collections::VecDeque::new();
+        let s = super::sparkline_str(&data, 100, 10);
+        assert_eq!(s, "          ");
+        assert_eq!(s.len(), 10);
+    }
+
+    #[test]
+    fn sparkline_str_full_value_is_max_char() {
+        let data: std::collections::VecDeque<u32> = vec![100].into();
+        let s = super::sparkline_str(&data, 100, 1);
+        assert_eq!(s, "█");
+    }
+
+    #[test]
+    fn sparkline_str_zero_value_is_min_char() {
+        let data: std::collections::VecDeque<u32> = vec![0].into();
+        let s = super::sparkline_str(&data, 100, 1);
+        assert_eq!(s, " ");
+    }
+
+    #[test]
+    fn sparkline_str_ascending_data_newest_shown_first() {
+        // data: oldest=0 .. newest=100; after reversal left=newest=100, right=oldest=0
+        let data: std::collections::VecDeque<u32> = vec![0, 25, 50, 75, 100].into();
+        let s = super::sparkline_str(&data, 100, 5);
+        let chars: Vec<char> = s.chars().collect();
+        for window in chars.windows(2) {
+            assert!(window[0] >= window[1], "not descending (newest-left): {s}");
+        }
+    }
+
+    #[test]
+    fn sparkline_str_pads_right_when_less_data_than_width() {
+        // newest item appears at position 0 (left); padding fills the right
+        let data: std::collections::VecDeque<u32> = vec![100].into();
+        let s = super::sparkline_str(&data, 100, 5);
+        assert_eq!(s.chars().count(), 5);
+        assert_eq!(s.chars().next().unwrap(), '█');
+        assert_eq!(&s[3..], "    ");
+    }
+
+    #[test]
+    fn sparkline_str_keeps_newest_when_truncating() {
+        // only the two newest items (100, 0) fit; newest is on the left
+        let data: std::collections::VecDeque<u32> = vec![0, 0, 0, 100].into();
+        let s = super::sparkline_str(&data, 100, 2);
+        assert_eq!(s.chars().count(), 2);
+        assert_eq!(s.chars().next().unwrap(), '█');
+    }
+
+    #[test]
+    fn draw_inspector_with_wifi_channel_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        app.push_line(
+            "V (5000) esp_agent: heap=100000/200000 min=50000 frag=8000 \
+             iram=0 psram=0 cpu=30 wifi=-65 wifi_ch=6 tasks=",
+        );
+        render(&app);
+    }
+
+    #[test]
+    fn draw_inspector_with_sparkline_history_does_not_panic() {
+        let mut app = App::new(Some("COM1".into()));
+        for _ in 0..10 {
+            app.push_line(
+                "V (1000) esp_agent: heap=100000/200000 min=50000 frag=8000 \
+                 iram=0 psram=0 cpu=50 tasks=",
+            );
+        }
+        render(&app);
     }
 }

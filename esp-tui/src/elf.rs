@@ -198,8 +198,7 @@ impl Selector {
     /// Performs zsh-style menu tab completion.
     ///
     /// When no completions are loaded, computes them from the filesystem:
-    /// - Single result: auto-accepts it; if the result is a directory (ends
-    ///   with `/`), immediately computes completions for that directory.
+    /// - Single result: auto-accepts it and clears the menu.
     /// - Multiple results: extends the input to the longest common prefix,
     ///   then writes the first entry into the input and shows the menu.
     ///
@@ -212,9 +211,6 @@ impl Selector {
                 0 => {}
                 1 => {
                     self.accept_completion();
-                    if self.text.value().ends_with('/') {
-                        self.complete();
-                    }
                 }
                 _ => {
                     self.extend_to_common_prefix();
@@ -637,7 +633,12 @@ mod tests {
         let dir = tempdir();
         fs::create_dir(dir.join("build")).unwrap();
         fs::write(
-            dir.join("build").join("app.elf"),
+            dir.join("build").join("app_a.elf"),
+            b"\x7fELF\x00\x00\x00\x00",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("build").join("app_b.elf"),
             b"\x7fELF\x00\x00\x00\x00",
         )
         .unwrap();
@@ -647,8 +648,13 @@ mod tests {
         s.tab_complete();
         assert_eq!(s.value(), format!("{}/build/", dir.display()));
         assert!(
+            s.completions().is_empty(),
+            "first Tab should not immediately list directory contents"
+        );
+        s.tab_complete();
+        assert!(
             !s.completions().is_empty(),
-            "should immediately list build/ contents"
+            "second Tab should list build/ contents"
         );
     }
 

@@ -44,18 +44,20 @@
 
 - [ ] `esp-tui agent install` CLI subcommand (deliver pre-built `.a` to user project)
 - [x] Per-pane independent resizing (adjust split ratio with keybindings)
-- [ ] Consider surfacing currently parsed-but-unused agent fields in the inspector: reset reason (`Startup::reason`), core count (`Startup::cores`), silicon revision (`Startup::revision`), heap fragmentation (`Frame::heap_frag`), and frame timestamp (`Frame::timestamp_ms`)
+- [x] Consider surfacing currently parsed-but-unused agent fields in the inspector: reset reason (`Startup::reason`), core count (`Startup::cores`), silicon revision (`Startup::revision`), heap fragmentation (`Frame::heap_frag`), and frame timestamp (`Frame::timestamp_ms`)
 - [ ] Revisit build system: once a release mechanism is in place (pre-built `.a` assets on GitHub Releases), evaluate whether `cargo xtask build-agent` is still the right developer-facing entry point, whether CI artifact caching is worth adding, and whether any of the current workarounds (`crate-type = ["lib", "staticlib"]`, `target_os` guards, `load_esp_env` parsing) can be simplified
 - [ ] Revisit Rust-native integration: evaluate whether to publish `esp-agent` as a Cargo dependency with a safe `configure()` API (requires solving panic handler conflicts with `esp-idf-sys` and the linker inclusion problem without user-side `build.rs` changes)
 
 
 - [ ] On macOS, filter `cu.*` entries from port detection: only `tty.*` devices should appear in the selector and auto-connect logic, since `cu.*` is not the correct interface for ESP32 serial communication
 - [ ] Panic/backtrace decoder: addr2line + ELF symbol resolution
-- [ ] Historical sparklines for heap and CPU over last N seconds
-- [ ] WiFi stats in inspector (RSSI, channel, TX/RX counts)
+- [x] Historical sparklines for heap and CPU over last N seconds
+- [x] WiFi stats in inspector: RSSI and channel
+- [ ] WiFi TX/RX packet counts in inspector: requires `esp_netif_get_stats`, not available until ESP-IDF v5.4
 - [ ] Defmt binary log format support
 - [ ] Multi-device tab switching
 - [ ] `esp-tui.toml` config file (port, baud, ELF path, buffer size, agent options)
+- [ ] Additional CLI flags: e.g. `--pane monitor|inspector` to open with only one pane visible, and similar startup-layout options
 - [ ] Configurable keybindings, potentially with preset modes (e.g. vim, emacs); keybindings like j/k were intentionally left out for now pending this
 - [ ] Configurable color scheme (log level colors, UI chrome) via esp-tui.toml
 - [ ] `--project` flag to auto-detect ELF from Cargo project

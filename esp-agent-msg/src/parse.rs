@@ -39,6 +39,7 @@ fn parse_frame(timestamp_ms: u32, msg: &str) -> Option<Frame> {
     let mut heap_psram = None;
     let mut cpu_usage: heapless::Vec<u8, 2> = heapless::Vec::new();
     let mut wifi_rssi = None;
+    let mut wifi_channel = None;
     let mut nvs = None;
 
     for token in metrics_part.split_ascii_whitespace() {
@@ -75,6 +76,10 @@ fn parse_frame(timestamp_ms: u32, msg: &str) -> Option<Frame> {
             if let Ok(n) = v.parse::<i32>() {
                 wifi_rssi = Some(n);
             }
+        } else if let Some(v) = token.strip_prefix("wifi_ch=") {
+            if let Ok(n) = v.parse::<u8>() {
+                wifi_channel = Some(n);
+            }
         } else if let Some(v) = token.strip_prefix("nvs=") {
             if let Some((u, t)) = v.split_once('/') {
                 if let (Ok(used), Ok(total)) = (u.parse::<u32>(), t.parse::<u32>()) {
@@ -103,6 +108,7 @@ fn parse_frame(timestamp_ms: u32, msg: &str) -> Option<Frame> {
         heap_psram: heap_psram?,
         cpu_usage,
         wifi_rssi,
+        wifi_channel,
         nvs,
         tasks,
     })
@@ -299,6 +305,7 @@ mod tests {
             heap_psram: 0,
             cpu_usage,
             wifi_rssi: wifi,
+            wifi_channel: None,
             nvs,
             tasks: heapless::Vec::new(),
         }
@@ -347,6 +354,24 @@ mod tests {
         let frame = make_frame(2, Some(-65), None);
         let parsed = format_and_parse_frame(&frame);
         assert_eq!(parsed.wifi_rssi, Some(-65));
+    }
+
+    #[test]
+    fn roundtrip_frame_wifi_channel() {
+        let frame = Frame {
+            wifi_channel: Some(6),
+            wifi_rssi: Some(-65),
+            ..make_frame(2, None, None)
+        };
+        let parsed = format_and_parse_frame(&frame);
+        assert_eq!(parsed.wifi_channel, Some(6));
+    }
+
+    #[test]
+    fn roundtrip_frame_wifi_channel_absent_when_none() {
+        let frame = make_frame(2, None, None);
+        let parsed = format_and_parse_frame(&frame);
+        assert_eq!(parsed.wifi_channel, None);
     }
 
     #[test]

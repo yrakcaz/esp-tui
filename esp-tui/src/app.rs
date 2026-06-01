@@ -13,6 +13,8 @@ use crate::{elf, filter, flash, log, port, serial};
 pub(crate) const BUFFER_SIZE: usize = 10_000;
 const STATUS_TTL_SECS: u64 = 3;
 pub(crate) const DEFAULT_BAUD: u32 = 115_200;
+/// Number of samples retained per channel in the heap and CPU sparkline history buffers.
+pub(crate) const SPARKLINE_LEN: usize = 60;
 
 /// Outcome of a keypress that requires I/O, returned to the event loop to act on.
 #[derive(Debug, PartialEq, Eq)]
@@ -60,6 +62,13 @@ enum ConfirmDialog {
     Erase,
 }
 
+fn push_history(history: &mut VecDeque<u32>, val: u32, max_len: usize) {
+    history.push_back(val);
+    if history.len() > max_len {
+        history.pop_front();
+    }
+}
+
 fn matches_search(entry: &log::Entry, query: &str) -> bool {
     query.is_empty()
         || entry.message().to_lowercase().contains(query)
@@ -93,6 +102,8 @@ pub(crate) struct App {
         Option<heapless::Vec<agent_msg::Partition, { agent_msg::MAX_PARTITIONS }>>,
     agent_last_seen: Option<Instant>,
     connected_at: Option<Instant>,
+    heap_history: VecDeque<u32>,
+    cpu_history: [VecDeque<u32>; 2],
 }
 
 impl App {
@@ -133,6 +144,8 @@ impl App {
             agent_partitions: None,
             agent_last_seen: None,
             connected_at: None,
+            heap_history: VecDeque::new(),
+            cpu_history: [VecDeque::new(), VecDeque::new()],
         }
     }
 
@@ -154,6 +167,18 @@ impl App {
                         self.inspector_scroll = self
                             .inspector_scroll
                             .min(self.inspector_max_scroll.get());
+                        push_history(
+                            &mut self.heap_history,
+                            f.heap_free,
+                            SPARKLINE_LEN,
+                        );
+                        f.cpu_usage.iter().enumerate().for_each(|(i, &usage)| {
+                            push_history(
+                                &mut self.cpu_history[i],
+                                u32::from(usage),
+                                SPARKLINE_LEN,
+                            );
+                        });
                         self.agent_frame = Some(f);
                     }
                     Some(agent_msg::Message::Startup(s)) => {
@@ -711,6 +736,29 @@ impl App {
         self.agent_partitions = None;
         self.agent_last_seen = None;
         self.connected_at = None;
+        self.heap_history.clear();
+        self.cpu_history.iter_mut().for_each(VecDeque::clear);
+    }
+
+    /// Returns the heap free history for the sparkline, oldest value first.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the ring buffer of recent `heap_free` samples.
+    #[must_use]
+    pub(crate) fn heap_history(&self) -> &VecDeque<u32> {
+        &self.heap_history
+    }
+
+    /// Returns per-core CPU usage history for the sparkline, oldest first.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the two-element array of CPU usage sample buffers;
+    /// index 0 is core 0, index 1 is core 1.
+    #[must_use]
+    pub(crate) fn cpu_history(&self) -> &[VecDeque<u32>; 2] {
+        &self.cpu_history
     }
 
     /// Returns the current flash operation state.
@@ -999,7 +1047,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc;
 
-    use crate::app::{Action, App, Pane, BUFFER_SIZE, DEFAULT_BAUD};
+    use crate::app::{Action, App, Pane, BUFFER_SIZE, DEFAULT_BAUD, SPARKLINE_LEN};
     use crate::runner::{
         handle_action, handle_event_message, handle_ports_detected,
     };
@@ -1177,6 +1225,43 @@ mod tests {
         app.push_line("I (1) tag: first");
         app.push_line("I (1) tag: second");
         assert_eq!(app.scroll(), 0);
+    }
+
+    #[test]
+    fn heap_history_accumulates_on_agent_frame() {
+        let mut app = App::new(None);
+        assert!(app.heap_history().is_empty());
+        push_agent_frame(&mut app, 0);
+        assert_eq!(app.heap_history().len(), 1);
+        assert_eq!(app.heap_history()[0], 142_000);
+    }
+
+    #[test]
+    fn heap_history_caps_at_sparkline_len() {
+        let mut app = App::new(None);
+        for _ in 0..=SPARKLINE_LEN {
+            push_agent_frame(&mut app, 0);
+        }
+        assert_eq!(app.heap_history().len(), SPARKLINE_LEN);
+    }
+
+    #[test]
+    fn cpu_history_accumulates_on_agent_frame() {
+        let mut app = App::new(None);
+        push_agent_frame(&mut app, 0);
+        assert_eq!(app.cpu_history()[0].len(), 1);
+        assert_eq!(app.cpu_history()[0][0], 50);
+    }
+
+    #[test]
+    fn clear_agent_data_resets_history() {
+        let mut app = App::new(None);
+        push_agent_frame(&mut app, 0);
+        assert!(!app.heap_history().is_empty());
+        app.clear_agent_data();
+        assert!(app.heap_history().is_empty());
+        assert!(app.cpu_history()[0].is_empty());
+        assert!(app.cpu_history()[1].is_empty());
     }
 
     #[test]

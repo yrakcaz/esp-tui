@@ -31,7 +31,8 @@ pub(crate) struct EspPartition {
     pub(crate) readonly: bool,
 }
 
-/// Matches `wifi_ap_record_t` prefix (only `rssi` is read; `_pad` covers the rest).
+/// Matches `wifi_ap_record_t` prefix; `primary` is the channel, `rssi` the
+/// signal strength. `_pad` covers all remaining fields.
 #[repr(C)]
 pub(crate) struct WifiApRecord {
     pub(crate) bssid: [u8; 6],
