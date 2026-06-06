@@ -24,12 +24,12 @@ pub(crate) enum LayoutMode {
     InspectorOnly,
 }
 
-/// Keymap value: every action that can be bound to a key.
+/// Every action that can be bound to a key.
 ///
 /// Navigation variants are handled inline in [`App::apply_keymap`]; all others
 /// are converted to [`Action`] and returned to the event loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MappableAction {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum MappableAction {
     ScrollUp,
     ScrollDown,
     PageUp,
@@ -50,7 +50,102 @@ enum MappableAction {
     ScanPorts,
 }
 
-type KeyMap = HashMap<(KeyCode, KeyModifiers), MappableAction>;
+pub(crate) type KeyMap = HashMap<(KeyCode, KeyModifiers), MappableAction>;
+
+pub(crate) fn default_keymap() -> KeyMap {
+    let mut m = KeyMap::new();
+    let ins = |m: &mut KeyMap, code, mods, action| {
+        m.insert((code, mods), action);
+    };
+    let none = KeyModifiers::empty();
+    let ctrl = KeyModifiers::CONTROL;
+    ins(&mut m, KeyCode::Char('q'), none, MappableAction::QuitPrompt);
+    ins(&mut m, KeyCode::Esc, none, MappableAction::QuitPrompt);
+    ins(&mut m, KeyCode::Char('d'), none, MappableAction::Disconnect);
+    ins(
+        &mut m,
+        KeyCode::Char('r'),
+        none,
+        MappableAction::ResetDevice,
+    );
+    ins(
+        &mut m,
+        KeyCode::Char('f'),
+        ctrl,
+        MappableAction::ToggleFilter,
+    );
+    ins(&mut m, KeyCode::Char('f'), none, MappableAction::Flash);
+    ins(
+        &mut m,
+        KeyCode::Char('e'),
+        none,
+        MappableAction::ErasePrompt,
+    );
+    ins(&mut m, KeyCode::Char('c'), none, MappableAction::ScanPorts);
+    ins(&mut m, KeyCode::Tab, none, MappableAction::SwitchPane);
+    ins(&mut m, KeyCode::Right, ctrl, MappableAction::GrowMonitor);
+    ins(&mut m, KeyCode::Left, ctrl, MappableAction::ShrinkMonitor);
+    ins(&mut m, KeyCode::Char('l'), ctrl, MappableAction::ClearLog);
+    ins(&mut m, KeyCode::Up, none, MappableAction::ScrollUp);
+    ins(&mut m, KeyCode::Down, none, MappableAction::ScrollDown);
+    ins(&mut m, KeyCode::PageUp, none, MappableAction::PageUp);
+    ins(&mut m, KeyCode::PageDown, none, MappableAction::PageDown);
+    m
+}
+
+/// Formats a key as a short display string for use in hints.
+///
+/// # Arguments
+///
+/// * `code` - The key code.
+/// * `mods` - The key modifiers.
+///
+/// # Returns
+///
+/// A string such as `"F"`, `"^F"`, `"↑"`, `"Tab"`, `"PgUp"`.
+pub(crate) fn format_key_display(code: KeyCode, mods: KeyModifiers) -> String {
+    let ctrl = mods.contains(KeyModifiers::CONTROL);
+    let alt = mods.contains(KeyModifiers::ALT);
+    let prefix = match (ctrl, alt) {
+        (true, true) => "^M-".to_owned(),
+        (true, false) => "^".to_owned(),
+        (false, true) => "M-".to_owned(),
+        (false, false) => String::new(),
+    };
+    match code {
+        KeyCode::Char(c) => format!("{}{}", prefix, c.to_ascii_uppercase()),
+        KeyCode::Up => format!("{prefix}↑"),
+        KeyCode::Down => format!("{prefix}↓"),
+        KeyCode::Left => format!("{prefix}←"),
+        KeyCode::Right => format!("{prefix}→"),
+        KeyCode::PageUp => format!("{prefix}PgUp"),
+        KeyCode::PageDown => format!("{prefix}PgDn"),
+        KeyCode::Tab => "Tab".to_owned(),
+        KeyCode::BackTab => "⇧Tab".to_owned(),
+        KeyCode::Enter => "Enter".to_owned(),
+        KeyCode::Esc => "Esc".to_owned(),
+        KeyCode::Backspace => "Bksp".to_owned(),
+        KeyCode::Delete => "Del".to_owned(),
+        KeyCode::Home => "Home".to_owned(),
+        KeyCode::End => "End".to_owned(),
+        KeyCode::F(n) => format!("F{n}"),
+        _ => "?".to_owned(),
+    }
+}
+
+fn pick_best_key(keys: &[(KeyCode, KeyModifiers)]) -> (KeyCode, KeyModifiers) {
+    keys.iter()
+        .min_by_key(|(code, mods)| {
+            let priority: u8 = match (code, mods.is_empty()) {
+                (KeyCode::Char(_), true) => 0,
+                (_, true) => 1,
+                _ => 2,
+            };
+            (priority, format!("{code:?}{mods:?}"))
+        })
+        .copied()
+        .unwrap_or((KeyCode::Null, KeyModifiers::empty()))
+}
 
 fn parse_action(s: &str) -> Option<MappableAction> {
     match s {
@@ -77,24 +172,25 @@ fn parse_action(s: &str) -> Option<MappableAction> {
 }
 
 fn build_keymap(keys: &config::KeysConfig) -> KeyMap {
-    let mut map = KeyMap::new();
+    let mut map = default_keymap();
+
+    let insert = |map: &mut KeyMap, k: &str, v: &str| {
+        if let (Ok(key), Some(action)) = (config::parse_key(k), parse_action(v)) {
+            map.retain(|_, a| *a != action);
+            map.insert(key, action);
+        }
+    };
 
     if let Some(preset) = &keys.preset {
         if let Ok(overrides) = config::load_preset_overrides(preset) {
             for (k, v) in overrides {
-                if let (Ok(key), Some(action)) =
-                    (config::parse_key(&k), parse_action(&v))
-                {
-                    map.insert(key, action);
-                }
+                insert(&mut map, &k, &v);
             }
         }
     }
 
     for (k, v) in &keys.overrides {
-        if let (Ok(key), Some(action)) = (config::parse_key(k), parse_action(v)) {
-            map.insert(key, action);
-        }
+        insert(&mut map, k, v);
     }
 
     map
@@ -144,6 +240,10 @@ enum ConfirmDialog {
     None,
     Quit,
     Erase,
+}
+
+fn is_modal_safe_key(key: KeyEvent) -> bool {
+    !matches!(key.code, KeyCode::Char(_)) || !key.modifiers.is_empty()
 }
 
 fn push_history(history: &mut VecDeque<u32>, val: u32, max_len: usize) {
@@ -325,31 +425,57 @@ impl App {
         }
     }
 
+    fn mapped_to(&self, key: KeyEvent, action: MappableAction) -> bool {
+        self.keymap.get(&(key.code, key.modifiers)) == Some(&action)
+    }
+
     fn handle_key_quit_confirm(&mut self, key: KeyEvent) -> Action {
-        match key.code {
-            KeyCode::Char('y') => Action::Quit,
-            KeyCode::Char('n' | 'q') | KeyCode::Esc => {
-                self.close_quit_confirm();
-                Action::None
-            }
-            _ => Action::None,
+        if key.code == KeyCode::Char('y') {
+            Action::Quit
+        } else if key.code == KeyCode::Char('n')
+            || self.mapped_to(key, MappableAction::QuitPrompt)
+        {
+            self.close_quit_confirm();
+            Action::None
+        } else {
+            Action::None
         }
     }
 
     fn handle_key_erase_confirm(&mut self, key: KeyEvent) -> Action {
-        match key.code {
-            KeyCode::Char('y') => Action::ConfirmErase,
-            KeyCode::Char('n' | 'q' | 'e') | KeyCode::Esc => {
-                self.confirm = ConfirmDialog::None;
-                Action::None
-            }
-            _ => Action::None,
+        if key.code == KeyCode::Char('y') {
+            Action::ConfirmErase
+        } else if key.code == KeyCode::Char('n')
+            || key.code == KeyCode::Char('e')
+            || self.mapped_to(key, MappableAction::QuitPrompt)
+        {
+            self.confirm = ConfirmDialog::None;
+            Action::None
+        } else {
+            Action::None
         }
     }
 
     fn handle_key_elf_selector(&mut self, key: KeyEvent) -> Action {
+        // For text-input modals, only look up the keymap for non-printable
+        // keys (arrows, Esc, modifier combos) so that plain chars still type.
+        let safe = is_modal_safe_key(key);
+        if safe && self.mapped_to(key, MappableAction::QuitPrompt) {
+            return Action::CloseElfSelector;
+        }
+        if safe && self.mapped_to(key, MappableAction::ScrollUp) {
+            if let Some(s) = self.elf_selector.as_mut() {
+                s.move_completion(-1);
+            }
+            return Action::None;
+        }
+        if safe && self.mapped_to(key, MappableAction::ScrollDown) {
+            if let Some(s) = self.elf_selector.as_mut() {
+                s.move_completion(1);
+            }
+            return Action::None;
+        }
         match key.code {
-            KeyCode::Esc => Action::CloseElfSelector,
             KeyCode::Enter => {
                 let was_cycling = self
                     .elf_selector
@@ -376,18 +502,6 @@ impl App {
                 }
                 Action::None
             }
-            KeyCode::Up => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.move_completion(-1);
-                }
-                Action::None
-            }
-            KeyCode::Down => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.move_completion(1);
-                }
-                Action::None
-            }
             _ => {
                 if let Some(s) = self.elf_selector.as_mut() {
                     s.apply_key(key);
@@ -398,52 +512,58 @@ impl App {
     }
 
     fn handle_key_port_selector(&mut self, key: KeyEvent) -> Action {
+        if self.mapped_to(key, MappableAction::ScrollUp) {
+            if let Some(s) = self.port_selector.as_mut() {
+                s.move_cursor(-1);
+            }
+            return Action::None;
+        }
+        if self.mapped_to(key, MappableAction::ScrollDown) {
+            if let Some(s) = self.port_selector.as_mut() {
+                s.move_cursor(1);
+            }
+            return Action::None;
+        }
+        if key.code == KeyCode::Char('c')
+            || self.mapped_to(key, MappableAction::QuitPrompt)
+        {
+            self.port_selector = None;
+            return Action::None;
+        }
         match key.code {
-            KeyCode::Up => {
-                if let Some(s) = self.port_selector.as_mut() {
-                    s.move_cursor(-1);
-                }
-                Action::None
-            }
-            KeyCode::Down => {
-                if let Some(s) = self.port_selector.as_mut() {
-                    s.move_cursor(1);
-                }
-                Action::None
-            }
             KeyCode::Enter => self.port_selector.take().map_or(Action::None, |s| {
                 Action::ConnectPort(s.selected().to_owned())
             }),
-            KeyCode::Char('q' | 'c') | KeyCode::Esc => {
-                self.port_selector = None;
-                Action::None
-            }
             _ => Action::None,
         }
     }
 
     fn handle_key_filter_popup(&mut self, key: KeyEvent) {
+        let safe = is_modal_safe_key(key);
         if self.filter.is_search_focused() {
-            match key.code {
-                KeyCode::Esc => self.filter.unfocus_search(),
-                KeyCode::Up => {
-                    self.filter.unfocus_search();
-                    self.filter.move_cursor(-1);
-                }
-                KeyCode::Down => {
-                    self.filter.unfocus_search();
-                    self.filter.move_cursor(1);
-                }
-                _ => self.filter.apply_search_key(key),
+            if safe && self.mapped_to(key, MappableAction::QuitPrompt) {
+                self.filter.unfocus_search();
+            } else if safe && self.mapped_to(key, MappableAction::ScrollUp) {
+                self.filter.unfocus_search();
+                self.filter.move_cursor(-1);
+            } else if safe && self.mapped_to(key, MappableAction::ScrollDown) {
+                self.filter.unfocus_search();
+                self.filter.move_cursor(1);
+            } else {
+                self.filter.apply_search_key(key);
             }
+        } else if safe && self.mapped_to(key, MappableAction::QuitPrompt) {
+            self.filter.toggle_popup();
+        } else if safe && self.mapped_to(key, MappableAction::ScrollUp) {
+            if self.filter.cursor() == 0 {
+                self.filter.focus_search();
+            } else {
+                self.filter.move_cursor(-1);
+            }
+        } else if safe && self.mapped_to(key, MappableAction::ScrollDown) {
+            self.filter.move_cursor(1);
         } else {
             match key.code {
-                KeyCode::Esc => self.filter.toggle_popup(),
-                KeyCode::Up if self.filter.cursor() == 0 => {
-                    self.filter.focus_search();
-                }
-                KeyCode::Up => self.filter.move_cursor(-1),
-                KeyCode::Down => self.filter.move_cursor(1),
                 KeyCode::Char(' ')
                     if !key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
@@ -495,84 +615,7 @@ impl App {
     }
 
     fn handle_key_normal(&mut self, key: KeyEvent) -> Action {
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc
-                if self.focused_pane == Pane::Monitor && self.scroll > 0 =>
-            {
-                self.scroll = 0;
-                Action::None
-            }
-            KeyCode::Char('q') | KeyCode::Esc
-                if self.focused_pane == Pane::Inspector
-                    && self.inspector_scroll > 0 =>
-            {
-                self.inspector_scroll = 0;
-                Action::None
-            }
-            KeyCode::Char('q') | KeyCode::Esc => Action::QuitPrompt,
-            KeyCode::Char('d') => Action::Disconnect,
-            KeyCode::Char('r') => Action::ResetDevice,
-            KeyCode::Char('f') if key.modifiers == KeyModifiers::CONTROL => {
-                if self.focused_pane == Pane::Monitor {
-                    self.filter.toggle_popup();
-                }
-                Action::None
-            }
-            KeyCode::Char('f') => Action::Flash,
-            KeyCode::Char('e') => Action::ErasePrompt,
-            KeyCode::Char('c') => Action::ScanPorts,
-            KeyCode::Tab => {
-                self.focused_pane = match self.focused_pane {
-                    Pane::Monitor => {
-                        self.monitor_pct = self.monitor_pct.min(80);
-                        Pane::Inspector
-                    }
-                    Pane::Inspector => {
-                        self.monitor_pct = self.monitor_pct.max(20);
-                        Pane::Monitor
-                    }
-                    Pane::Status => Pane::Monitor,
-                };
-                Action::None
-            }
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.grow_monitor();
-                if self.focused_pane == Pane::Inspector && self.monitor_pct == 100 {
-                    self.focused_pane = Pane::Monitor;
-                }
-                Action::None
-            }
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.shrink_monitor();
-                if self.focused_pane == Pane::Monitor && self.monitor_pct == 0 {
-                    self.focused_pane = Pane::Inspector;
-                }
-                Action::None
-            }
-            KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
-                if self.focused_pane == Pane::Monitor {
-                    self.clear_log();
-                }
-                Action::None
-            }
-            KeyCode::Up => {
-                self.scroll_active_pane_up(1);
-                Action::None
-            }
-            KeyCode::Down => {
-                self.scroll_active_pane_down(1);
-                Action::None
-            }
-            KeyCode::PageUp => {
-                self.scroll_active_pane_up(10);
-                Action::None
-            }
-            KeyCode::PageDown => {
-                self.scroll_active_pane_down(10);
-                Action::None
-            }
-            _ => self.apply_keymap(key),
-        }
+        self.apply_keymap(key)
     }
 
     fn apply_keymap(&mut self, key: KeyEvent) -> Action {
@@ -644,7 +687,19 @@ impl App {
                 Action::None
             }
             Some(MappableAction::Quit) => Action::Quit,
-            Some(MappableAction::QuitPrompt) => Action::QuitPrompt,
+            Some(MappableAction::QuitPrompt) => {
+                if self.focused_pane == Pane::Monitor && self.scroll > 0 {
+                    self.scroll = 0;
+                    Action::None
+                } else if self.focused_pane == Pane::Inspector
+                    && self.inspector_scroll > 0
+                {
+                    self.inspector_scroll = 0;
+                    Action::None
+                } else {
+                    Action::QuitPrompt
+                }
+            }
             Some(MappableAction::Flash) => Action::Flash,
             Some(MappableAction::ErasePrompt) => Action::ErasePrompt,
             Some(MappableAction::ResetDevice) => Action::ResetDevice,
@@ -1207,6 +1262,80 @@ impl App {
     #[must_use]
     pub(crate) fn config(&self) -> &config::Config {
         &self.config
+    }
+
+    /// Returns the display string for the key currently bound to `action`.
+    ///
+    /// Picks the simplest bound key (plain char over special key over modified
+    /// key). Returns `"?"` when no key is bound.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` - The action to look up.
+    ///
+    /// # Returns
+    ///
+    /// A short string such as `"F"`, `"^F"`, `"↑"`, or `"Tab"`.
+    #[must_use]
+    pub(crate) fn key_display(&self, action: MappableAction) -> String {
+        let keys: Vec<(KeyCode, KeyModifiers)> = self
+            .keymap
+            .iter()
+            .filter(|(_, &a)| a == action)
+            .map(|(&k, _)| k)
+            .collect();
+        if keys.is_empty() {
+            return "?".to_owned();
+        }
+        let (code, mods) = pick_best_key(&keys);
+        format_key_display(code, mods)
+    }
+
+    /// Returns a formatted hint string for the key bound to `action`.
+    ///
+    /// Produces `[F]lash`-style output when the bound key is a plain
+    /// character matching the label's first letter, `[C]Flash` when it is a
+    /// plain character that does not match, and `[^F] Label` for modifier
+    /// combinations.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` - The action to look up.
+    /// * `label` - The human-readable label for the action.
+    ///
+    /// # Returns
+    ///
+    /// A formatted hint string.
+    #[must_use]
+    pub(crate) fn key_hint(&self, action: MappableAction, label: &str) -> String {
+        let keys: Vec<(KeyCode, KeyModifiers)> = self
+            .keymap
+            .iter()
+            .filter(|(_, &a)| a == action)
+            .map(|(&k, _)| k)
+            .collect();
+        if keys.is_empty() {
+            return format!("({label})");
+        }
+        let (code, mods) = pick_best_key(&keys);
+        match (code, mods) {
+            (KeyCode::Char(c), m) if m.is_empty() => {
+                let c_up = c.to_ascii_uppercase();
+                let label_first =
+                    label.chars().next().unwrap_or('\0').to_ascii_uppercase();
+                if c_up == label_first {
+                    let rest =
+                        label.char_indices().nth(1).map_or("", |(i, _)| &label[i..]);
+                    format!("[{c_up}]{rest}")
+                } else {
+                    format!("[{c_up}]{label}")
+                }
+            }
+            _ => {
+                let k = format_key_display(code, mods);
+                format!("[{k}] {label}")
+            }
+        }
     }
 
     /// Returns the inspector scroll offset.

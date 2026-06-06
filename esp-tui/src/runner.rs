@@ -470,9 +470,7 @@ pub(crate) fn handle_event_message(
     }
 }
 
-async fn run_inner(args: Args) -> anyhow::Result<()> {
-    let cfg = config::load(args.config.as_deref())?;
-
+async fn run_inner(args: Args, cfg: config::Config) -> anyhow::Result<()> {
     let baud = args.baud.or(cfg.serial.baud).unwrap_or(DEFAULT_BAUD);
 
     let port_arg = args.port.or_else(|| cfg.serial.port.clone());
@@ -564,12 +562,17 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
 pub(crate) async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    let cfg = config::load(args.config.as_deref()).unwrap_or_else(|e| {
+        eprintln!("esp-tui: config error: {e}");
+        config::Config::default()
+    });
+
     enable_raw_mode().context("failed to enable raw mode")?;
     std::io::stdout()
         .execute(EnterAlternateScreen)
         .context("failed to enter alternate screen")?;
 
-    let result = run_inner(args).await;
+    let result = run_inner(args, cfg).await;
 
     let _ = disable_raw_mode();
     let _ = std::io::stdout().execute(LeaveAlternateScreen);

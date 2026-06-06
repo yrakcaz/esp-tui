@@ -9,7 +9,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::app::{App, LayoutMode, Pane};
+use crate::app::{App, LayoutMode, MappableAction, Pane};
 use crate::filter;
 use crate::flash;
 
@@ -74,6 +74,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
 
 fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
     let colors = &app.config().colors;
+    let hc = colors.chrome.hint_text;
     let port_name = app.port_name();
     let port_label: std::borrow::Cow<str> =
         port_name.map_or("none".into(), std::borrow::Cow::Borrowed);
@@ -85,17 +86,17 @@ fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
     let right_text = format!("Port: {port_label}");
 
     let left = Line::from(vec![
-        hint("[C]onnect", colors.chrome.hint_text),
+        hint(app.key_hint(MappableAction::ScanPorts, "Connect"), hc),
         Span::raw("  "),
-        hint("[D]isconnect", colors.chrome.hint_text),
+        hint(app.key_hint(MappableAction::Disconnect, "Disconnect"), hc),
         Span::raw("  "),
-        hint("[F]lash", colors.chrome.hint_text),
+        hint(app.key_hint(MappableAction::Flash, "Flash"), hc),
         Span::raw("  "),
-        hint("[E]rase", colors.chrome.hint_text),
+        hint(app.key_hint(MappableAction::ErasePrompt, "Erase"), hc),
         Span::raw("  "),
-        hint("[R]eset", colors.chrome.hint_text),
+        hint(app.key_hint(MappableAction::ResetDevice, "Reset"), hc),
         Span::raw("  "),
-        hint("[Q]uit", colors.chrome.hint_text),
+        hint(app.key_hint(MappableAction::QuitPrompt, "Quit"), hc),
     ]);
 
     let right_len = u16::try_from(right_text.len()).unwrap_or(u16::MAX);
@@ -151,7 +152,7 @@ fn scroll_footer(
     }
 }
 
-fn hint(text: &'static str, color: Color) -> Span<'static> {
+fn hint(text: String, color: Color) -> Span<'static> {
     Span::styled(
         text,
         Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -239,11 +240,27 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
 
     if is_focused {
         let w = usize::from(footer_area.width);
+        let scroll_hint = format!(
+            "  [{}] to follow live",
+            app.key_display(MappableAction::QuitPrompt)
+        );
+        let nav_hint = format!(
+            "[{}/{}  {}/{}] scroll  [{}] clear  [{}] filter  [{}/{}] resize  [{}] focus",
+            app.key_display(MappableAction::ScrollUp),
+            app.key_display(MappableAction::ScrollDown),
+            app.key_display(MappableAction::PageUp),
+            app.key_display(MappableAction::PageDown),
+            app.key_display(MappableAction::ClearLog),
+            app.key_display(MappableAction::ToggleFilter),
+            app.key_display(MappableAction::ShrinkMonitor),
+            app.key_display(MappableAction::GrowMonitor),
+            app.key_display(MappableAction::SwitchPane),
+        );
         let footer = scroll_footer(
             w,
             app.scroll() > 0,
-            "  q/Esc to follow live",
-            "[↑/↓  PgUp/PgDn] scroll  [^L] clear  [^F] filter  [^←/→] resize  [Tab] focus",
+            &scroll_hint,
+            &nav_hint,
             colors.chrome.scroll_indicator,
             colors.chrome.hint_text,
         );
@@ -722,11 +739,25 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) 
 
     if is_focused {
         let w = usize::from(footer_area.width);
+        let scroll_hint = format!(
+            "  [{}] to scroll top",
+            app.key_display(MappableAction::QuitPrompt)
+        );
+        let nav_hint = format!(
+            "[{}/{}  {}/{}] scroll  [{}/{}] resize  [{}] focus",
+            app.key_display(MappableAction::ScrollUp),
+            app.key_display(MappableAction::ScrollDown),
+            app.key_display(MappableAction::PageUp),
+            app.key_display(MappableAction::PageDown),
+            app.key_display(MappableAction::ShrinkMonitor),
+            app.key_display(MappableAction::GrowMonitor),
+            app.key_display(MappableAction::SwitchPane),
+        );
         let footer = scroll_footer(
             w,
             app.inspector_scroll().min(app.inspector_max_scroll()) > 0,
-            "  q/Esc to scroll top",
-            "[↑/↓  PgUp/PgDn] scroll  [^←/→] resize  [Tab] focus",
+            &scroll_hint,
+            &nav_hint,
             colors.chrome.scroll_indicator,
             colors.chrome.hint_text,
         );
