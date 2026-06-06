@@ -1,0 +1,57 @@
+# esp-tui.example.toml
+#
+# Copy this file to esp-tui.toml in your project directory, or to
+# ~/.config/esp-tui/config.toml for a global default. Project-local
+# settings override global ones key-by-key. All keys are optional.
+
+[serial]
+port = "/dev/ttyUSB0"  # default: auto-detect
+baud = 921600          # default: 115200
+
+[flash]
+elf_path = "target/xtensa-esp32s3-espidf/release/my-firmware"  # default: none
+
+[ui]
+initial_pane  = "inspector"  # default: none (split view)
+buffer_size   = 50000        # default: 10000
+sparkline_len = 120          # default: 60
+
+[colors.log]
+error   = "light_red"  # default: "red"
+warn    = "light_yellow"  # default: "yellow"
+info    = "light_green"   # default: "green"
+debug   = "light_blue"    # default: "cyan"
+verbose = "gray"          # default: "white"
+
+[colors.chrome]
+focused_border    = "magenta"   # default: "cyan"
+port_connected    = "cyan"      # default: "green"
+port_disconnected = "gray"      # default: "red"
+scroll_indicator  = "magenta"   # default: "yellow"
+hint_text         = "gray"      # default: "dark_gray"
+filter_bar        = "cyan"      # default: "yellow"
+log_tag           = "blue"      # default: "dark_gray"
+log_unparsed      = "gray"      # default: "dark_gray"
+search_label      = "blue"      # default: "dark_gray"
+search_query      = "cyan"      # default: "yellow"
+status_message    = "green"     # default: "yellow"
+
+[colors.inspector]
+cpu_low    = "cyan"     # default: "green"
+cpu_medium = "magenta"  # default: "yellow"
+cpu_high   = "light_red"  # default: "red"
+metric_bar = "cyan"     # default: "green"
+
+[colors.flash]
+message        = "cyan"      # default: "yellow"
+gauge          = "blue"      # default: "green"
+confirm_title  = "magenta"   # default: "red"
+confirm_ok     = "cyan"      # default: "green"
+confirm_cancel = "gray"      # default: "dark_gray"
+
+[keys]
+preset = "vim"  # default: none
+
+[keys.overrides]
+"ctrl+j" = "scroll_down"  # extra binding on top of the vim preset
+"ctrl+k" = "scroll_up"

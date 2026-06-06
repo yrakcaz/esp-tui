@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -8,13 +8,97 @@ use tokio::sync::watch;
 
 use esp_agent_msg as agent_msg;
 
-use crate::{elf, filter, flash, log, port, serial};
+use crate::{config, elf, filter, flash, log, port, serial};
 
-pub(crate) const BUFFER_SIZE: usize = 10_000;
-const STATUS_TTL_SECS: u64 = 3;
 pub(crate) const DEFAULT_BAUD: u32 = 115_200;
-/// Number of samples retained per channel in the heap and CPU sparkline history buffers.
-pub(crate) const SPARKLINE_LEN: usize = 60;
+const STATUS_TTL_SECS: u64 = 3;
+
+/// Controls which panes are visible at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayoutMode {
+    /// Both panes visible, split by `monitor_pct`.
+    Split,
+    /// Only the Serial Monitor pane is rendered.
+    MonitorOnly,
+    /// Only the System Inspector pane is rendered.
+    InspectorOnly,
+}
+
+/// Keymap value: every action that can be bound to a key.
+///
+/// Navigation variants are handled inline in [`App::apply_keymap`]; all others
+/// are converted to [`Action`] and returned to the event loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MappableAction {
+    ScrollUp,
+    ScrollDown,
+    PageUp,
+    PageDown,
+    ScrollTop,
+    ScrollBottom,
+    SwitchPane,
+    GrowMonitor,
+    ShrinkMonitor,
+    ToggleFilter,
+    ClearLog,
+    Quit,
+    QuitPrompt,
+    Flash,
+    ErasePrompt,
+    ResetDevice,
+    Disconnect,
+    ScanPorts,
+}
+
+type KeyMap = HashMap<(KeyCode, KeyModifiers), MappableAction>;
+
+fn parse_action(s: &str) -> Option<MappableAction> {
+    match s {
+        "scroll_up" => Some(MappableAction::ScrollUp),
+        "scroll_down" => Some(MappableAction::ScrollDown),
+        "page_up" => Some(MappableAction::PageUp),
+        "page_down" => Some(MappableAction::PageDown),
+        "scroll_top" => Some(MappableAction::ScrollTop),
+        "scroll_bottom" => Some(MappableAction::ScrollBottom),
+        "switch_pane" => Some(MappableAction::SwitchPane),
+        "grow_monitor" => Some(MappableAction::GrowMonitor),
+        "shrink_monitor" => Some(MappableAction::ShrinkMonitor),
+        "toggle_filter" => Some(MappableAction::ToggleFilter),
+        "clear_log" => Some(MappableAction::ClearLog),
+        "quit" => Some(MappableAction::Quit),
+        "quit_prompt" => Some(MappableAction::QuitPrompt),
+        "flash" => Some(MappableAction::Flash),
+        "erase_prompt" => Some(MappableAction::ErasePrompt),
+        "reset_device" => Some(MappableAction::ResetDevice),
+        "disconnect" => Some(MappableAction::Disconnect),
+        "scan_ports" => Some(MappableAction::ScanPorts),
+        _ => None,
+    }
+}
+
+fn build_keymap(keys: &config::KeysConfig) -> KeyMap {
+    let mut map = KeyMap::new();
+
+    if let Some(preset) = &keys.preset {
+        if let Ok(overrides) = config::load_preset_overrides(preset) {
+            for (k, v) in overrides {
+                if let (Ok(key), Some(action)) =
+                    (config::parse_key(&k), parse_action(&v))
+                {
+                    map.insert(key, action);
+                }
+            }
+        }
+    }
+
+    for (k, v) in &keys.overrides {
+        if let (Ok(key), Some(action)) = (config::parse_key(k), parse_action(v)) {
+            map.insert(key, action);
+        }
+    }
+
+    map
+}
 
 /// Outcome of a keypress that requires I/O, returned to the event loop to act on.
 #[derive(Debug, PartialEq, Eq)]
@@ -77,6 +161,9 @@ fn matches_search(entry: &log::Entry, query: &str) -> bool {
 
 /// Central application state.
 pub(crate) struct App {
+    config: config::Config,
+    keymap: KeyMap,
+    layout: LayoutMode,
     log_buffer: VecDeque<log::Entry>,
     scroll: usize,
     inspector_scroll: usize,
@@ -112,14 +199,20 @@ impl App {
     /// # Arguments
     ///
     /// * `port_name` - The connected serial port name, if already known.
+    /// * `config` - Loaded configuration; determines colors, key bindings, and
+    ///   buffer sizes.
     ///
     /// # Returns
     ///
     /// An [`App`] with an empty log buffer, all filters visible, and the event
     /// loop running.
     #[must_use]
-    pub(crate) fn new(port_name: Option<String>) -> Self {
+    pub(crate) fn new(port_name: Option<String>, config: config::Config) -> Self {
+        let keymap = build_keymap(&config.keys);
         Self {
+            config,
+            keymap,
+            layout: LayoutMode::Split,
             log_buffer: VecDeque::new(),
             scroll: 0,
             inspector_scroll: 0,
@@ -170,13 +263,13 @@ impl App {
                         push_history(
                             &mut self.heap_history,
                             f.heap_free,
-                            SPARKLINE_LEN,
+                            self.config.ui.sparkline_len,
                         );
                         f.cpu_usage.iter().enumerate().for_each(|(i, &usage)| {
                             push_history(
                                 &mut self.cpu_history[i],
                                 u32::from(usage),
-                                SPARKLINE_LEN,
+                                self.config.ui.sparkline_len,
                             );
                         });
                         self.agent_frame = Some(f);
@@ -190,7 +283,7 @@ impl App {
                     None => {}
                 }
             }
-            if self.log_buffer.len() >= BUFFER_SIZE {
+            if self.log_buffer.len() >= self.config.ui.buffer_size {
                 self.log_buffer.pop_front();
             }
             let query = self.filter.search_query().to_lowercase();
@@ -478,7 +571,86 @@ impl App {
                 self.scroll_active_pane_down(10);
                 Action::None
             }
-            _ => Action::None,
+            _ => self.apply_keymap(key),
+        }
+    }
+
+    fn apply_keymap(&mut self, key: KeyEvent) -> Action {
+        match self.keymap.get(&(key.code, key.modifiers)).copied() {
+            Some(MappableAction::ScrollUp) => {
+                self.scroll_active_pane_up(1);
+                Action::None
+            }
+            Some(MappableAction::ScrollDown) => {
+                self.scroll_active_pane_down(1);
+                Action::None
+            }
+            Some(MappableAction::PageUp) => {
+                self.scroll_active_pane_up(10);
+                Action::None
+            }
+            Some(MappableAction::PageDown) => {
+                self.scroll_active_pane_down(10);
+                Action::None
+            }
+            Some(MappableAction::ScrollTop) => {
+                self.scroll = 0;
+                self.inspector_scroll = 0;
+                Action::None
+            }
+            Some(MappableAction::ScrollBottom) => {
+                self.scroll = 0;
+                self.inspector_scroll = self.inspector_max_scroll.get();
+                Action::None
+            }
+            Some(MappableAction::SwitchPane) => {
+                self.focused_pane = match self.focused_pane {
+                    Pane::Monitor => {
+                        self.monitor_pct = self.monitor_pct.min(80);
+                        Pane::Inspector
+                    }
+                    Pane::Inspector => {
+                        self.monitor_pct = self.monitor_pct.max(20);
+                        Pane::Monitor
+                    }
+                    Pane::Status => Pane::Monitor,
+                };
+                Action::None
+            }
+            Some(MappableAction::GrowMonitor) => {
+                self.grow_monitor();
+                if self.focused_pane == Pane::Inspector && self.monitor_pct == 100 {
+                    self.focused_pane = Pane::Monitor;
+                }
+                Action::None
+            }
+            Some(MappableAction::ShrinkMonitor) => {
+                self.shrink_monitor();
+                if self.focused_pane == Pane::Monitor && self.monitor_pct == 0 {
+                    self.focused_pane = Pane::Inspector;
+                }
+                Action::None
+            }
+            Some(MappableAction::ToggleFilter) => {
+                if self.focused_pane == Pane::Monitor {
+                    self.filter.toggle_popup();
+                }
+                Action::None
+            }
+            Some(MappableAction::ClearLog) => {
+                if self.focused_pane == Pane::Monitor {
+                    self.clear_log();
+                }
+                Action::None
+            }
+            Some(MappableAction::Quit) => Action::Quit,
+            Some(MappableAction::QuitPrompt) => Action::QuitPrompt,
+            Some(MappableAction::Flash) => Action::Flash,
+            Some(MappableAction::ErasePrompt) => Action::ErasePrompt,
+            Some(MappableAction::ResetDevice) => Action::ResetDevice,
+            Some(MappableAction::Disconnect) => Action::Disconnect,
+            Some(MappableAction::ScanPorts) => Action::ScanPorts,
+            None => Action::None,
         }
     }
 
@@ -1000,12 +1172,41 @@ impl App {
         self.monitor_pct
     }
 
-    fn grow_monitor(&mut self) {
+    pub(crate) fn grow_monitor(&mut self) {
         self.monitor_pct = self.monitor_pct.saturating_add(5).min(100);
     }
 
-    fn shrink_monitor(&mut self) {
+    pub(crate) fn shrink_monitor(&mut self) {
         self.monitor_pct = self.monitor_pct.saturating_sub(5);
+    }
+
+    /// Returns the current layout mode.
+    ///
+    /// # Returns
+    ///
+    /// The active [`LayoutMode`] controlling which panes are rendered.
+    #[must_use]
+    pub(crate) fn layout(&self) -> LayoutMode {
+        self.layout
+    }
+
+    /// Sets the layout mode.
+    ///
+    /// # Arguments
+    ///
+    /// * `layout` - The [`LayoutMode`] to apply.
+    pub(crate) fn set_layout(&mut self, layout: LayoutMode) {
+        self.layout = layout;
+    }
+
+    /// Returns a shared reference to the loaded configuration.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the active [`config::Config`].
+    #[must_use]
+    pub(crate) fn config(&self) -> &config::Config {
+        &self.config
     }
 
     /// Returns the inspector scroll offset.
@@ -1047,11 +1248,20 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc;
 
-    use crate::app::{Action, App, Pane, BUFFER_SIZE, DEFAULT_BAUD, SPARKLINE_LEN};
+    use crate::app::{Action, App, Pane, DEFAULT_BAUD};
+    use crate::config::Config;
     use crate::runner::{
         handle_action, handle_event_message, handle_ports_detected,
     };
     use crate::{flash, log};
+
+    fn app() -> App {
+        App::new(None, Config::default())
+    }
+
+    fn app_with_port(port: &str) -> App {
+        App::new(Some(port.into()), Config::default())
+    }
 
     fn make_tx() -> mpsc::UnboundedSender<crate::event::Message> {
         let (tx, _) = mpsc::unbounded_channel();
@@ -1089,7 +1299,7 @@ mod tests {
 
     #[test]
     fn app_initial_state() {
-        let app = App::new(Some("COM1".into()));
+        let app = app_with_port("COM1");
         assert!(app.is_running());
         assert_eq!(app.port_name(), Some("COM1"));
         assert_eq!(app.scroll(), 0);
@@ -1103,34 +1313,34 @@ mod tests {
 
     #[test]
     fn app_new_no_port() {
-        let app = App::new(None);
+        let app = app();
         assert!(app.port_name().is_none());
     }
 
     #[test]
     fn app_quit_stops_running() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.quit();
         assert!(!app.is_running());
     }
 
     #[test]
     fn app_set_status_and_read() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.set_status("hello");
         assert_eq!(app.status_msg(), Some("hello"));
     }
 
     #[test]
     fn tick_no_status_is_noop() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.tick();
         assert!(app.status_msg().is_none());
     }
 
     #[test]
     fn tick_recent_status_is_preserved() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.set_status("hello");
         app.tick();
         assert_eq!(app.status_msg(), Some("hello"));
@@ -1138,7 +1348,7 @@ mod tests {
 
     #[test]
     fn app_set_port_updates_name_and_clears_selector() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into()]);
         assert!(app.port_selector().is_some());
         app.set_port("COM1".into());
@@ -1148,7 +1358,7 @@ mod tests {
 
     #[test]
     fn app_open_port_selector() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
         let sel = app.port_selector().unwrap();
         assert_eq!(sel.ports(), &["COM1", "COM2"]);
@@ -1156,7 +1366,7 @@ mod tests {
 
     #[test]
     fn refresh_port_selector_closes_on_empty() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into()]);
         app.refresh_port_selector(vec![]);
         assert!(app.port_selector().is_none());
@@ -1164,7 +1374,7 @@ mod tests {
 
     #[test]
     fn refresh_port_selector_updates_list_and_clamps_cursor() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
         app.port_selector_mut().unwrap().move_cursor(1);
         app.refresh_port_selector(vec!["COM3".into()]);
@@ -1175,28 +1385,28 @@ mod tests {
 
     #[test]
     fn refresh_port_selector_no_op_when_closed() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.refresh_port_selector(vec!["COM1".into()]);
         assert!(app.port_selector().is_none());
     }
 
     #[test]
     fn push_line_adds_entry() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("I (1) wifi: Connected");
         assert_eq!(app.visible_entries(10).len(), 1);
     }
 
     #[test]
     fn push_line_records_tag() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("I (1) wifi: Connected");
         assert!(app.filter().known_tags().iter().any(|t| t == "wifi"));
     }
 
     #[test]
     fn push_line_blank_line_is_ignored() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("");
         app.push_line("   ");
         assert!(app.visible_entries(10).is_empty());
@@ -1204,14 +1414,14 @@ mod tests {
 
     #[test]
     fn push_line_raw_line_does_not_record_tag() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("some raw output");
         assert!(app.filter().known_tags().is_empty());
     }
 
     #[test]
     fn push_line_scroll_increments_when_scrolled_up() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("I (1) tag: first");
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.scroll(), 1);
@@ -1221,7 +1431,7 @@ mod tests {
 
     #[test]
     fn push_line_scroll_stays_zero_at_bottom() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("I (1) tag: first");
         app.push_line("I (1) tag: second");
         assert_eq!(app.scroll(), 0);
@@ -1229,7 +1439,7 @@ mod tests {
 
     #[test]
     fn heap_history_accumulates_on_agent_frame() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert!(app.heap_history().is_empty());
         push_agent_frame(&mut app, 0);
         assert_eq!(app.heap_history().len(), 1);
@@ -1238,16 +1448,16 @@ mod tests {
 
     #[test]
     fn heap_history_caps_at_sparkline_len() {
-        let mut app = App::new(None);
-        for _ in 0..=SPARKLINE_LEN {
+        let mut app = app();
+        for _ in 0..=60 {
             push_agent_frame(&mut app, 0);
         }
-        assert_eq!(app.heap_history().len(), SPARKLINE_LEN);
+        assert_eq!(app.heap_history().len(), 60);
     }
 
     #[test]
     fn cpu_history_accumulates_on_agent_frame() {
-        let mut app = App::new(None);
+        let mut app = app();
         push_agent_frame(&mut app, 0);
         assert_eq!(app.cpu_history()[0].len(), 1);
         assert_eq!(app.cpu_history()[0][0], 50);
@@ -1255,7 +1465,7 @@ mod tests {
 
     #[test]
     fn clear_agent_data_resets_history() {
-        let mut app = App::new(None);
+        let mut app = app();
         push_agent_frame(&mut app, 0);
         assert!(!app.heap_history().is_empty());
         app.clear_agent_data();
@@ -1266,28 +1476,26 @@ mod tests {
 
     #[test]
     fn push_line_evicts_oldest_when_buffer_full() {
-        let mut app = App::new(None);
-        for i in 0..=BUFFER_SIZE {
+        const BUF: usize = 10_000;
+        let mut app = app();
+        for i in 0..=BUF {
             app.push_line(&format!("I (1) tag: line {i}"));
         }
-        let entries = app.visible_entries(BUFFER_SIZE + 1);
-        assert_eq!(entries.len(), BUFFER_SIZE);
+        let entries = app.visible_entries(BUF + 1);
+        assert_eq!(entries.len(), BUF);
         assert_eq!(entries[0].message(), "line 1");
-        assert_eq!(
-            entries[BUFFER_SIZE - 1].message(),
-            &format!("line {BUFFER_SIZE}")
-        );
+        assert_eq!(entries[BUF - 1].message(), &format!("line {BUF}"));
     }
 
     #[test]
     fn visible_entries_empty_buffer() {
-        let app = App::new(None);
+        let app = app();
         assert!(app.visible_entries(10).is_empty());
     }
 
     #[test]
     fn visible_entries_fewer_than_height_returns_all() {
-        let mut app = App::new(None);
+        let mut app = app();
         for i in 0..3 {
             app.push_line(&format!("I (1) tag: line {i}"));
         }
@@ -1296,7 +1504,7 @@ mod tests {
 
     #[test]
     fn visible_entries_more_than_height_returns_tail() {
-        let mut app = App::new(None);
+        let mut app = app();
         for i in 0..10 {
             app.push_line(&format!("I (1) tag: line {i}"));
         }
@@ -1308,7 +1516,7 @@ mod tests {
 
     #[test]
     fn visible_entries_scroll_shifts_start() {
-        let mut app = App::new(None);
+        let mut app = app();
         for i in 0..10 {
             app.push_line(&format!("I (1) tag: line {i}"));
         }
@@ -1322,7 +1530,7 @@ mod tests {
 
     #[test]
     fn visible_entries_filters_by_search_query() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("I (1) wifi: connected");
         app.push_line("E (1) i2c: timeout");
         app.push_line("I (1) wifi: disconnected");
@@ -1337,7 +1545,7 @@ mod tests {
 
     #[test]
     fn visible_entries_search_case_insensitive() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("I (1) tag: HEAP overflow");
         app.push_line("I (1) tag: stack ok");
         app.filter_mut().toggle_popup();
@@ -1352,7 +1560,7 @@ mod tests {
 
     #[test]
     fn visible_entries_search_matches_tag() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("I (1) wifi: ok");
         app.push_line("I (1) i2c: ok");
         app.filter_mut().toggle_popup();
@@ -1367,7 +1575,7 @@ mod tests {
 
     #[test]
     fn visible_entries_empty_search_returns_all() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("I (1) wifi: connected");
         app.push_line("E (1) i2c: timeout");
         assert_eq!(app.visible_entries(10).len(), 2);
@@ -1375,7 +1583,7 @@ mod tests {
 
     #[test]
     fn visible_entries_respects_hidden_level() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("E (1) tag: error line");
         app.push_line("I (1) tag: info line");
         app.filter_mut().toggle_at_cursor();
@@ -1386,19 +1594,19 @@ mod tests {
 
     #[test]
     fn handle_key_ctrl_c_quits() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
     }
 
     #[test]
     fn handle_key_q_opens_quit_confirm() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::QuitPrompt);
     }
 
     #[test]
     fn handle_key_q_exits_scroll_mode_when_scrolled() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.scroll(), 1);
         assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::None);
@@ -1407,7 +1615,7 @@ mod tests {
 
     #[test]
     fn handle_key_esc_exits_scroll_mode_when_scrolled() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::None);
         assert_eq!(app.scroll(), 0);
@@ -1415,13 +1623,13 @@ mod tests {
 
     #[test]
     fn handle_key_esc_opens_quit_confirm_when_not_scrolled() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::QuitPrompt);
     }
 
     #[test]
     fn handle_key_q_exits_inspector_scroll_when_inspector_focused() {
-        let mut app = App::new(None);
+        let mut app = app();
         push_agent_frame(&mut app, 3);
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_pane(), Pane::Inspector);
@@ -1433,7 +1641,7 @@ mod tests {
 
     #[test]
     fn handle_key_q_does_not_exit_monitor_scroll_when_inspector_focused() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.scroll(), 1);
         app.handle_key(key(KeyCode::Tab));
@@ -1444,14 +1652,14 @@ mod tests {
 
     #[test]
     fn handle_key_quit_confirm_y_quits() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_quit_confirm();
         assert_eq!(app.handle_key(key(KeyCode::Char('y'))), Action::Quit);
     }
 
     #[test]
     fn handle_key_quit_confirm_n_closes() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_quit_confirm();
         assert_eq!(app.handle_key(key(KeyCode::Char('n'))), Action::None);
         assert!(!app.is_quit_confirm_open());
@@ -1459,7 +1667,7 @@ mod tests {
 
     #[test]
     fn handle_key_quit_confirm_q_closes() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_quit_confirm();
         assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::None);
         assert!(!app.is_quit_confirm_open());
@@ -1467,7 +1675,7 @@ mod tests {
 
     #[test]
     fn handle_key_quit_confirm_esc_closes() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_quit_confirm();
         assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::None);
         assert!(!app.is_quit_confirm_open());
@@ -1475,20 +1683,20 @@ mod tests {
 
     #[test]
     fn handle_key_ctrl_c_quits_with_quit_confirm_open() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_quit_confirm();
         assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
     }
 
     #[test]
     fn handle_key_d_disconnects() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert_eq!(app.handle_key(key(KeyCode::Char('d'))), Action::Disconnect);
     }
 
     #[test]
     fn disconnect_clears_port_state() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.disconnect();
         assert!(app.port_name().is_none());
         assert!(app.port_cmd_tx().is_none());
@@ -1496,37 +1704,37 @@ mod tests {
 
     #[test]
     fn handle_key_r_resets_device() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert_eq!(app.handle_key(key(KeyCode::Char('r'))), Action::ResetDevice);
     }
 
     #[test]
     fn handle_key_c_scans_ports() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert_eq!(app.handle_key(key(KeyCode::Char('c'))), Action::ScanPorts);
     }
 
     #[test]
     fn handle_key_f_returns_flash_action() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert_eq!(app.handle_key(key(KeyCode::Char('f'))), Action::Flash);
     }
 
     #[test]
     fn handle_key_e_returns_erase_prompt_action() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert_eq!(app.handle_key(key(KeyCode::Char('e'))), Action::ErasePrompt);
     }
 
     #[test]
     fn handle_key_s_is_noop() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert_eq!(app.handle_key(key(KeyCode::Char('s'))), Action::None);
     }
 
     #[test]
     fn handle_key_tab_cycles_pane_focus() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert_eq!(app.focused_pane(), Pane::Monitor);
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_pane(), Pane::Inspector);
@@ -1536,7 +1744,7 @@ mod tests {
 
     #[test]
     fn handle_key_ctrl_f_toggles_filter_popup_when_monitor_focused() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert!(!app.filter().is_popup_open());
         app.handle_key(ctrl(KeyCode::Char('f')));
         assert!(app.filter().is_popup_open());
@@ -1546,7 +1754,7 @@ mod tests {
 
     #[test]
     fn handle_key_ctrl_f_no_op_when_inspector_focused() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_pane(), Pane::Inspector);
         app.handle_key(ctrl(KeyCode::Char('f')));
@@ -1555,14 +1763,14 @@ mod tests {
 
     #[test]
     fn handle_key_up_scrolls_up() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.scroll(), 1);
     }
 
     #[test]
     fn handle_key_down_scrolls_down_and_clamps() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.scroll(), 0);
         app.handle_key(key(KeyCode::Up));
@@ -1572,14 +1780,14 @@ mod tests {
 
     #[test]
     fn handle_key_page_up_adds_ten() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(key(KeyCode::PageUp));
         assert_eq!(app.scroll(), 10);
     }
 
     #[test]
     fn handle_key_page_down_subtracts_ten() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(key(KeyCode::PageUp));
         app.handle_key(key(KeyCode::PageDown));
         assert_eq!(app.scroll(), 0);
@@ -1587,13 +1795,13 @@ mod tests {
 
     #[test]
     fn handle_key_unknown_returns_none() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert_eq!(app.handle_key(key(KeyCode::F(1))), Action::None);
     }
 
     #[test]
     fn handle_key_filter_popup_space_toggles_item() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         assert!(!app.filter().is_level_hidden(log::Level::Error));
         app.handle_key(key(KeyCode::Char(' ')));
@@ -1602,7 +1810,7 @@ mod tests {
 
     #[test]
     fn handle_key_filter_popup_ctrl_a_toggles_all() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         app.handle_key(ctrl(KeyCode::Char('a')));
         assert!(app.filter().is_level_hidden(log::Level::Error));
@@ -1611,7 +1819,7 @@ mod tests {
 
     #[test]
     fn handle_key_filter_popup_q_focuses_search() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         app.handle_key(key(KeyCode::Char('q')));
         assert!(app.filter().is_popup_open());
@@ -1621,7 +1829,7 @@ mod tests {
 
     #[test]
     fn handle_key_filter_popup_esc_closes() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         app.handle_key(key(KeyCode::Esc));
         assert!(!app.filter().is_popup_open());
@@ -1629,7 +1837,7 @@ mod tests {
 
     #[test]
     fn handle_key_filter_popup_char_focuses_search_and_types() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         app.handle_key(key(KeyCode::Char('w')));
         assert!(app.filter().is_search_focused());
@@ -1638,7 +1846,7 @@ mod tests {
 
     #[test]
     fn handle_key_filter_popup_space_types_when_focused() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         app.handle_key(key(KeyCode::Char('w')));
         app.handle_key(key(KeyCode::Char(' ')));
@@ -1648,7 +1856,7 @@ mod tests {
 
     #[test]
     fn handle_key_filter_popup_backspace_refocuses_search() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         app.handle_key(key(KeyCode::Char('w')));
         app.handle_key(key(KeyCode::Esc));
@@ -1660,7 +1868,7 @@ mod tests {
 
     #[test]
     fn handle_key_filter_popup_esc_unfocuses_search_keeping_query() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         app.handle_key(key(KeyCode::Char('w')));
         app.handle_key(key(KeyCode::Esc));
@@ -1671,7 +1879,7 @@ mod tests {
 
     #[test]
     fn handle_key_filter_popup_esc_closes_when_unfocused() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         app.handle_key(key(KeyCode::Char('w')));
         app.handle_key(key(KeyCode::Esc));
@@ -1681,7 +1889,7 @@ mod tests {
 
     #[test]
     fn handle_key_filter_popup_up_down_unfocuses_search() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         app.handle_key(key(KeyCode::Char('w')));
         assert!(app.filter().is_search_focused());
@@ -1691,7 +1899,7 @@ mod tests {
 
     #[test]
     fn handle_key_filter_popup_up_at_top_focuses_search() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         assert_eq!(app.filter().cursor(), 0);
         assert!(!app.filter().is_search_focused());
@@ -1701,7 +1909,7 @@ mod tests {
 
     #[test]
     fn handle_key_filter_popup_up_not_at_top_moves_cursor() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.filter().cursor(), 1);
@@ -1712,7 +1920,7 @@ mod tests {
 
     #[test]
     fn handle_key_filter_popup_ctrl_a_still_toggles_all_when_unfocused() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         app.handle_key(ctrl(KeyCode::Char('a')));
         assert!(app.filter().is_level_hidden(log::Level::Error));
@@ -1721,7 +1929,7 @@ mod tests {
 
     #[test]
     fn handle_key_filter_popup_navigation() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.filter().cursor(), 1);
@@ -1731,14 +1939,14 @@ mod tests {
 
     #[test]
     fn handle_key_ctrl_c_quits_even_with_popup_open() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
         assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
     }
 
     #[test]
     fn handle_key_port_selector_navigation() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
         app.handle_key(key(KeyCode::Down));
         assert_eq!(app.port_selector().unwrap().cursor(), 1);
@@ -1748,7 +1956,7 @@ mod tests {
 
     #[test]
     fn handle_key_port_selector_enter_returns_connect_action() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
         let action = app.handle_key(key(KeyCode::Enter));
         assert_eq!(action, Action::ConnectPort("COM1".to_owned()));
@@ -1757,7 +1965,7 @@ mod tests {
 
     #[test]
     fn handle_key_port_selector_c_dismisses() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into()]);
         let action = app.handle_key(key(KeyCode::Char('c')));
         assert_eq!(action, Action::None);
@@ -1766,7 +1974,7 @@ mod tests {
 
     #[test]
     fn handle_key_port_selector_q_dismisses() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into()]);
         let action = app.handle_key(key(KeyCode::Char('q')));
         assert_eq!(action, Action::None);
@@ -1775,7 +1983,7 @@ mod tests {
 
     #[test]
     fn handle_key_port_selector_esc_dismisses() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into()]);
         app.handle_key(key(KeyCode::Esc));
         assert!(app.port_selector().is_none());
@@ -1783,14 +1991,14 @@ mod tests {
 
     #[test]
     fn handle_key_ctrl_c_quits_even_with_selector_open() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into()]);
         assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
     }
 
     #[test]
     fn push_line_scroll_no_drift_when_entry_filtered() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("E (1) tag: error");
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.scroll(), 1);
@@ -1804,7 +2012,7 @@ mod tests {
 
     #[test]
     fn clear_log_empties_buffer_and_resets_scroll() {
-        let mut app = App::new(None);
+        let mut app = app();
         for i in 0..5 {
             app.push_line(&format!("I (1) tag: line {i}"));
         }
@@ -1817,7 +2025,7 @@ mod tests {
 
     #[test]
     fn handle_key_ctrl_l_clears_log_when_monitor_focused() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("I (1) tag: line");
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.handle_key(ctrl(KeyCode::Char('l'))), Action::None);
@@ -1827,7 +2035,7 @@ mod tests {
 
     #[test]
     fn handle_key_ctrl_l_no_op_when_inspector_focused() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("I (1) tag: line");
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_pane(), Pane::Inspector);
@@ -1837,7 +2045,7 @@ mod tests {
 
     #[test]
     fn handle_ports_detected_no_op_when_empty_and_disconnected() {
-        let mut app = App::new(None);
+        let mut app = app();
         handle_ports_detected(&mut app, vec![], &[], &make_tx());
         assert!(app.port_name().is_none());
         assert!(app.port_selector().is_none());
@@ -1846,7 +2054,7 @@ mod tests {
 
     #[test]
     fn handle_ports_detected_opens_selector_for_multiple_ports() {
-        let mut app = App::new(None);
+        let mut app = app();
         handle_ports_detected(
             &mut app,
             vec!["COM1".into(), "COM2".into()],
@@ -1858,7 +2066,7 @@ mod tests {
 
     #[test]
     fn handle_ports_detected_refreshes_open_selector() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
         handle_ports_detected(
             &mut app,
@@ -1872,7 +2080,7 @@ mod tests {
 
     #[test]
     fn handle_ports_detected_closes_selector_on_empty() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into()]);
         handle_ports_detected(&mut app, vec![], &["COM1".to_owned()], &make_tx());
         assert!(app.port_selector().is_none());
@@ -1881,7 +2089,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_ports_detected_auto_connects_when_selector_reaches_one_port() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
         handle_ports_detected(
             &mut app,
@@ -1897,7 +2105,7 @@ mod tests {
 
     #[test]
     fn handle_ports_detected_connected_new_device_sets_status() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.set_port("COM1".into());
         handle_ports_detected(
             &mut app,
@@ -1910,7 +2118,7 @@ mod tests {
 
     #[test]
     fn handle_ports_detected_connected_same_ports_no_status() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.set_port("COM1".into());
         handle_ports_detected(
             &mut app,
@@ -1923,7 +2131,7 @@ mod tests {
 
     #[test]
     fn handle_ports_detected_connected_current_gone_no_new_device_status() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.set_port("COM1".into());
         handle_ports_detected(
             &mut app,
@@ -1936,7 +2144,7 @@ mod tests {
 
     #[test]
     fn handle_ports_detected_other_port_disappeared_no_status() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.set_port("COM1".into());
         handle_ports_detected(
             &mut app,
@@ -1949,7 +2157,7 @@ mod tests {
 
     #[test]
     fn handle_ports_detected_new_device_but_connected_port_gone_no_status() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.set_port("COM1".into());
         handle_ports_detected(
             &mut app,
@@ -1962,7 +2170,7 @@ mod tests {
 
     #[test]
     fn handle_ports_detected_is_noop_while_flashing() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
             current: 0,
@@ -1980,14 +2188,14 @@ mod tests {
 
     #[test]
     fn handle_action_quit() {
-        let mut app = App::new(None);
+        let mut app = app();
         handle_action(&mut app, Action::Quit, &make_tx());
         assert!(!app.is_running());
     }
 
     #[test]
     fn handle_action_quit_while_flashing_quits_immediately() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
             current: 0,
@@ -1999,7 +2207,7 @@ mod tests {
 
     #[test]
     fn handle_action_quit_prompt_while_flashing_sets_status() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
             current: 0,
@@ -2012,7 +2220,7 @@ mod tests {
 
     #[test]
     fn handle_action_quit_prompt_while_erasing_sets_status() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Erasing);
         handle_action(&mut app, Action::QuitPrompt, &make_tx());
         assert!(!app.is_quit_confirm_open());
@@ -2021,7 +2229,7 @@ mod tests {
 
     #[test]
     fn scan_ports_while_flashing_sets_status() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
             current: 0,
@@ -2034,7 +2242,7 @@ mod tests {
 
     #[test]
     fn handle_action_disconnect_when_connected() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         handle_action(&mut app, Action::Disconnect, &make_tx());
         assert!(app.port_name().is_none());
         assert_eq!(app.status_msg(), Some("Disconnected."));
@@ -2042,14 +2250,14 @@ mod tests {
 
     #[test]
     fn handle_action_disconnect_when_not_connected() {
-        let mut app = App::new(None);
+        let mut app = app();
         handle_action(&mut app, Action::Disconnect, &make_tx());
         assert_eq!(app.status_msg(), Some("Not connected."));
     }
 
     #[test]
     fn handle_action_disconnect_while_flashing_sets_status() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
             current: 0,
@@ -2062,7 +2270,7 @@ mod tests {
 
     #[test]
     fn handle_action_connect_port_while_flashing_sets_status() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
             current: 0,
@@ -2075,14 +2283,14 @@ mod tests {
 
     #[test]
     fn handle_action_reset_no_port() {
-        let mut app = App::new(None);
+        let mut app = app();
         handle_action(&mut app, Action::ResetDevice, &make_tx());
         assert_eq!(app.status_msg(), Some("No port connected."));
     }
 
     #[test]
     fn handle_action_reset_while_flashing_sets_status() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
             current: 0,
@@ -2094,7 +2302,7 @@ mod tests {
 
     #[test]
     fn handle_action_reset_while_erasing_sets_status() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Erasing);
         handle_action(&mut app, Action::ResetDevice, &make_tx());
         assert_eq!(app.status_msg(), Some("Operation already in progress."));
@@ -2102,7 +2310,7 @@ mod tests {
 
     #[test]
     fn handle_action_none_is_noop() {
-        let mut app = App::new(None);
+        let mut app = app();
         handle_action(&mut app, Action::None, &make_tx());
         assert!(app.status_msg().is_none());
         assert!(app.is_running());
@@ -2114,7 +2322,7 @@ mod tests {
         let (new_src_tx, _new_src_rx) = tokio::sync::watch::channel(false);
         let (cmd_tx, _cmd_rx) = std::sync::mpsc::channel();
 
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_source_shutdown(old_src_tx);
 
         app.set_port("COM2".into());
@@ -2130,7 +2338,7 @@ mod tests {
     fn connect_success_while_reconnecting_clears_flash_state() {
         let (src_tx, _src_rx) = tokio::sync::watch::channel(false);
         let (cmd_tx, _cmd_rx) = std::sync::mpsc::channel();
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Reconnecting);
         assert!(app.is_flashing());
         let tx = make_tx();
@@ -2153,7 +2361,7 @@ mod tests {
 
     #[test]
     fn connect_error_clears_port_and_sets_status() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         let tx = make_tx();
         handle_event_message(
             &mut app,
@@ -2171,7 +2379,7 @@ mod tests {
 
     #[test]
     fn handle_action_scan_ports_leaves_app_in_consistent_state() {
-        let mut app = App::new(None);
+        let mut app = app();
         handle_action(&mut app, Action::ScanPorts, &make_tx());
         assert!(
             app.status_msg().is_some()
@@ -2183,7 +2391,7 @@ mod tests {
 
     #[test]
     fn handle_key_erase_confirm_y_confirms() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_erase_confirm();
         assert_eq!(
             app.handle_key(key(KeyCode::Char('y'))),
@@ -2193,7 +2401,7 @@ mod tests {
 
     #[test]
     fn handle_key_erase_confirm_n_closes() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_erase_confirm();
         assert_eq!(app.handle_key(key(KeyCode::Char('n'))), Action::None);
         assert!(!app.is_erase_confirm_open());
@@ -2201,7 +2409,7 @@ mod tests {
 
     #[test]
     fn handle_key_erase_confirm_esc_closes() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_erase_confirm();
         assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::None);
         assert!(!app.is_erase_confirm_open());
@@ -2209,7 +2417,7 @@ mod tests {
 
     #[test]
     fn handle_key_erase_confirm_e_closes() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_erase_confirm();
         assert_eq!(app.handle_key(key(KeyCode::Char('e'))), Action::None);
         assert!(!app.is_erase_confirm_open());
@@ -2217,14 +2425,14 @@ mod tests {
 
     #[test]
     fn handle_key_ctrl_c_quits_with_erase_confirm_open() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_erase_confirm();
         assert_eq!(app.handle_key(ctrl(KeyCode::Char('c'))), Action::Quit);
     }
 
     #[test]
     fn handle_key_elf_selector_char_updates_input() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_elf_selector(None);
         app.handle_key(key(KeyCode::Char('/')));
         app.handle_key(key(KeyCode::Char('t')));
@@ -2233,14 +2441,14 @@ mod tests {
 
     #[test]
     fn handle_key_elf_selector_esc_closes() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_elf_selector(None);
         assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::CloseElfSelector);
     }
 
     #[test]
     fn handle_key_elf_selector_enter_confirms() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_elf_selector(None);
         assert_eq!(app.handle_key(key(KeyCode::Enter)), Action::ConfirmElfPath);
     }
@@ -2257,7 +2465,7 @@ mod tests {
         std::fs::write(dir.join("fw_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
         std::fs::write(dir.join("fw_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
 
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_elf_selector(None);
         for ch in format!("{}/fw", dir.display()).chars() {
             app.handle_key(key(KeyCode::Char(ch)));
@@ -2269,14 +2477,14 @@ mod tests {
 
     #[test]
     fn handle_key_elf_selector_back_tab_noop_when_no_completions() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_elf_selector(None);
         assert_eq!(app.handle_key(key(KeyCode::BackTab)), Action::None);
     }
 
     #[test]
     fn handle_action_flash_always_opens_selector() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         handle_action(&mut app, Action::Flash, &make_tx());
         assert!(app.is_elf_selector_open());
     }
@@ -2285,7 +2493,7 @@ mod tests {
     fn handle_action_confirm_elf_path_no_port_sets_status() {
         let path = unique_temp_path("esp-tui-test-elf-no-port");
         std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_elf_selector(None);
         if let Some(s) = app.elf_selector_mut() {
             for ch in path.to_str().unwrap().chars() {
@@ -2301,7 +2509,7 @@ mod tests {
     fn handle_action_confirm_elf_path_already_flashing_sets_status() {
         let path = unique_temp_path("esp-tui-test-elf-flashing");
         std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
             current: 0,
@@ -2322,7 +2530,7 @@ mod tests {
     fn handle_action_confirm_elf_path_valid() {
         let path = unique_temp_path("esp-tui-test-elf");
         std::fs::write(&path, b"\x7fELF\x00\x00\x00\x00").unwrap();
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_elf_selector(None);
         if let Some(s) = app.elf_selector_mut() {
             for ch in path.to_str().unwrap().chars() {
@@ -2338,7 +2546,7 @@ mod tests {
 
     #[test]
     fn handle_action_confirm_elf_path_nonexistent_stays_open() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_elf_selector(None);
         if let Some(s) = app.elf_selector_mut() {
             for ch in "/nonexistent/path.elf".chars() {
@@ -2354,7 +2562,7 @@ mod tests {
     #[test]
     fn handle_action_confirm_elf_path_directory_rejected() {
         let dir = std::env::temp_dir();
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_elf_selector(None);
         if let Some(s) = app.elf_selector_mut() {
             for ch in dir.to_str().unwrap().chars() {
@@ -2371,7 +2579,7 @@ mod tests {
     fn handle_action_confirm_elf_path_non_elf_rejected() {
         let path = unique_temp_path("esp-tui-test-non-elf");
         std::fs::write(&path, b"not an elf file").unwrap();
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_elf_selector(None);
         if let Some(s) = app.elf_selector_mut() {
             for ch in path.to_str().unwrap().chars() {
@@ -2387,7 +2595,7 @@ mod tests {
 
     #[test]
     fn is_flashing_reflects_state() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert!(!app.is_flashing());
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
@@ -2405,7 +2613,7 @@ mod tests {
 
     #[test]
     fn handle_action_erase_prompt_no_port_sets_status() {
-        let mut app = App::new(None);
+        let mut app = app();
         handle_action(&mut app, Action::ErasePrompt, &make_tx());
         assert_eq!(app.status_msg(), Some("No port connected."));
         assert!(!app.is_erase_confirm_open());
@@ -2413,7 +2621,7 @@ mod tests {
 
     #[test]
     fn handle_action_erase_prompt_while_flashing_sets_status() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
             current: 0,
@@ -2426,14 +2634,14 @@ mod tests {
 
     #[test]
     fn handle_action_erase_prompt_connected_opens_confirm() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         handle_action(&mut app, Action::ErasePrompt, &make_tx());
         assert!(app.is_erase_confirm_open());
     }
 
     #[test]
     fn handle_action_flash_no_port_sets_status_and_does_not_open_selector() {
-        let mut app = App::new(None);
+        let mut app = app();
         handle_action(&mut app, Action::Flash, &make_tx());
         assert!(!app.is_elf_selector_open());
         assert_eq!(app.status_msg(), Some("No port connected."));
@@ -2441,7 +2649,7 @@ mod tests {
 
     #[test]
     fn handle_action_flash_opens_selector_prefilled_when_elf_set() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_elf_path(std::path::PathBuf::from("/tmp/firmware.elf"));
         handle_action(&mut app, Action::Flash, &make_tx());
         assert!(app.is_elf_selector_open());
@@ -2450,7 +2658,7 @@ mod tests {
 
     #[test]
     fn handle_action_close_elf_selector_closes() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_elf_selector(None);
         handle_action(&mut app, Action::CloseElfSelector, &make_tx());
         assert!(!app.is_elf_selector_open());
@@ -2458,7 +2666,7 @@ mod tests {
 
     #[test]
     fn handle_action_flash_while_flashing_sets_status() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
             current: 0,
@@ -2471,7 +2679,7 @@ mod tests {
 
     #[test]
     fn handle_action_flash_while_erasing_sets_status() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Erasing);
         handle_action(&mut app, Action::Flash, &make_tx());
         assert!(!app.is_elf_selector_open());
@@ -2480,7 +2688,7 @@ mod tests {
 
     #[test]
     fn flash_done_ok_sets_reconnecting_and_status() {
-        let mut app = App::new(None);
+        let mut app = app();
         let tx = make_tx();
         handle_event_message(
             &mut app,
@@ -2494,7 +2702,7 @@ mod tests {
 
     #[test]
     fn flash_done_err_sets_reconnecting_and_error_status() {
-        let mut app = App::new(None);
+        let mut app = app();
         let tx = make_tx();
         handle_event_message(
             &mut app,
@@ -2508,7 +2716,7 @@ mod tests {
 
     #[test]
     fn erase_done_ok_sets_reconnecting() {
-        let mut app = App::new(None);
+        let mut app = app();
         let tx = make_tx();
         handle_event_message(
             &mut app,
@@ -2522,7 +2730,7 @@ mod tests {
 
     #[test]
     fn erase_done_err_sets_reconnecting_and_status() {
-        let mut app = App::new(None);
+        let mut app = app();
         let tx = make_tx();
         handle_event_message(
             &mut app,
@@ -2536,7 +2744,7 @@ mod tests {
 
     #[test]
     fn device_info_ok_stores_info() {
-        let mut app = App::new(None);
+        let mut app = app();
         let tx = make_tx();
         let info = flash::DeviceInfo::new("ESP32-S3", "4MB", "AA:BB:CC:DD:EE:FF");
         handle_event_message(
@@ -2550,7 +2758,7 @@ mod tests {
 
     #[test]
     fn device_info_err_is_ignored() {
-        let mut app = App::new(None);
+        let mut app = app();
         let tx = make_tx();
         handle_event_message(
             &mut app,
@@ -2563,7 +2771,7 @@ mod tests {
 
     #[test]
     fn scroll_routes_to_monitor_when_focused() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.scroll(), 1);
         assert_eq!(app.inspector_scroll(), 0);
@@ -2571,7 +2779,7 @@ mod tests {
 
     #[test]
     fn scroll_routes_to_inspector_when_focused() {
-        let mut app = App::new(None);
+        let mut app = app();
         push_agent_frame(&mut app, 3);
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_pane(), Pane::Inspector);
@@ -2584,7 +2792,7 @@ mod tests {
 
     #[test]
     fn page_scroll_routes_to_inspector_when_focused() {
-        let mut app = App::new(None);
+        let mut app = app();
         push_agent_frame(&mut app, 12);
         app.handle_key(key(KeyCode::Tab));
         app.handle_key(key(KeyCode::PageDown));
@@ -2596,7 +2804,7 @@ mod tests {
 
     #[test]
     fn push_line_agent_frame_populated() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert!(app.agent_frame().is_none());
         push_agent_frame(&mut app, 0);
         assert!(app.agent_frame().is_some());
@@ -2604,7 +2812,7 @@ mod tests {
 
     #[test]
     fn push_line_agent_startup_populated() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert!(app.agent_startup().is_none());
         app.push_line(
             "V (100) esp_agent: start reason=poweron chip=esp32s3 \
@@ -2615,7 +2823,7 @@ mod tests {
 
     #[test]
     fn push_line_agent_last_seen_set() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert!(app.agent_last_seen().is_none());
         push_agent_frame(&mut app, 0);
         assert!(app.agent_last_seen().is_some());
@@ -2623,7 +2831,7 @@ mod tests {
 
     #[test]
     fn disconnect_clears_agent_data_and_connected_at() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         push_agent_frame(&mut app, 0);
         assert!(app.agent_last_seen().is_some());
         app.disconnect();
@@ -2634,7 +2842,7 @@ mod tests {
 
     #[test]
     fn set_port_records_connected_at() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert!(app.connected_at().is_none());
         app.set_port("COM1".into());
         assert!(app.connected_at().is_some());
@@ -2642,13 +2850,13 @@ mod tests {
 
     #[test]
     fn monitor_pct_initial_value() {
-        let app = App::new(None);
+        let app = app();
         assert_eq!(app.monitor_pct(), 60);
     }
 
     #[test]
     fn ctrl_right_grows_monitor_when_focused() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert_eq!(app.focused_pane(), Pane::Monitor);
         app.handle_key(ctrl(KeyCode::Right));
         assert_eq!(app.monitor_pct(), 65);
@@ -2656,7 +2864,7 @@ mod tests {
 
     #[test]
     fn ctrl_left_shrinks_monitor_when_focused() {
-        let mut app = App::new(None);
+        let mut app = app();
         assert_eq!(app.focused_pane(), Pane::Monitor);
         app.handle_key(ctrl(KeyCode::Left));
         assert_eq!(app.monitor_pct(), 55);
@@ -2664,7 +2872,7 @@ mod tests {
 
     #[test]
     fn ctrl_right_with_inspector_focused_grows_monitor() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_pane(), Pane::Inspector);
         app.handle_key(ctrl(KeyCode::Right));
@@ -2673,7 +2881,7 @@ mod tests {
 
     #[test]
     fn ctrl_left_with_inspector_focused_shrinks_monitor() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_pane(), Pane::Inspector);
         app.handle_key(ctrl(KeyCode::Left));
@@ -2682,7 +2890,7 @@ mod tests {
 
     #[test]
     fn resize_clamps_at_100() {
-        let mut app = App::new(None);
+        let mut app = app();
         for _ in 0..9 {
             app.handle_key(ctrl(KeyCode::Right));
         }
@@ -2691,7 +2899,7 @@ mod tests {
 
     #[test]
     fn resize_clamps_at_0() {
-        let mut app = App::new(None);
+        let mut app = app();
         for _ in 0..13 {
             app.handle_key(ctrl(KeyCode::Left));
         }
@@ -2701,7 +2909,7 @@ mod tests {
 
     #[test]
     fn ctrl_left_on_monitor_auto_cycles_to_inspector_at_zero() {
-        let mut app = App::new(None);
+        let mut app = app();
         for _ in 0..12 {
             app.handle_key(ctrl(KeyCode::Left));
         }
@@ -2711,7 +2919,7 @@ mod tests {
 
     #[test]
     fn ctrl_right_on_inspector_auto_cycles_to_monitor_at_hundred() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_pane(), Pane::Inspector);
         for _ in 0..8 {
@@ -2723,7 +2931,7 @@ mod tests {
 
     #[test]
     fn tab_auto_expands_collapsed_inspector() {
-        let mut app = App::new(None);
+        let mut app = app();
         for _ in 0..8 {
             app.handle_key(ctrl(KeyCode::Right));
         }
@@ -2735,7 +2943,7 @@ mod tests {
 
     #[test]
     fn tab_auto_expands_collapsed_monitor() {
-        let mut app = App::new(None);
+        let mut app = app();
         for _ in 0..12 {
             app.handle_key(ctrl(KeyCode::Left));
         }

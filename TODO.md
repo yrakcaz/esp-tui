@@ -53,14 +53,13 @@
 - [ ] Panic/backtrace decoder: addr2line + ELF symbol resolution
 - [x] Historical sparklines for heap and CPU over last N seconds
 - [x] WiFi stats in inspector: RSSI and channel
-- [ ] WiFi TX/RX packet counts in inspector: requires `esp_netif_get_stats`, not available until ESP-IDF v5.4
+- [ ] WiFi TX/RX packet counts in inspector: requires `esp_netif_get_stats` (available since ESP-IDF v5.4)
 - [ ] Defmt binary log format support
 - [ ] Multi-device tab switching
-- [ ] `esp-tui.toml` config file (port, baud, ELF path, buffer size, agent options)
-- [ ] Additional CLI flags: e.g. `--pane monitor|inspector` to open with only one pane visible, and similar startup-layout options
-- [ ] Configurable keybindings, potentially with preset modes (e.g. vim, emacs); keybindings like j/k were intentionally left out for now pending this
-- [ ] Configurable color scheme (log level colors, UI chrome) via esp-tui.toml
-- [ ] `--project` flag to auto-detect ELF from Cargo project
+- [x] `esp-tui.toml` config file (port, baud, ELF path, buffer size, colors, keybindings)
+- [x] `--pane monitor|inspector` CLI flag to open with only one pane visible
+- [x] Configurable keybindings with preset support (vim, emacs) and per-key overrides via `esp-tui.toml`; preset files are TOML and can be shared or path-referenced
+- [x] Configurable color scheme (full UI palette) via `esp-tui.toml`
 - [ ] Mouse support for scrolling log pane
 - [ ] Log search: `/` opens an inline search bar at the bottom of the monitor pane (like tmux/less); `n`/`N` to jump between matches with highlighting
 - [ ] Log regex filter: live filter mode that hides non-matching lines, stacking on top of the existing level/tag filter; consider reusing the `/` entry point with a toggle between highlight and filter modes

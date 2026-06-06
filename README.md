@@ -112,17 +112,30 @@ Opening the repo in a devcontainer installs all prerequisites automatically, inc
 esp-tui [OPTIONS]
 
 Options:
-  -p, --port <PORT>  Serial port to connect to
-  -b, --baud <BAUD>  Serial baud rate (default: 115200)
-  -h, --help         Print help
+  -p, --port <PORT>    Serial port to connect to
+  -b, --baud <BAUD>    Serial baud rate (default: 115200)
+      --pane <PANE>    Open with only one pane visible [monitor|inspector]
+      --config <FILE>  Path to a config file (default: ./esp-tui.toml)
+  -h, --help           Print help
 ```
 
 **Examples**
 
 ```
-esp-tui                          # auto-detect port
-esp-tui --port /dev/ttyUSB0      # connect to a specific port
+esp-tui                           # auto-detect port
+esp-tui --port /dev/ttyUSB0       # connect to a specific port
+esp-tui --pane inspector          # open with only the System Inspector visible
 ```
+
+---
+
+## Configuration
+
+esp-tui reads `esp-tui.toml` in the current directory, falling back to
+`~/.config/esp-tui/config.toml` for global defaults. CLI flags override both.
+
+See [`esp-tui.example.toml`](./esp-tui.example.toml) in the repo root for a
+fully documented reference of every available key.
 
 ---
 

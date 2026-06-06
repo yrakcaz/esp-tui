@@ -1,0 +1,4 @@
+"ctrl+n" = "scroll_down"
+"ctrl+p" = "scroll_up"
+"ctrl+v" = "page_down"
+"alt+v"  = "page_up"
