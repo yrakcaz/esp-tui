@@ -1227,6 +1227,15 @@ impl App {
         self.monitor_pct
     }
 
+    /// Sets the monitor pane percentage, clamped to `[0, 100]`.
+    ///
+    /// # Arguments
+    ///
+    /// * `pct` - Desired width percentage for the Serial Monitor pane.
+    pub(crate) fn set_monitor_pct(&mut self, pct: u16) {
+        self.monitor_pct = pct.min(100);
+    }
+
     pub(crate) fn grow_monitor(&mut self) {
         self.monitor_pct = self.monitor_pct.saturating_add(5).min(100);
     }

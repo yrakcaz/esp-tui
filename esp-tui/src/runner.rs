@@ -488,8 +488,10 @@ async fn run_inner(args: Args, cfg: config::Config) -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let initial_elf = cfg.flash.elf_path.clone();
+    let initial_monitor_pct = cfg.ui.monitor_pct;
     let mut app = App::new(None, cfg);
     app.set_baud(baud);
+    app.set_monitor_pct(initial_monitor_pct);
     if let Some(elf) = initial_elf {
         app.set_elf_path(elf);
     }

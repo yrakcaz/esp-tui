@@ -92,6 +92,9 @@ fn default_buffer_size() -> usize {
 fn default_sparkline_len() -> usize {
     60
 }
+fn default_monitor_pct() -> u16 {
+    60
+}
 
 // ---- Color parsing / serialization ----
 
@@ -480,6 +483,10 @@ pub(crate) struct UiConfig {
     /// Which pane to show on startup (`"monitor"` or `"inspector"`);
     /// absent means split view.
     pub initial_pane: Option<String>,
+    /// Initial width of the Serial Monitor pane as a percentage of the split
+    /// area, in the range `[0, 100]`. Only applies in split view.
+    #[serde(default = "default_monitor_pct")]
+    pub monitor_pct: u16,
     /// Log ring-buffer capacity in lines.
     #[serde(default = "default_buffer_size")]
     pub buffer_size: usize,
@@ -492,6 +499,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             initial_pane: None,
+            monitor_pct: default_monitor_pct(),
             buffer_size: default_buffer_size(),
             sparkline_len: default_sparkline_len(),
         }
