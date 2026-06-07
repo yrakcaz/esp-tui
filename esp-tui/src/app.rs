@@ -13,17 +13,6 @@ use crate::{config, elf, filter, flash, log, port, serial};
 pub(crate) const DEFAULT_BAUD: u32 = 115_200;
 const STATUS_TTL_SECS: u64 = 3;
 
-/// Controls which panes are visible at startup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LayoutMode {
-    /// Both panes visible, split by `monitor_pct`.
-    Split,
-    /// Only the Serial Monitor pane is rendered.
-    MonitorOnly,
-    /// Only the System Inspector pane is rendered.
-    InspectorOnly,
-}
-
 /// Every action that can be bound to a key.
 ///
 /// Navigation variants are handled inline in [`App::apply_keymap`]; all others
@@ -263,7 +252,6 @@ fn matches_search(entry: &log::Entry, query: &str) -> bool {
 pub(crate) struct App {
     config: config::Config,
     keymap: KeyMap,
-    layout: LayoutMode,
     log_buffer: VecDeque<log::Entry>,
     scroll: usize,
     inspector_scroll: usize,
@@ -312,7 +300,6 @@ impl App {
         Self {
             config,
             keymap,
-            layout: LayoutMode::Split,
             log_buffer: VecDeque::new(),
             scroll: 0,
             inspector_scroll: 0,
@@ -1244,23 +1231,13 @@ impl App {
         self.monitor_pct = self.monitor_pct.saturating_sub(5);
     }
 
-    /// Returns the current layout mode.
-    ///
-    /// # Returns
-    ///
-    /// The active [`LayoutMode`] controlling which panes are rendered.
-    #[must_use]
-    pub(crate) fn layout(&self) -> LayoutMode {
-        self.layout
-    }
-
-    /// Sets the layout mode.
+    /// Sets the focused pane directly.
     ///
     /// # Arguments
     ///
-    /// * `layout` - The [`LayoutMode`] to apply.
-    pub(crate) fn set_layout(&mut self, layout: LayoutMode) {
-        self.layout = layout;
+    /// * `pane` - The [`Pane`] to focus.
+    pub(crate) fn set_focused_pane(&mut self, pane: Pane) {
+        self.focused_pane = pane;
     }
 
     /// Returns a shared reference to the loaded configuration.

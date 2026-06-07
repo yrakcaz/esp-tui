@@ -12,15 +12,17 @@ use ratatui::Terminal;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{interval, Duration};
 
-use crate::app::{Action, App, LayoutMode, DEFAULT_BAUD};
+use crate::app::{Action, App, Pane, DEFAULT_BAUD};
 use crate::{config, elf, event, flash, serial, ui};
 
-/// Which pane to show on startup.
+/// Which pane to focus on startup.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum InitialPane {
-    /// Show only the Serial Monitor pane.
+    /// Start with the Serial Monitor pane filling the full width.
+    /// Tab and resize keys still work to reveal the Inspector.
     Monitor,
-    /// Show only the System Inspector pane.
+    /// Start with the System Inspector pane filling the full width.
+    /// Tab and resize keys still work to reveal the Monitor.
     Inspector,
 }
 
@@ -35,7 +37,7 @@ struct Args {
     #[arg(long, short = 'b')]
     baud: Option<u32>,
 
-    /// Open with only one pane visible.
+    /// Start with one pane filling the full width (Tab to switch).
     #[arg(long, value_enum)]
     pane: Option<InitialPane>,
 
@@ -475,10 +477,17 @@ async fn run_inner(args: Args, cfg: config::Config) -> anyhow::Result<()> {
 
     let port_arg = args.port.or_else(|| cfg.serial.port.clone());
 
-    let initial_layout = args.pane.map(|p| match p {
-        InitialPane::Monitor => LayoutMode::MonitorOnly,
-        InitialPane::Inspector => LayoutMode::InspectorOnly,
-    });
+    let initial_pane = args
+        .pane
+        .map(|p| match p {
+            InitialPane::Monitor => Pane::Monitor,
+            InitialPane::Inspector => Pane::Inspector,
+        })
+        .or_else(|| match cfg.ui.initial_pane.as_deref() {
+            Some("monitor") => Some(Pane::Monitor),
+            Some("inspector") => Some(Pane::Inspector),
+            _ => None,
+        });
 
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal =
@@ -495,8 +504,17 @@ async fn run_inner(args: Args, cfg: config::Config) -> anyhow::Result<()> {
     if let Some(elf) = initial_elf {
         app.set_elf_path(elf);
     }
-    if let Some(layout) = initial_layout {
-        app.set_layout(layout);
+    if let Some(pane) = initial_pane {
+        match pane {
+            Pane::Inspector => {
+                app.set_monitor_pct(0);
+                app.set_focused_pane(Pane::Inspector);
+            }
+            Pane::Monitor => {
+                app.set_monitor_pct(100);
+            }
+            Pane::Status => {}
+        }
     }
 
     let mut ports = resolve_ports(port_arg)?;

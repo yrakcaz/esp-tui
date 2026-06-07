@@ -9,7 +9,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::app::{App, LayoutMode, MappableAction, Pane};
+use crate::app::{App, MappableAction, Pane};
 use crate::filter;
 use crate::flash;
 
@@ -30,28 +30,13 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     .split(frame.area());
 
     render_menu_bar(frame, outer[0], app);
-    match app.layout() {
-        LayoutMode::Split => {
-            let main = Layout::horizontal([
-                Constraint::Percentage(app.monitor_pct()),
-                Constraint::Percentage(100 - app.monitor_pct()),
-            ])
-            .split(outer[1]);
-            render_monitor(frame, main[0], app, app.focused_pane() == Pane::Monitor);
-            render_inspector(
-                frame,
-                main[1],
-                app,
-                app.focused_pane() == Pane::Inspector,
-            );
-        }
-        LayoutMode::MonitorOnly => {
-            render_monitor(frame, outer[1], app, true);
-        }
-        LayoutMode::InspectorOnly => {
-            render_inspector(frame, outer[1], app, true);
-        }
-    }
+    let main = Layout::horizontal([
+        Constraint::Percentage(app.monitor_pct()),
+        Constraint::Percentage(100 - app.monitor_pct()),
+    ])
+    .split(outer[1]);
+    render_monitor(frame, main[0], app, app.focused_pane() == Pane::Monitor);
+    render_inspector(frame, main[1], app, app.focused_pane() == Pane::Inspector);
     render_status_bar(frame, outer[2], app, app.focused_pane() == Pane::Status);
 
     if app.is_quit_confirm_open() {

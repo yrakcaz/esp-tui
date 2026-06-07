@@ -26,8 +26,8 @@ elf_path = "target/xtensa-esp32s3-espidf/release/my-firmware"   # default: none
 # initial_pane is overridden by --pane on the command line.
 
 [ui]
-initial_pane  = "inspector"  # "monitor" | "inspector"; default: split view
-monitor_pct   = 40           # initial monitor width % in split view; default: 60
+initial_pane  = "inspector"  # "monitor" | "inspector"; overrides monitor_pct at startup; default: split view
+monitor_pct   = 40           # initial monitor width % in split view; ignored when initial_pane is set; default: 60
 buffer_size   = 5000         # default: 10000
 sparkline_len = 30           # default: 60
 
