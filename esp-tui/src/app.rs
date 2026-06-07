@@ -536,7 +536,7 @@ impl App {
             }
         } else if key.code == KeyCode::Esc
             || (safe && self.mapped_to(key, MappableAction::QuitPrompt))
-            || self.mapped_to(key, MappableAction::ToggleFilter)
+            || (safe && self.mapped_to(key, MappableAction::ToggleFilter))
         {
             self.filter.toggle_popup();
         } else if key.code == KeyCode::Up {
