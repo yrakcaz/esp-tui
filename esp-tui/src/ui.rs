@@ -46,12 +46,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     } else if app.is_elf_selector_open() {
         render_elf_selector_popup(frame, frame.area(), app);
     } else if let Some(sel) = app.port_selector() {
-        render_port_selector(
-            frame,
-            frame.area(),
-            sel,
-            app.config().colors.chrome.hint_text,
-        );
+        render_port_selector(frame, frame.area(), sel, app);
     } else if app.filter().is_popup_open() {
         render_filter_popup(frame, frame.area(), app);
     }
@@ -1059,7 +1054,10 @@ fn render_quit_confirm_popup(frame: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" confirm   "),
-            Span::styled("[N] / [q/Esc]", Style::default().fg(fc.confirm_cancel)),
+            Span::styled(
+                "[N] / [Esc]".to_owned(),
+                Style::default().fg(fc.confirm_cancel),
+            ),
             Span::raw(" cancel"),
         ]),
     ];
@@ -1096,7 +1094,10 @@ fn render_erase_confirm_popup(frame: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" confirm   "),
-            Span::styled("[N] / [q/Esc]", Style::default().fg(fc.confirm_cancel)),
+            Span::styled(
+                "[N] / [Esc]".to_owned(),
+                Style::default().fg(fc.confirm_cancel),
+            ),
             Span::raw(" cancel"),
         ]),
     ];
@@ -1378,9 +1379,15 @@ fn render_port_selector(
     frame: &mut Frame,
     area: Rect,
     sel: &crate::port::Selector,
-    hint_color: Color,
+    app: &App,
 ) {
-    const HINT: &str = " [↑/↓] navigate  [Enter] connect  [q/Esc] close";
+    let hint_color = app.config().colors.chrome.hint_text;
+    let hint = format!(
+        " [{}/{}] navigate  [Enter] connect  [Esc] / [{}] close",
+        app.key_display(MappableAction::ScrollUp),
+        app.key_display(MappableAction::ScrollDown),
+        app.key_display(MappableAction::ScanPorts),
+    );
 
     let ports = sel.ports();
     let height = (u16::try_from(ports.len())
@@ -1389,7 +1396,7 @@ fn render_port_selector(
     .max(4)
     .min(area.height);
     let width =
-        (u16::try_from(HINT.chars().count()).unwrap_or(50) + 4).min(area.width);
+        (u16::try_from(hint.chars().count()).unwrap_or(50) + 4).min(area.width);
     let popup = centered_rect(width, height, area);
 
     frame.render_widget(Clear, popup);
@@ -1411,7 +1418,7 @@ fn render_port_selector(
             ListItem::new(format!("  {port}")).style(style)
         })
         .chain(std::iter::once(
-            ListItem::new(HINT).style(Style::default().fg(hint_color)),
+            ListItem::new(hint.as_str()).style(Style::default().fg(hint_color)),
         ))
         .collect();
 

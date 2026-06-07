@@ -420,6 +420,7 @@ impl App {
         if key.code == KeyCode::Char('y') {
             Action::Quit
         } else if key.code == KeyCode::Char('n')
+            || key.code == KeyCode::Esc
             || self.mapped_to(key, MappableAction::QuitPrompt)
         {
             self.close_quit_confirm();
@@ -433,7 +434,8 @@ impl App {
         if key.code == KeyCode::Char('y') {
             Action::ConfirmErase
         } else if key.code == KeyCode::Char('n')
-            || key.code == KeyCode::Char('e')
+            || key.code == KeyCode::Esc
+            || self.mapped_to(key, MappableAction::ErasePrompt)
             || self.mapped_to(key, MappableAction::QuitPrompt)
         {
             self.confirm = ConfirmDialog::None;
@@ -447,7 +449,10 @@ impl App {
         // For text-input modals, only look up the keymap for non-printable
         // keys (arrows, Esc, modifier combos) so that plain chars still type.
         let safe = is_modal_safe_key(key);
-        if safe && self.mapped_to(key, MappableAction::QuitPrompt) {
+        if key.code == KeyCode::Esc
+            || (safe && self.mapped_to(key, MappableAction::QuitPrompt))
+            || (safe && self.mapped_to(key, MappableAction::Flash))
+        {
             return Action::CloseElfSelector;
         }
         if safe && self.mapped_to(key, MappableAction::ScrollUp) {
@@ -511,8 +516,9 @@ impl App {
             }
             return Action::None;
         }
-        if key.code == KeyCode::Char('c')
+        if self.mapped_to(key, MappableAction::ScanPorts)
             || self.mapped_to(key, MappableAction::QuitPrompt)
+            || key.code == KeyCode::Esc
         {
             self.port_selector = None;
             return Action::None;
@@ -528,7 +534,9 @@ impl App {
     fn handle_key_filter_popup(&mut self, key: KeyEvent) {
         let safe = is_modal_safe_key(key);
         if self.filter.is_search_focused() {
-            if safe && self.mapped_to(key, MappableAction::QuitPrompt) {
+            if key.code == KeyCode::Esc
+                || (safe && self.mapped_to(key, MappableAction::QuitPrompt))
+            {
                 self.filter.unfocus_search();
             } else if safe && self.mapped_to(key, MappableAction::ScrollUp) {
                 self.filter.unfocus_search();
@@ -539,7 +547,10 @@ impl App {
             } else {
                 self.filter.apply_search_key(key);
             }
-        } else if safe && self.mapped_to(key, MappableAction::QuitPrompt) {
+        } else if key.code == KeyCode::Esc
+            || (safe && self.mapped_to(key, MappableAction::QuitPrompt))
+            || (safe && self.mapped_to(key, MappableAction::ToggleFilter))
+        {
             self.filter.toggle_popup();
         } else if safe && self.mapped_to(key, MappableAction::ScrollUp) {
             if self.filter.cursor() == 0 {

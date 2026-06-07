@@ -77,9 +77,9 @@ confirm_cancel = "gray"     # default: "dark_gray"
 # Keybindings
 #
 # Notes:
-#   - Bindings here apply in normal mode only. Modal windows (filter popup,
-#     ELF selector, port selector, confirm dialogs) are always hardcoded.
+#   - Bindings here apply in normal mode only.
 #   - Ctrl+C always quits and cannot be remapped.
+#   - Esc always cancels the active modal and cannot be remapped.
 #   - Bindings override defaults; the last binding for a given key wins.
 #     Remapping a default key (e.g. "f" = "scan_ports") replaces its default
 #     action. Unknown key strings or action names are silently ignored.
@@ -89,7 +89,7 @@ confirm_cancel = "gray"     # default: "dark_gray"
 preset = "vim"   # default: none
 
 # Per-key overrides applied on top of the preset (and on top of defaults).
-# Key format: "j", "G", "ctrl+n", "alt+v", "F5",
+# Key format: "j", "G", "ctrl+n", "alt+v", "F5", "alt+left",
 #   "enter", "esc", "tab", "backspace", "delete",
 #   "up", "down", "left", "right", "pageup", "pagedown", "home", "end"
 
@@ -101,14 +101,14 @@ preset = "vim"   # default: none
 "g"      = "scroll_top"     # default: none
 "G"      = "scroll_bottom"  # default: none
 "ctrl+t" = "switch_pane"    # default: tab
-"F9"     = "grow_monitor"   # default: ctrl+right
-"F10"    = "shrink_monitor" # default: ctrl+left
-"F3"     = "toggle_filter"  # default: ctrl+f
-"F5"     = "clear_log"      # default: ctrl+l
-"x"      = "quit_prompt"    # default: q, esc
-"ctrl+q" = "quit"           # default: none  (ctrl+c always works)
-"F1"     = "flash"          # default: f
-"F2"     = "erase_prompt"   # default: e
-"ctrl+r" = "reset_device"   # default: r
-"ctrl+w" = "disconnect"     # default: d
-"ctrl+s" = "scan_ports"     # default: c
+"alt+right" = "grow_monitor"   # default: ctrl+right
+"alt+left"  = "shrink_monitor" # default: ctrl+left
+"ctrl+f"    = "toggle_filter"  # default: ctrl+f
+"ctrl+l"    = "clear_log"      # default: ctrl+l
+"x"         = "quit_prompt"    # default: q, esc
+"ctrl+q"    = "quit"           # default: none  (ctrl+c always works)
+"ctrl+e"    = "flash"          # default: f
+"ctrl+x"    = "erase_prompt"   # default: e
+"ctrl+r"    = "reset_device"   # default: r
+"ctrl+w"    = "disconnect"     # default: d
+"ctrl+s"    = "scan_ports"     # default: c

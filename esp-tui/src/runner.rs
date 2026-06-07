@@ -483,7 +483,7 @@ async fn run_inner(args: Args, cfg: config::Config) -> anyhow::Result<()> {
             InitialPane::Monitor => Pane::Monitor,
             InitialPane::Inspector => Pane::Inspector,
         })
-        .or_else(|| match cfg.ui.initial_pane.as_deref() {
+        .or(match cfg.ui.initial_pane.as_deref() {
             Some("monitor") => Some(Pane::Monitor),
             Some("inspector") => Some(Pane::Inspector),
             _ => None,
