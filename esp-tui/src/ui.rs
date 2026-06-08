@@ -1233,7 +1233,11 @@ fn render_elf_selector_popup(frame: &mut Frame, area: Rect, app: &App) {
                     frame.render_widget(List::new(items), comp_area);
                     frame.render_widget(
                         Paragraph::new(Span::styled(
-                            "[Tab] cycle  [↑/↓] navigate  [Enter] select  [Esc] cancel",
+                            format!(
+                                "[Tab] cycle  [{}/{}] navigate  [Enter] select  [Esc] cancel",
+                                app.key_display(MappableAction::ScrollUp),
+                                app.key_display(MappableAction::ScrollDown),
+                            ),
                             Style::default().fg(hint_color),
                         )),
                         hint_area,
@@ -1271,9 +1275,6 @@ fn filter_search_item(
 }
 
 fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
-    const HINT_NAV: &str = " [↑/↓] navigate  [Space] toggle  [^A] all  [Esc] close";
-    const HINT_SEARCH: &str = " [↑/↓] navigate  [Esc] done";
-
     let colors = &app.config().colors;
     let filter = app.filter();
     let levels = filter::State::levels();
@@ -1282,12 +1283,14 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
     let any_tags = !filter.known_tags().is_empty();
     let search_focused = filter.is_search_focused();
 
+    let hint_nav = " [↑/↓] navigate  [Space] toggle  [^A] all  [Esc] close";
+    let hint_search = " [↑/↓] navigate  [Esc] done";
     let popup_hint = if search_focused {
-        HINT_SEARCH
+        hint_search
     } else {
-        HINT_NAV
+        hint_nav
     };
-    let hint_width = HINT_NAV.len().max(HINT_SEARCH.len());
+    let hint_width = hint_nav.len().max(hint_search.len());
 
     let tag_section_rows: u16 = if any_tags {
         1 + u16::try_from(all_tags.len()).unwrap_or(u16::MAX)

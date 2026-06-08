@@ -151,11 +151,14 @@ impl Selector {
     ///
     /// * `delta` - Negative to move up, positive to move down.
     pub(crate) fn move_completion(&mut self, delta: isize) {
-        if !self.completions.is_empty() {
-            self.completion_cursor = self
-                .completion_cursor
-                .saturating_add_signed(delta)
-                .min(self.completions.len() - 1);
+        let len = self.completions.len();
+        if len > 0 {
+            let off = delta.unsigned_abs() % len;
+            self.completion_cursor = if delta >= 0 {
+                (self.completion_cursor + off) % len
+            } else {
+                (self.completion_cursor + len - off) % len
+            };
             self.apply_highlighted_completion();
         }
     }
@@ -498,12 +501,12 @@ mod tests {
     }
 
     #[test]
-    fn move_completion_clamps_to_bounds() {
+    fn move_completion_wraps() {
         let mut s = Selector::new(None);
         s.completions = vec!["a".into(), "b".into(), "c".into()];
-        s.move_completion(10);
+        s.move_completion(-1);
         assert_eq!(s.completion_cursor(), 2);
-        s.move_completion(-10);
+        s.move_completion(1);
         assert_eq!(s.completion_cursor(), 0);
     }
 

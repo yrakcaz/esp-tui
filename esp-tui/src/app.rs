@@ -538,10 +538,10 @@ impl App {
                 || (safe && self.mapped_to(key, MappableAction::QuitPrompt))
             {
                 self.filter.unfocus_search();
-            } else if safe && self.mapped_to(key, MappableAction::ScrollUp) {
+            } else if key.code == KeyCode::Up {
                 self.filter.unfocus_search();
                 self.filter.move_cursor(-1);
-            } else if safe && self.mapped_to(key, MappableAction::ScrollDown) {
+            } else if key.code == KeyCode::Down {
                 self.filter.unfocus_search();
                 self.filter.move_cursor(1);
             } else {
@@ -552,13 +552,13 @@ impl App {
             || (safe && self.mapped_to(key, MappableAction::ToggleFilter))
         {
             self.filter.toggle_popup();
-        } else if safe && self.mapped_to(key, MappableAction::ScrollUp) {
+        } else if key.code == KeyCode::Up {
             if self.filter.cursor() == 0 {
                 self.filter.focus_search();
             } else {
                 self.filter.move_cursor(-1);
             }
-        } else if safe && self.mapped_to(key, MappableAction::ScrollDown) {
+        } else if key.code == KeyCode::Down {
             self.filter.move_cursor(1);
         } else {
             match key.code {

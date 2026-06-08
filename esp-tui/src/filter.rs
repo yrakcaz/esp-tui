@@ -105,10 +105,14 @@ impl State {
     /// * `delta` - Positive to move down, negative to move up.
     pub(crate) fn move_cursor(&mut self, delta: isize) {
         let total = LEVELS.len() + self.known_tags.len();
-        self.cursor = self
-            .cursor
-            .saturating_add_signed(delta)
-            .min(total.saturating_sub(1));
+        if total > 0 {
+            let off = delta.unsigned_abs() % total;
+            self.cursor = if delta >= 0 {
+                (self.cursor + off) % total
+            } else {
+                (self.cursor + total - off) % total
+            };
+        }
     }
 
     /// Toggles all items: hides everything if all are currently visible,
@@ -369,15 +373,16 @@ mod tests {
     }
 
     #[test]
-    fn move_cursor_clamps() {
+    fn move_cursor_wraps() {
         let mut s = State::new();
         s.record_tag("a");
         s.record_tag("b");
         s.record_tag("c");
-        s.move_cursor(-5_isize);
+        let total = LEVELS.len() + 3;
+        s.move_cursor(-1_isize);
+        assert_eq!(s.cursor(), total - 1);
+        s.move_cursor(1);
         assert_eq!(s.cursor(), 0);
-        s.move_cursor(100);
-        assert_eq!(s.cursor(), LEVELS.len() + 3 - 1);
     }
 
     #[test]
