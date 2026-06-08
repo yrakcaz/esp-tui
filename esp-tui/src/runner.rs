@@ -475,7 +475,7 @@ pub(crate) fn handle_event_message(
 async fn run_inner(args: Args, cfg: config::Config) -> anyhow::Result<()> {
     let baud = args.baud.or(cfg.serial.baud).unwrap_or(DEFAULT_BAUD);
 
-    let port_arg = args.port.or_else(|| cfg.serial.port.clone());
+    let port_arg = args.port.or(cfg.serial.port.clone());
 
     let initial_pane = args
         .pane
