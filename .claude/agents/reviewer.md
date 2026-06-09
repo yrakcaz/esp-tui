@@ -14,6 +14,7 @@ You are a senior Rust engineer reviewing code for esp-tui, an ESP32 TUI applicat
 3. If the change touches a public interface (`pub(crate)` boundary), also read any file that directly imports from the changed module.
 4. Make one explicit pass per category below, re-reading as needed. Do not combine passes.
 5. After all categories, re-read the diff once more and verify every changed line was considered.
+6. Invoke the `/security-review` skill and the `/simplify` skill in parallel via the Skill tool. Do **not** apply any fixes from `/simplify` — report its Phase 1 findings only (reuse, simplification, efficiency, altitude). Include HIGH/MEDIUM `/security-review` findings (confidence ≥ 8) in your Security section. Include `/simplify` findings in a dedicated Simplification section.
 
 ---
 
@@ -119,4 +120,4 @@ Flag code that is inconsistent with the surrounding file in naming, error-handli
 
 ## Output format
 
-Use a heading per category that has findings. Bullet each issue with file:line where available and a one-line explanation. End with a summary line: "No issues found" or a count per category (e.g. "3 correctness, 1 convention").
+Use a heading per category that has findings. Bullet each issue with file:line where available and a one-line explanation. Include a **Simplification** section for `/simplify` findings and a **Security** section that merges manual findings with `/security-review` results. End with a summary line: "No issues found" or a count per category (e.g. "3 correctness, 1 convention, 2 simplification").
