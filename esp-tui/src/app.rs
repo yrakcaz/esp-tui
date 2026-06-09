@@ -42,44 +42,28 @@ pub(crate) enum MappableAction {
 pub(crate) type KeyMap = HashMap<(KeyCode, KeyModifiers), MappableAction>;
 
 pub(crate) fn default_keymap() -> KeyMap {
-    let mut m = KeyMap::new();
-    let ins = |m: &mut KeyMap, code, mods, action| {
-        m.insert((code, mods), action);
-    };
     let none = KeyModifiers::empty();
     let ctrl = KeyModifiers::CONTROL;
-    ins(&mut m, KeyCode::Char('q'), none, MappableAction::QuitPrompt);
-    ins(&mut m, KeyCode::Esc, none, MappableAction::QuitPrompt);
-    ins(&mut m, KeyCode::Char('d'), none, MappableAction::Disconnect);
-    ins(
-        &mut m,
-        KeyCode::Char('r'),
-        none,
-        MappableAction::ResetDevice,
-    );
-    ins(
-        &mut m,
-        KeyCode::Char('f'),
-        ctrl,
-        MappableAction::ToggleFilter,
-    );
-    ins(&mut m, KeyCode::Char('f'), none, MappableAction::Flash);
-    ins(
-        &mut m,
-        KeyCode::Char('e'),
-        none,
-        MappableAction::ErasePrompt,
-    );
-    ins(&mut m, KeyCode::Char('c'), none, MappableAction::ScanPorts);
-    ins(&mut m, KeyCode::Tab, none, MappableAction::SwitchPane);
-    ins(&mut m, KeyCode::Right, ctrl, MappableAction::GrowMonitor);
-    ins(&mut m, KeyCode::Left, ctrl, MappableAction::ShrinkMonitor);
-    ins(&mut m, KeyCode::Char('l'), ctrl, MappableAction::ClearLog);
-    ins(&mut m, KeyCode::Up, none, MappableAction::ScrollUp);
-    ins(&mut m, KeyCode::Down, none, MappableAction::ScrollDown);
-    ins(&mut m, KeyCode::PageUp, none, MappableAction::PageUp);
-    ins(&mut m, KeyCode::PageDown, none, MappableAction::PageDown);
-    m
+    [
+        ((KeyCode::Char('q'), none), MappableAction::QuitPrompt),
+        ((KeyCode::Esc, none), MappableAction::QuitPrompt),
+        ((KeyCode::Char('d'), none), MappableAction::Disconnect),
+        ((KeyCode::Char('r'), none), MappableAction::ResetDevice),
+        ((KeyCode::Char('f'), ctrl), MappableAction::ToggleFilter),
+        ((KeyCode::Char('f'), none), MappableAction::Flash),
+        ((KeyCode::Char('e'), none), MappableAction::ErasePrompt),
+        ((KeyCode::Char('c'), none), MappableAction::ScanPorts),
+        ((KeyCode::Tab, none), MappableAction::SwitchPane),
+        ((KeyCode::Right, ctrl), MappableAction::GrowMonitor),
+        ((KeyCode::Left, ctrl), MappableAction::ShrinkMonitor),
+        ((KeyCode::Char('l'), ctrl), MappableAction::ClearLog),
+        ((KeyCode::Up, none), MappableAction::ScrollUp),
+        ((KeyCode::Down, none), MappableAction::ScrollDown),
+        ((KeyCode::PageUp, none), MappableAction::PageUp),
+        ((KeyCode::PageDown, none), MappableAction::PageDown),
+    ]
+    .into_iter()
+    .collect()
 }
 
 /// Formats a key as a short display string for use in hints.
@@ -95,11 +79,11 @@ pub(crate) fn default_keymap() -> KeyMap {
 pub(crate) fn format_key_display(code: KeyCode, mods: KeyModifiers) -> String {
     let ctrl = mods.contains(KeyModifiers::CONTROL);
     let alt = mods.contains(KeyModifiers::ALT);
-    let prefix = match (ctrl, alt) {
-        (true, true) => "^M-".to_owned(),
-        (true, false) => "^".to_owned(),
-        (false, true) => "M-".to_owned(),
-        (false, false) => String::new(),
+    let prefix: &str = match (ctrl, alt) {
+        (true, true) => "^M-",
+        (true, false) => "^",
+        (false, true) => "M-",
+        (false, false) => "",
     };
     match code {
         KeyCode::Char(c) => format!("{}{}", prefix, c.to_ascii_uppercase()),
@@ -133,7 +117,7 @@ fn pick_best_key(keys: &[(KeyCode, KeyModifiers)]) -> (KeyCode, KeyModifiers) {
             (priority, format!("{code:?}{mods:?}"))
         })
         .copied()
-        .unwrap_or((KeyCode::Null, KeyModifiers::empty()))
+        .expect("pick_best_key called with non-empty slice")
 }
 
 fn parse_action(s: &str) -> Option<MappableAction> {
@@ -504,30 +488,27 @@ impl App {
     }
 
     fn handle_key_port_selector(&mut self, key: KeyEvent) -> Action {
-        if self.mapped_to(key, MappableAction::ScrollUp) {
-            if let Some(s) = self.port_selector.as_mut() {
-                s.move_cursor(-1);
-            }
-            return Action::None;
-        }
-        if self.mapped_to(key, MappableAction::ScrollDown) {
-            if let Some(s) = self.port_selector.as_mut() {
-                s.move_cursor(1);
-            }
-            return Action::None;
-        }
-        if self.mapped_to(key, MappableAction::ScanPorts)
+        let cancel = self.mapped_to(key, MappableAction::ScanPorts)
             || self.mapped_to(key, MappableAction::QuitPrompt)
-            || key.code == KeyCode::Esc
-        {
+            || key.code == KeyCode::Esc;
+        if cancel {
             self.port_selector = None;
-            return Action::None;
-        }
-        match key.code {
-            KeyCode::Enter => self.port_selector.take().map_or(Action::None, |s| {
-                Action::ConnectPort(s.selected().to_owned())
-            }),
-            _ => Action::None,
+            Action::None
+        } else if self.mapped_to(key, MappableAction::ScrollUp) {
+            self.port_selector.as_mut().map(|s| s.move_cursor(-1));
+            Action::None
+        } else if self.mapped_to(key, MappableAction::ScrollDown) {
+            self.port_selector.as_mut().map(|s| s.move_cursor(1));
+            Action::None
+        } else {
+            match key.code {
+                KeyCode::Enter => {
+                    self.port_selector.take().map_or(Action::None, |s| {
+                        Action::ConnectPort(s.selected().to_owned())
+                    })
+                }
+                _ => Action::None,
+            }
         }
     }
 
@@ -1234,10 +1215,12 @@ impl App {
         self.monitor_pct = pct.min(100);
     }
 
+    /// Increases the monitor pane width by 5%, clamped to 100%.
     pub(crate) fn grow_monitor(&mut self) {
         self.monitor_pct = self.monitor_pct.saturating_add(5).min(100);
     }
 
+    /// Decreases the monitor pane width by 5%, clamped to 0%.
     pub(crate) fn shrink_monitor(&mut self) {
         self.monitor_pct = self.monitor_pct.saturating_sub(5);
     }
@@ -1261,6 +1244,17 @@ impl App {
         &self.config
     }
 
+    fn keys_for_action(
+        &self,
+        action: MappableAction,
+    ) -> Vec<(KeyCode, KeyModifiers)> {
+        self.keymap
+            .iter()
+            .filter(|(_, &a)| a == action)
+            .map(|(&k, _)| k)
+            .collect()
+    }
+
     /// Returns the display string for the key currently bound to `action`.
     ///
     /// Picks the simplest bound key (plain char over special key over modified
@@ -1275,12 +1269,7 @@ impl App {
     /// A short string such as `"F"`, `"^F"`, `"↑"`, or `"Tab"`.
     #[must_use]
     pub(crate) fn key_display(&self, action: MappableAction) -> String {
-        let keys: Vec<(KeyCode, KeyModifiers)> = self
-            .keymap
-            .iter()
-            .filter(|(_, &a)| a == action)
-            .map(|(&k, _)| k)
-            .collect();
+        let keys = self.keys_for_action(action);
         if keys.is_empty() {
             return "?".to_owned();
         }
@@ -1305,12 +1294,7 @@ impl App {
     /// A formatted hint string.
     #[must_use]
     pub(crate) fn key_hint(&self, action: MappableAction, label: &str) -> String {
-        let keys: Vec<(KeyCode, KeyModifiers)> = self
-            .keymap
-            .iter()
-            .filter(|(_, &a)| a == action)
-            .map(|(&k, _)| k)
-            .collect();
+        let keys = self.keys_for_action(action);
         if keys.is_empty() {
             return format!("({label})");
         }
@@ -1318,11 +1302,13 @@ impl App {
         match (code, mods) {
             (KeyCode::Char(c), m) if m.is_empty() => {
                 let c_up = c.to_ascii_uppercase();
-                let label_first =
-                    label.chars().next().unwrap_or('\0').to_ascii_uppercase();
+                let rest =
+                    label.char_indices().nth(1).map_or("", |(i, _)| &label[i..]);
+                let label_first = label
+                    .chars()
+                    .next()
+                    .map_or(c_up, |ch| ch.to_ascii_uppercase());
                 if c_up == label_first {
-                    let rest =
-                        label.char_indices().nth(1).map_or("", |(i, _)| &label[i..]);
                     format!("[{c_up}]{rest}")
                 } else {
                     format!("[{c_up}]{label}")
@@ -1374,7 +1360,10 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc;
 
-    use crate::app::{Action, App, Pane, DEFAULT_BAUD};
+    use super::{build_keymap, pick_best_key};
+    use crate::app::{
+        format_key_display, Action, App, MappableAction, Pane, DEFAULT_BAUD,
+    };
     use crate::config::Config;
     use crate::runner::{
         handle_action, handle_event_message, handle_ports_detected,
@@ -3077,5 +3066,123 @@ mod tests {
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.focused_pane(), Pane::Monitor);
         assert_eq!(app.monitor_pct(), 20);
+    }
+
+    #[test]
+    fn format_key_display_plain_char() {
+        assert_eq!(
+            format_key_display(KeyCode::Char('j'), KeyModifiers::empty()),
+            "J"
+        );
+    }
+
+    #[test]
+    fn format_key_display_ctrl() {
+        assert_eq!(
+            format_key_display(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            "^F"
+        );
+    }
+
+    #[test]
+    fn format_key_display_special_keys() {
+        assert_eq!(format_key_display(KeyCode::Up, KeyModifiers::empty()), "↑");
+        assert_eq!(
+            format_key_display(KeyCode::PageUp, KeyModifiers::empty()),
+            "PgUp"
+        );
+        assert_eq!(
+            format_key_display(KeyCode::Tab, KeyModifiers::empty()),
+            "Tab"
+        );
+        assert_eq!(
+            format_key_display(KeyCode::F(5), KeyModifiers::empty()),
+            "F5"
+        );
+    }
+
+    #[test]
+    fn pick_best_key_prefers_plain_char() {
+        let keys = vec![
+            (KeyCode::Up, KeyModifiers::empty()),
+            (KeyCode::Char('k'), KeyModifiers::empty()),
+            (KeyCode::Char('k'), KeyModifiers::CONTROL),
+        ];
+        let (code, mods) = pick_best_key(&keys);
+        assert_eq!(code, KeyCode::Char('k'));
+        assert_eq!(mods, KeyModifiers::empty());
+    }
+
+    #[test]
+    fn pick_best_key_prefers_unmodified_special_over_modified() {
+        let keys = vec![
+            (KeyCode::Up, KeyModifiers::CONTROL),
+            (KeyCode::Up, KeyModifiers::empty()),
+        ];
+        let (code, mods) = pick_best_key(&keys);
+        assert_eq!(code, KeyCode::Up);
+        assert_eq!(mods, KeyModifiers::empty());
+    }
+
+    #[test]
+    fn build_keymap_vim_preset_maps_j_k() {
+        use crate::config::KeysConfig;
+        let cfg = KeysConfig {
+            preset: Some("vim".to_owned()),
+            overrides: std::collections::HashMap::new(),
+        };
+        let map = build_keymap(&cfg);
+        assert_eq!(
+            map.get(&(KeyCode::Char('j'), KeyModifiers::empty())),
+            Some(&MappableAction::ScrollDown)
+        );
+        assert_eq!(
+            map.get(&(KeyCode::Char('k'), KeyModifiers::empty())),
+            Some(&MappableAction::ScrollUp)
+        );
+    }
+
+    #[test]
+    fn build_keymap_override_replaces_default_binding() {
+        use crate::config::KeysConfig;
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("x".to_owned(), "quit_prompt".to_owned());
+        let cfg = KeysConfig {
+            preset: None,
+            overrides,
+        };
+        let map = build_keymap(&cfg);
+        assert_eq!(
+            map.get(&(KeyCode::Char('x'), KeyModifiers::empty())),
+            Some(&MappableAction::QuitPrompt)
+        );
+        assert!(
+            !map.contains_key(&(KeyCode::Char('q'), KeyModifiers::empty())),
+            "old 'q' binding should have been removed"
+        );
+        assert!(
+            !map.contains_key(&(KeyCode::Esc, KeyModifiers::empty())),
+            "old 'Esc' binding should have been removed"
+        );
+    }
+
+    #[test]
+    fn build_keymap_override_on_top_of_preset() {
+        use crate::config::KeysConfig;
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("n".to_owned(), "scroll_down".to_owned());
+        let cfg = KeysConfig {
+            preset: Some("vim".to_owned()),
+            overrides,
+        };
+        let map = build_keymap(&cfg);
+        assert_eq!(
+            map.get(&(KeyCode::Char('n'), KeyModifiers::empty())),
+            Some(&MappableAction::ScrollDown)
+        );
+        assert!(
+            !map.contains_key(&(KeyCode::Char('j'), KeyModifiers::empty())),
+            "preset 'j' binding replaced by override"
+        );
     }
 }

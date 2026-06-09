@@ -409,20 +409,13 @@ fn heap_section_lines(
     sparkline_w: usize,
     s: &InspectorStyle,
 ) -> Vec<Line<'static>> {
-    let (label, value_style, is_stale, metric_bar_color, hint_text_color) = (
-        s.label,
-        s.value_style,
-        s.is_stale,
-        s.metric_bar_color,
-        s.hint_text_color,
-    );
     let heap_ratio = f64::from(f.heap_free) / f64::from(f.heap_total.max(1));
     let mut lines = vec![mline(
         vec![
-            Span::styled("Heap  ", label),
+            Span::styled("Heap  ", s.label),
             Span::styled(
                 inspector_bar(heap_ratio, INSPECTOR_BAR_W),
-                agent_bar_style(is_stale, metric_bar_color, hint_text_color),
+                agent_bar_style(s.is_stale, s.metric_bar_color, s.hint_text_color),
             ),
             Span::styled(
                 format!(
@@ -430,7 +423,7 @@ fn heap_section_lines(
                     format_bytes(f.heap_free),
                     format_bytes(f.heap_total)
                 ),
-                value_style,
+                s.value_style,
             ),
         ],
         col_width,
@@ -438,10 +431,14 @@ fn heap_section_lines(
     if !heap_history.is_empty() {
         lines.push(mline(
             vec![
-                Span::styled(" hist ", label),
+                Span::styled(" hist ", s.label),
                 Span::styled(
                     sparkline_str(heap_history, f.heap_total, sparkline_w),
-                    agent_bar_style(is_stale, metric_bar_color, hint_text_color),
+                    agent_bar_style(
+                        s.is_stale,
+                        s.metric_bar_color,
+                        s.hint_text_color,
+                    ),
                 ),
             ],
             col_width,
@@ -449,18 +446,18 @@ fn heap_section_lines(
     }
     lines.push(mline(
         vec![
-            Span::styled("Min   ", label),
-            Span::styled(format_bytes(f.heap_min_free), value_style),
-            Span::styled(" low-water", label),
+            Span::styled("Min   ", s.label),
+            Span::styled(format_bytes(f.heap_min_free), s.value_style),
+            Span::styled(" low-water", s.label),
         ],
         col_width,
     ));
     if f.heap_frag > 0 {
         lines.push(mline(
             vec![
-                Span::styled("Lrg   ", label),
-                Span::styled(format_bytes(f.heap_frag), value_style),
-                Span::styled(" largest block", label),
+                Span::styled("Lrg   ", s.label),
+                Span::styled(format_bytes(f.heap_frag), s.value_style),
+                Span::styled(" largest block", s.label),
             ],
             col_width,
         ));
@@ -468,9 +465,9 @@ fn heap_section_lines(
     if f.heap_iram > 0 {
         lines.push(mline(
             vec![
-                Span::styled("IRAM  ", label),
-                Span::styled(format_bytes(f.heap_iram), value_style),
-                Span::styled(" free", label),
+                Span::styled("IRAM  ", s.label),
+                Span::styled(format_bytes(f.heap_iram), s.value_style),
+                Span::styled(" free", s.label),
             ],
             col_width,
         ));
@@ -478,9 +475,9 @@ fn heap_section_lines(
     if f.heap_psram > 0 {
         lines.push(mline(
             vec![
-                Span::styled("PSRAM ", label),
-                Span::styled(format_bytes(f.heap_psram), value_style),
-                Span::styled(" free", label),
+                Span::styled("PSRAM ", s.label),
+                Span::styled(format_bytes(f.heap_psram), s.value_style),
+                Span::styled(" free", s.label),
             ],
             col_width,
         ));
@@ -494,30 +491,31 @@ fn wifi_nvs_lines(
     value_style: Style,
     col_width: usize,
 ) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    if let Some(rssi) = f.wifi_rssi {
+    let wifi = f.wifi_rssi.map(|rssi| {
         let ch_suffix = f
             .wifi_channel
             .map_or_else(String::new, |ch| format!("  ch {ch}"));
-        lines.push(Line::from(""));
-        lines.push(mline(
-            vec![
-                Span::styled("WiFi  ", label),
-                Span::styled(format!("{rssi} dBm{ch_suffix}"), value_style),
-            ],
-            col_width,
-        ));
-    }
-    if let Some((used, total)) = f.nvs {
-        lines.push(mline(
+        [
+            Line::from(""),
+            mline(
+                vec![
+                    Span::styled("WiFi  ", label),
+                    Span::styled(format!("{rssi} dBm{ch_suffix}"), value_style),
+                ],
+                col_width,
+            ),
+        ]
+    });
+    let nvs = f.nvs.map(|(used, total)| {
+        mline(
             vec![
                 Span::styled("NVS   ", label),
                 Span::styled(format!("{used}/{total} entries"), value_style),
             ],
             col_width,
-        ));
-    }
-    lines
+        )
+    });
+    wifi.into_iter().flatten().chain(nvs).collect()
 }
 
 fn frame_metric_lines(
@@ -1054,10 +1052,7 @@ fn render_quit_confirm_popup(frame: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" confirm   "),
-            Span::styled(
-                "[N] / [Esc]".to_owned(),
-                Style::default().fg(fc.confirm_cancel),
-            ),
+            Span::styled("[N] / [Esc]", Style::default().fg(fc.confirm_cancel)),
             Span::raw(" cancel"),
         ]),
     ];
@@ -1094,10 +1089,7 @@ fn render_erase_confirm_popup(frame: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" confirm   "),
-            Span::styled(
-                "[N] / [Esc]".to_owned(),
-                Style::default().fg(fc.confirm_cancel),
-            ),
+            Span::styled("[N] / [Esc]", Style::default().fg(fc.confirm_cancel)),
             Span::raw(" cancel"),
         ]),
     ];

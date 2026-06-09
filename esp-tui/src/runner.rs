@@ -53,10 +53,10 @@ fn begin_connect(port: &str, baud: u32, tx: &mpsc::UnboundedSender<event::Messag
     let (src_tx, src_rx) = watch::channel(false);
     let port_name = port.to_owned();
     let tx_task = tx.clone();
-    drop(tokio::task::spawn_blocking(move || {
+    let _ = tokio::task::spawn_blocking(move || {
         serial::Port::new(&port_name, baud)
             .connect_and_read(&tx_task, &src_rx, src_tx);
-    }));
+    });
 }
 
 // After flash/erase the chip is already reset by espflash and device info was
@@ -472,10 +472,10 @@ pub(crate) fn handle_event_message(
     }
 }
 
-async fn run_inner(args: Args, cfg: config::Config) -> anyhow::Result<()> {
+async fn run_inner(args: Args, mut cfg: config::Config) -> anyhow::Result<()> {
     let baud = args.baud.or(cfg.serial.baud).unwrap_or(DEFAULT_BAUD);
 
-    let port_arg = args.port.or(cfg.serial.port.clone());
+    let port_arg = args.port.or(cfg.serial.port.take());
 
     let initial_pane = args
         .pane

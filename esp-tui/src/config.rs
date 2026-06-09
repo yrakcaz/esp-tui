@@ -124,33 +124,34 @@ where
 pub(crate) fn parse_color(s: &str) -> anyhow::Result<Color> {
     if let Some(hex) = s.strip_prefix('#') {
         anyhow::ensure!(hex.len() == 6, "hex color must be 6 digits: #{hex}");
-        let r = u8::from_str_radix(&hex[0..2], 16)
+        let rgb = u32::from_str_radix(hex, 16)
             .with_context(|| format!("invalid hex color: #{hex}"))?;
-        let g = u8::from_str_radix(&hex[2..4], 16)
-            .with_context(|| format!("invalid hex color: #{hex}"))?;
-        let b = u8::from_str_radix(&hex[4..6], 16)
-            .with_context(|| format!("invalid hex color: #{hex}"))?;
-        return Ok(Color::Rgb(r, g, b));
-    }
-    match s {
-        "black" => Ok(Color::Black),
-        "red" => Ok(Color::Red),
-        "green" => Ok(Color::Green),
-        "yellow" => Ok(Color::Yellow),
-        "blue" => Ok(Color::Blue),
-        "magenta" => Ok(Color::Magenta),
-        "cyan" => Ok(Color::Cyan),
-        "gray" => Ok(Color::Gray),
-        "dark_gray" => Ok(Color::DarkGray),
-        "light_red" => Ok(Color::LightRed),
-        "light_green" => Ok(Color::LightGreen),
-        "light_yellow" => Ok(Color::LightYellow),
-        "light_blue" => Ok(Color::LightBlue),
-        "light_magenta" => Ok(Color::LightMagenta),
-        "light_cyan" => Ok(Color::LightCyan),
-        "white" => Ok(Color::White),
-        "reset" => Ok(Color::Reset),
-        _ => Err(anyhow::anyhow!("unknown color: {s}")),
+        Ok(Color::Rgb(
+            ((rgb >> 16) & 0xFF) as u8,
+            ((rgb >> 8) & 0xFF) as u8,
+            (rgb & 0xFF) as u8,
+        ))
+    } else {
+        match s {
+            "black" => Ok(Color::Black),
+            "red" => Ok(Color::Red),
+            "green" => Ok(Color::Green),
+            "yellow" => Ok(Color::Yellow),
+            "blue" => Ok(Color::Blue),
+            "magenta" => Ok(Color::Magenta),
+            "cyan" => Ok(Color::Cyan),
+            "gray" => Ok(Color::Gray),
+            "dark_gray" => Ok(Color::DarkGray),
+            "light_red" => Ok(Color::LightRed),
+            "light_green" => Ok(Color::LightGreen),
+            "light_yellow" => Ok(Color::LightYellow),
+            "light_blue" => Ok(Color::LightBlue),
+            "light_magenta" => Ok(Color::LightMagenta),
+            "light_cyan" => Ok(Color::LightCyan),
+            "white" => Ok(Color::White),
+            "reset" => Ok(Color::Reset),
+            _ => Err(anyhow::anyhow!("unknown color: {s}")),
+        }
     }
 }
 
@@ -179,46 +180,47 @@ pub(crate) fn parse_key(s: &str) -> anyhow::Result<(KeyCode, KeyModifiers)> {
         .split_last()
         .ok_or_else(|| anyhow::anyhow!("empty key string"))?;
 
-    let mut modifiers = KeyModifiers::empty();
-    for m in mod_parts {
+    let modifiers = mod_parts.iter().try_fold(KeyModifiers::empty(), |acc, m| {
         match m.to_lowercase().as_str() {
-            "ctrl" => modifiers |= KeyModifiers::CONTROL,
-            "alt" => modifiers |= KeyModifiers::ALT,
-            "shift" => modifiers |= KeyModifiers::SHIFT,
-            other => anyhow::bail!("unknown modifier: {other}"),
+            "ctrl" => Ok(acc | KeyModifiers::CONTROL),
+            "alt" => Ok(acc | KeyModifiers::ALT),
+            "shift" => Ok(acc | KeyModifiers::SHIFT),
+            other => Err(anyhow::anyhow!("unknown modifier: {other}")),
         }
-    }
+    })?;
 
     let code = parse_key_code(key_part)?;
     Ok((code, modifiers))
 }
 
 fn parse_key_code(s: &str) -> anyhow::Result<KeyCode> {
+    let f_num = s
+        .strip_prefix('F')
+        .or_else(|| s.strip_prefix('f'))
+        .and_then(|n| n.parse::<u8>().ok());
     if s.len() == 1 {
-        return Ok(KeyCode::Char(s.chars().next().expect("checked len == 1")));
-    }
-    if let Some(n) = s.strip_prefix('F').or_else(|| s.strip_prefix('f')) {
-        if let Ok(num) = n.parse::<u8>() {
-            return Ok(KeyCode::F(num));
+        Ok(KeyCode::Char(s.chars().next().expect("checked len == 1")))
+    } else if let Some(num) = f_num {
+        Ok(KeyCode::F(num))
+    } else {
+        match s.to_lowercase().as_str() {
+            "enter" => Ok(KeyCode::Enter),
+            "esc" => Ok(KeyCode::Esc),
+            "tab" => Ok(KeyCode::Tab),
+            "backtab" => Ok(KeyCode::BackTab),
+            "backspace" => Ok(KeyCode::Backspace),
+            "delete" => Ok(KeyCode::Delete),
+            "insert" => Ok(KeyCode::Insert),
+            "home" => Ok(KeyCode::Home),
+            "end" => Ok(KeyCode::End),
+            "pageup" => Ok(KeyCode::PageUp),
+            "pagedown" => Ok(KeyCode::PageDown),
+            "up" => Ok(KeyCode::Up),
+            "down" => Ok(KeyCode::Down),
+            "left" => Ok(KeyCode::Left),
+            "right" => Ok(KeyCode::Right),
+            other => Err(anyhow::anyhow!("unknown key: {other}")),
         }
-    }
-    match s.to_lowercase().as_str() {
-        "enter" => Ok(KeyCode::Enter),
-        "esc" => Ok(KeyCode::Esc),
-        "tab" => Ok(KeyCode::Tab),
-        "backtab" => Ok(KeyCode::BackTab),
-        "backspace" => Ok(KeyCode::Backspace),
-        "delete" => Ok(KeyCode::Delete),
-        "insert" => Ok(KeyCode::Insert),
-        "home" => Ok(KeyCode::Home),
-        "end" => Ok(KeyCode::End),
-        "pageup" => Ok(KeyCode::PageUp),
-        "pagedown" => Ok(KeyCode::PageDown),
-        "up" => Ok(KeyCode::Up),
-        "down" => Ok(KeyCode::Down),
-        "left" => Ok(KeyCode::Left),
-        "right" => Ok(KeyCode::Right),
-        other => Err(anyhow::anyhow!("unknown key: {other}")),
     }
 }
 
@@ -592,9 +594,12 @@ pub(crate) fn load(explicit_path: Option<&Path>) -> anyhow::Result<Config> {
             dirs::config_dir().map(|d| d.join("esp-tui").join("config.toml"));
         let local_path = Path::new("esp-tui.toml");
 
-        let global = global_path
-            .as_deref()
-            .and_then(|p| read_toml_file(p).ok().flatten());
+        let global = global_path.as_deref().and_then(|p| {
+            read_toml_file(p)
+                .map_err(|e| eprintln!("warning: could not read global config: {e}"))
+                .ok()
+                .flatten()
+        });
         let local = read_toml_file(local_path)?;
 
         match (global, local) {
@@ -716,6 +721,29 @@ error = "magenta"
         assert_eq!(cfg.colors.log.error, Color::Magenta);
         assert_eq!(cfg.colors.log.warn, Color::Yellow);
         assert_eq!(cfg.ui.buffer_size, 10_000);
+    }
+
+    #[test]
+    fn load_keys_preset_and_overrides() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("esp-tui.toml");
+        std::fs::write(
+            &path,
+            r#"
+[keys]
+preset = "vim"
+
+[keys.overrides]
+"ctrl+q" = "quit"
+"#,
+        )
+        .unwrap();
+        let cfg = load(Some(&path)).unwrap();
+        assert_eq!(cfg.keys.preset, Some("vim".to_owned()));
+        assert_eq!(
+            cfg.keys.overrides.get("ctrl+q").map(String::as_str),
+            Some("quit")
+        );
     }
 
     #[test]
