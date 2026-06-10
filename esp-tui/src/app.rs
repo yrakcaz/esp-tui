@@ -495,10 +495,14 @@ impl App {
             self.port_selector = None;
             Action::None
         } else if self.mapped_to(key, MappableAction::ScrollUp) {
-            self.port_selector.as_mut().map(|s| s.move_cursor(-1));
+            if let Some(s) = self.port_selector.as_mut() {
+                s.move_cursor(-1);
+            }
             Action::None
         } else if self.mapped_to(key, MappableAction::ScrollDown) {
-            self.port_selector.as_mut().map(|s| s.move_cursor(1));
+            if let Some(s) = self.port_selector.as_mut() {
+                s.move_cursor(1);
+            }
             Action::None
         } else {
             match key.code {
