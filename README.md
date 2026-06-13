@@ -141,6 +141,10 @@ fully documented reference of every available key.
 
 ## Keybindings
 
+All bindings below are defaults. Every action is remappable via `[keys]` in
+`esp-tui.toml`; see [`esp-tui.example.toml`](./esp-tui.example.toml) for the
+full reference.
+
 | Key | Action |
 |---|---|
 | `c` | Connect / scan for ports |
@@ -159,6 +163,23 @@ fully documented reference of every available key.
 | `q` / `Esc` | Exit scroll mode, or quit |
 | `Ctrl-C` | Quit |
 
+**Presets**
+
+Set `preset = "vim"` or `preset = "emacs"` under `[keys]` to switch to a
+familiar binding scheme. Presets replace the default scroll and filter keys;
+all other defaults remain.
+
+| Action | vim | emacs |
+|---|---|---|
+| Scroll up / down | `k` / `j` | `Ctrl-P` / `Ctrl-N` |
+| Page up / down | `Ctrl-B` / `Ctrl-F` | `Alt-V` / `Ctrl-V` |
+| Jump to top / bottom | `g` / `G` | `Alt-<` / `Alt->` |
+| Open / close filter | `/` | `Ctrl-S` |
+| Switch pane | `Ctrl-W` | |
+| Cancel / quit prompt | | `Ctrl-G` |
+
+Individual bindings can be overridden on top of a preset via `[keys.overrides]`.
+
 **Filter popup** (type any character to search tags by name)
 
 | Key | Action |
@@ -168,7 +189,7 @@ fully documented reference of every available key.
 | `↑` / `↓` | Move selection |
 | `Space` | Toggle selected item |
 | `Ctrl-A` | Toggle all items |
-| `q` / `Esc` | Close popup |
+| `Esc` / filter key | Close popup |
 
 **ELF path selector** (active while the `f` popup is open)
 
