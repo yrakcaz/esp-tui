@@ -190,7 +190,38 @@ pub(crate) fn parse_key(s: &str) -> anyhow::Result<(KeyCode, KeyModifiers)> {
     })?;
 
     let code = parse_key_code(key_part)?;
+    let modifiers = match code {
+        KeyCode::Char(c) if char_needs_shift(c) => modifiers | KeyModifiers::SHIFT,
+        _ => modifiers,
+    };
     Ok((code, modifiers))
+}
+
+fn char_needs_shift(c: char) -> bool {
+    c.is_ascii_uppercase()
+        || matches!(
+            c,
+            '~' | '!'
+                | '@'
+                | '#'
+                | '$'
+                | '%'
+                | '^'
+                | '&'
+                | '*'
+                | '('
+                | ')'
+                | '_'
+                | '+'
+                | '{'
+                | '}'
+                | '|'
+                | ':'
+                | '"'
+                | '<'
+                | '>'
+                | '?'
+        )
 }
 
 fn parse_key_code(s: &str) -> anyhow::Result<KeyCode> {
@@ -677,6 +708,31 @@ mod tests {
         assert_eq!(parse_key("up").unwrap().0, KeyCode::Up);
         assert_eq!(parse_key("pageup").unwrap().0, KeyCode::PageUp);
         assert_eq!(parse_key("F5").unwrap().0, KeyCode::F(5));
+    }
+
+    #[test]
+    fn parse_key_uppercase_char_includes_shift() {
+        let (code, mods) = parse_key("G").unwrap();
+        assert_eq!(code, KeyCode::Char('G'));
+        assert_eq!(mods, KeyModifiers::SHIFT);
+    }
+
+    #[test]
+    fn parse_key_shifted_symbol_includes_shift() {
+        let (code, mods) = parse_key(">").unwrap();
+        assert_eq!(code, KeyCode::Char('>'));
+        assert_eq!(mods, KeyModifiers::SHIFT);
+
+        let (code, mods) = parse_key("<").unwrap();
+        assert_eq!(code, KeyCode::Char('<'));
+        assert_eq!(mods, KeyModifiers::SHIFT);
+    }
+
+    #[test]
+    fn parse_key_alt_with_shifted_symbol_includes_shift() {
+        let (code, mods) = parse_key("alt+>").unwrap();
+        assert_eq!(code, KeyCode::Char('>'));
+        assert_eq!(mods, KeyModifiers::ALT | KeyModifiers::SHIFT);
     }
 
     #[test]

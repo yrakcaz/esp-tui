@@ -534,7 +534,7 @@ impl App {
             }
         } else if key.code == KeyCode::Esc
             || (safe && self.mapped_to(key, MappableAction::QuitPrompt))
-            || (safe && self.mapped_to(key, MappableAction::ToggleFilter))
+            || self.mapped_to(key, MappableAction::ToggleFilter)
         {
             self.filter.toggle_popup();
         } else if key.code == KeyCode::Up {
@@ -620,7 +620,7 @@ impl App {
                 Action::None
             }
             Some(MappableAction::ScrollTop) => {
-                self.scroll = 0;
+                self.scroll = usize::MAX;
                 self.inspector_scroll = 0;
                 Action::None
             }
@@ -3129,6 +3129,21 @@ mod tests {
     }
 
     #[test]
+    fn build_keymap_vim_preset_maps_slash_to_toggle_filter() {
+        use crate::config::KeysConfig;
+        let cfg = KeysConfig {
+            preset: Some("vim".to_owned()),
+            overrides: std::collections::HashMap::new(),
+        };
+        let map = build_keymap(&cfg);
+        assert_eq!(
+            map.get(&(KeyCode::Char('/'), KeyModifiers::empty())),
+            Some(&MappableAction::ToggleFilter),
+            "'/' should map to toggle_filter in vim preset"
+        );
+    }
+
+    #[test]
     fn build_keymap_vim_preset_maps_j_k() {
         use crate::config::KeysConfig;
         let cfg = KeysConfig {
@@ -3188,5 +3203,53 @@ mod tests {
             !map.contains_key(&(KeyCode::Char('j'), KeyModifiers::empty())),
             "preset 'j' binding replaced by override"
         );
+    }
+
+    #[test]
+    fn build_keymap_vim_preset_maps_uppercase_g_with_shift() {
+        use crate::config::KeysConfig;
+        let cfg = KeysConfig {
+            preset: Some("vim".to_owned()),
+            overrides: std::collections::HashMap::new(),
+        };
+        let map = build_keymap(&cfg);
+        assert_eq!(
+            map.get(&(KeyCode::Char('G'), KeyModifiers::SHIFT)),
+            Some(&MappableAction::ScrollBottom),
+            "'G' must be stored with SHIFT so crossterm's Shift+G event matches"
+        );
+    }
+
+    fn app_with_vim_preset() -> App {
+        use crate::config::{Config, KeysConfig};
+        let mut cfg = Config::default();
+        cfg.keys = KeysConfig {
+            preset: Some("vim".to_owned()),
+            overrides: std::collections::HashMap::new(),
+        };
+        App::new(None, cfg)
+    }
+
+    #[test]
+    fn scroll_top_shows_oldest_entries() {
+        let mut app = app_with_vim_preset();
+        for i in 0..20 {
+            app.push_line(&format!("I (1) tag: line {i}"));
+        }
+        app.handle_key(key(KeyCode::Char('g')));
+        let entries = app.visible_entries(5);
+        assert_eq!(entries[0].message(), "line 0", "g should show oldest first");
+    }
+
+    #[test]
+    fn scroll_bottom_shows_newest_entries() {
+        let mut app = app_with_vim_preset();
+        for i in 0..20 {
+            app.push_line(&format!("I (1) tag: line {i}"));
+        }
+        app.handle_key(key(KeyCode::Char('g')));
+        app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
+        let entries = app.visible_entries(5);
+        assert_eq!(entries[4].message(), "line 19", "G should show newest last");
     }
 }
