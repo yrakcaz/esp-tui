@@ -12,6 +12,8 @@ use crate::{config, elf, filter, flash, log, port, serial};
 
 pub(crate) const DEFAULT_BAUD: u32 = 115_200;
 const STATUS_TTL_SECS: u64 = 3;
+// Sentinel clamped by visible_entries to total.saturating_sub(height), i.e. oldest window.
+const SCROLL_TOP: usize = usize::MAX;
 
 /// Every action that can be bound to a key.
 ///
@@ -620,13 +622,21 @@ impl App {
                 Action::None
             }
             Some(MappableAction::ScrollTop) => {
-                self.scroll = usize::MAX;
-                self.inspector_scroll = 0;
+                match self.focused_pane {
+                    Pane::Monitor => self.scroll = SCROLL_TOP,
+                    Pane::Inspector => self.inspector_scroll = 0,
+                    Pane::Status => {}
+                }
                 Action::None
             }
             Some(MappableAction::ScrollBottom) => {
-                self.scroll = 0;
-                self.inspector_scroll = self.inspector_max_scroll.get();
+                match self.focused_pane {
+                    Pane::Monitor => self.scroll = 0,
+                    Pane::Inspector => {
+                        self.inspector_scroll = self.inspector_max_scroll.get();
+                    }
+                    Pane::Status => {}
+                }
                 Action::None
             }
             Some(MappableAction::SwitchPane) => {
@@ -3222,10 +3232,12 @@ mod tests {
 
     fn app_with_vim_preset() -> App {
         use crate::config::{Config, KeysConfig};
-        let mut cfg = Config::default();
-        cfg.keys = KeysConfig {
-            preset: Some("vim".to_owned()),
-            overrides: std::collections::HashMap::new(),
+        let cfg = Config {
+            keys: KeysConfig {
+                preset: Some("vim".to_owned()),
+                overrides: std::collections::HashMap::default(),
+            },
+            ..Config::default()
         };
         App::new(None, cfg)
     }
@@ -3251,5 +3263,39 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
         let entries = app.visible_entries(5);
         assert_eq!(entries[4].message(), "line 19", "G should show newest last");
+    }
+
+    #[test]
+    fn scroll_top_in_inspector_does_not_move_monitor_scroll() {
+        let mut app = app_with_vim_preset();
+        for i in 0..20 {
+            app.push_line(&format!("I (1) tag: line {i}"));
+        }
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.scroll(), 1);
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        assert_eq!(app.focused_pane(), Pane::Inspector);
+        app.handle_key(key(KeyCode::Char('g')));
+        assert_eq!(
+            app.scroll(),
+            1,
+            "monitor scroll must not change when inspector is focused"
+        );
+        assert_eq!(app.inspector_scroll(), 0);
+    }
+
+    #[test]
+    fn slash_closes_filter_popup_with_vim_preset() {
+        let mut app = app_with_vim_preset();
+        app.handle_key(key(KeyCode::Char('/')));
+        assert!(
+            app.filter().is_popup_open(),
+            "/ should open the filter popup"
+        );
+        app.handle_key(key(KeyCode::Char('/')));
+        assert!(
+            !app.filter().is_popup_open(),
+            "/ should close the filter popup"
+        );
     }
 }
