@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use crossterm::event::Event;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -12,8 +12,19 @@ use ratatui::Terminal;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{interval, Duration};
 
-use crate::app::{Action, App, DEFAULT_BAUD};
-use crate::{elf, event, flash, serial, ui};
+use crate::app::{Action, App, Pane, DEFAULT_BAUD};
+use crate::{config, elf, event, flash, serial, ui};
+
+/// Which pane to focus on startup.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum InitialPane {
+    /// Start with the Serial Monitor pane filling the full width.
+    /// Tab and resize keys still work to reveal the Inspector.
+    Monitor,
+    /// Start with the System Inspector pane filling the full width.
+    /// Tab and resize keys still work to reveal the Monitor.
+    Inspector,
+}
 
 #[derive(Parser)]
 #[command(name = "esp-tui", about = "ESP32 developer TUI")]
@@ -25,6 +36,14 @@ struct Args {
     /// Serial baud rate.
     #[arg(long, short = 'b')]
     baud: Option<u32>,
+
+    /// Start with one pane filling the full width (Tab to switch).
+    #[arg(long, value_enum)]
+    pane: Option<InitialPane>,
+
+    /// Path to an esp-tui.toml config file.
+    #[arg(long)]
+    config: Option<PathBuf>,
 }
 
 const MSG_OP_IN_PROGRESS: &str = "Operation already in progress.";
@@ -34,7 +53,7 @@ fn begin_connect(port: &str, baud: u32, tx: &mpsc::UnboundedSender<event::Messag
     let (src_tx, src_rx) = watch::channel(false);
     let port_name = port.to_owned();
     let tx_task = tx.clone();
-    drop(tokio::task::spawn_blocking(move || {
+    std::mem::drop(tokio::task::spawn_blocking(move || {
         serial::Port::new(&port_name, baud)
             .connect_and_read(&tx_task, &src_rx, src_tx);
     }));
@@ -296,7 +315,15 @@ pub(crate) fn handle_action(
                 app.set_status("Not connected.");
             }
         }
-        Action::CloseElfSelector => app.close_elf_selector(),
+        Action::CloseElfSelector => {
+            if let Some(draft) = app.elf_selector().map(|s| PathBuf::from(s.value()))
+            {
+                if !draft.as_os_str().is_empty() {
+                    app.set_elf_path(draft);
+                }
+            }
+            app.close_elf_selector();
+        }
         Action::ConfirmElfPath => confirm_elf_path(app, tx),
         Action::ResetDevice => {
             if app.is_flashing() {
@@ -445,7 +472,23 @@ pub(crate) fn handle_event_message(
     }
 }
 
-async fn run_inner(args: Args) -> anyhow::Result<()> {
+async fn run_inner(args: Args, mut cfg: config::Config) -> anyhow::Result<()> {
+    let baud = args.baud.or(cfg.serial.baud).unwrap_or(DEFAULT_BAUD);
+
+    let port_arg = args.port.or(cfg.serial.port.take());
+
+    let initial_pane = args
+        .pane
+        .map(|p| match p {
+            InitialPane::Monitor => Pane::Monitor,
+            InitialPane::Inspector => Pane::Inspector,
+        })
+        .or(match cfg.ui.initial_pane.as_deref() {
+            Some("monitor") => Some(Pane::Monitor),
+            Some("inspector") => Some(Pane::Inspector),
+            _ => None,
+        });
+
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal =
         Terminal::new(backend).context("failed to create terminal")?;
@@ -453,11 +496,28 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<event::Message>();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let baud = args.baud.unwrap_or(DEFAULT_BAUD);
-    let mut app = App::new(None);
+    let initial_elf = cfg.flash.elf_path.clone();
+    let initial_monitor_pct = cfg.ui.monitor_pct;
+    let mut app = App::new(None, cfg);
     app.set_baud(baud);
+    app.set_monitor_pct(initial_monitor_pct);
+    if let Some(elf) = initial_elf {
+        app.set_elf_path(elf);
+    }
+    if let Some(pane) = initial_pane {
+        match pane {
+            Pane::Inspector => {
+                app.set_monitor_pct(0);
+                app.set_focused_pane(Pane::Inspector);
+            }
+            Pane::Monitor => {
+                app.set_monitor_pct(100);
+            }
+            Pane::Status => {}
+        }
+    }
 
-    let mut ports = resolve_ports(args.port)?;
+    let mut ports = resolve_ports(port_arg)?;
     match ports.len() {
         0 => {}
         1 => {
@@ -522,12 +582,17 @@ async fn run_inner(args: Args) -> anyhow::Result<()> {
 pub(crate) async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    let cfg = config::load(args.config.as_deref()).unwrap_or_else(|e| {
+        eprintln!("esp-tui: config error: {e}");
+        config::Config::default()
+    });
+
     enable_raw_mode().context("failed to enable raw mode")?;
     std::io::stdout()
         .execute(EnterAlternateScreen)
         .context("failed to enter alternate screen")?;
 
-    let result = run_inner(args).await;
+    let result = run_inner(args, cfg).await;
 
     let _ = disable_raw_mode();
     let _ = std::io::stdout().execute(LeaveAlternateScreen);

@@ -1,6 +1,5 @@
 use std::sync::LazyLock;
 
-use ratatui::style::Color;
 use regex::Regex;
 
 static RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -27,18 +26,6 @@ pub(crate) enum Level {
 }
 
 impl Level {
-    /// Returns the terminal color associated with this level.
-    #[must_use]
-    pub(crate) fn color(self) -> Color {
-        match self {
-            Self::Error => Color::Red,
-            Self::Warn => Color::Yellow,
-            Self::Info => Color::Green,
-            Self::Debug => Color::Cyan,
-            Self::Verbose => Color::White,
-        }
-    }
-
     /// Returns the display label for this level.
     #[must_use]
     pub(crate) fn label(self) -> &'static str {
@@ -261,15 +248,6 @@ mod tests {
         assert_eq!(Level::Info.label(), "INFO");
         assert_eq!(Level::Debug.label(), "DEBUG");
         assert_eq!(Level::Verbose.label(), "VERBOSE");
-    }
-
-    #[test]
-    fn level_colors() {
-        assert_eq!(Level::Error.color(), Color::Red);
-        assert_eq!(Level::Warn.color(), Color::Yellow);
-        assert_eq!(Level::Info.color(), Color::Green);
-        assert_eq!(Level::Debug.color(), Color::Cyan);
-        assert_eq!(Level::Verbose.color(), Color::White);
     }
 
     #[test]

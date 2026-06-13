@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod elf;
 mod event;
 mod filter;

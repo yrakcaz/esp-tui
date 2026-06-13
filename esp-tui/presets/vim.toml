@@ -1,0 +1,8 @@
+"j" = "scroll_down"
+"k" = "scroll_up"
+"ctrl+f" = "page_down"
+"ctrl+b" = "page_up"
+"g" = "scroll_top"
+"G" = "scroll_bottom"
+"/" = "toggle_filter"
+"ctrl+w" = "switch_pane"

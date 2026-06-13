@@ -43,7 +43,12 @@ impl Selector {
     pub(crate) fn move_cursor(&mut self, delta: isize) {
         let len = self.ports.len();
         if len > 0 {
-            self.cursor = self.cursor.saturating_add_signed(delta).min(len - 1);
+            let off = delta.unsigned_abs() % len;
+            self.cursor = if delta >= 0 {
+                (self.cursor + off) % len
+            } else {
+                (self.cursor + len - off) % len
+            };
         }
     }
 
@@ -93,12 +98,13 @@ mod tests {
     }
 
     #[test]
-    fn move_cursor_clamps() {
-        let mut sel = Selector::new(vec!["COM1".into(), "COM2".into()]);
-        sel.move_cursor(-10);
+    fn move_cursor_wraps() {
+        let mut sel =
+            Selector::new(vec!["COM1".into(), "COM2".into(), "COM3".into()]);
+        sel.move_cursor(-1);
+        assert_eq!(sel.cursor(), 2);
+        sel.move_cursor(1);
         assert_eq!(sel.cursor(), 0);
-        sel.move_cursor(100);
-        assert_eq!(sel.cursor(), 1);
     }
 
     #[test]

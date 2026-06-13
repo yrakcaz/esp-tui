@@ -9,7 +9,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::app::{App, Pane};
+use crate::app::{App, MappableAction, Pane};
 use crate::filter;
 use crate::flash;
 
@@ -29,53 +29,54 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     ])
     .split(frame.area());
 
+    render_menu_bar(frame, outer[0], app);
     let main = Layout::horizontal([
         Constraint::Percentage(app.monitor_pct()),
         Constraint::Percentage(100 - app.monitor_pct()),
     ])
     .split(outer[1]);
-
-    render_menu_bar(frame, outer[0], app);
     render_monitor(frame, main[0], app, app.focused_pane() == Pane::Monitor);
     render_inspector(frame, main[1], app, app.focused_pane() == Pane::Inspector);
     render_status_bar(frame, outer[2], app, app.focused_pane() == Pane::Status);
 
     if app.is_quit_confirm_open() {
-        render_quit_confirm_popup(frame, frame.area());
+        render_quit_confirm_popup(frame, frame.area(), app);
     } else if app.is_erase_confirm_open() {
-        render_erase_confirm_popup(frame, frame.area());
+        render_erase_confirm_popup(frame, frame.area(), app);
     } else if app.is_elf_selector_open() {
         render_elf_selector_popup(frame, frame.area(), app);
     } else if let Some(sel) = app.port_selector() {
-        render_port_selector(frame, frame.area(), sel);
+        render_port_selector(frame, frame.area(), sel, app);
     } else if app.filter().is_popup_open() {
         render_filter_popup(frame, frame.area(), app);
     }
 }
 
 fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let colors = &app.config().colors;
+    let hc = colors.chrome.hint_text;
     let port_name = app.port_name();
     let port_label: std::borrow::Cow<str> =
         port_name.map_or("none".into(), std::borrow::Cow::Borrowed);
     let port_color = if port_name.is_some() {
-        Color::Green
+        colors.chrome.port_connected
     } else {
-        Color::Red
+        colors.chrome.port_disconnected
     };
     let right_text = format!("Port: {port_label}");
 
     let left = Line::from(vec![
-        hint("[C]onnect"),
+        hint(app.key_hint(MappableAction::ScanPorts, "Connect"), hc),
         Span::raw("  "),
-        hint("[D]isconnect"),
+        hint(app.key_hint(MappableAction::Disconnect, "Disconnect"), hc),
         Span::raw("  "),
-        hint("[F]lash"),
+        hint(app.key_hint(MappableAction::Flash, "Flash"), hc),
         Span::raw("  "),
-        hint("[E]rase"),
+        hint(app.key_hint(MappableAction::ErasePrompt, "Erase"), hc),
         Span::raw("  "),
-        hint("[R]eset"),
+        hint(app.key_hint(MappableAction::ResetDevice, "Reset"), hc),
         Span::raw("  "),
-        hint("[Q]uit"),
+        hint(app.key_hint(MappableAction::QuitPrompt, "Quit"), hc),
     ]);
 
     let right_len = u16::try_from(right_text.len()).unwrap_or(u16::MAX);
@@ -95,9 +96,9 @@ fn render_menu_bar(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn focused_border(is_focused: bool) -> Style {
+fn focused_border(is_focused: bool, color: Color) -> Style {
     if is_focused {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(color)
     } else {
         Style::default()
     }
@@ -108,6 +109,8 @@ fn scroll_footer(
     is_scrolled: bool,
     scroll_hint: &str,
     nav_hint: &str,
+    indicator_color: Color,
+    nav_color: Color,
 ) -> Line<'static> {
     const BADGE: &str = " SCROLL ";
     if is_scrolled {
@@ -116,34 +119,33 @@ fn scroll_footer(
             Span::styled(
                 BADGE,
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(indicator_color)
                     .add_modifier(Modifier::REVERSED | Modifier::BOLD),
             ),
-            Span::styled(tail, Style::default().fg(Color::Yellow)),
+            Span::styled(tail, Style::default().fg(indicator_color)),
         ])
     } else {
         Line::from(Span::styled(
             truncate_line(nav_hint, w),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(nav_color),
         ))
     }
 }
 
-fn hint(text: &'static str) -> Span<'static> {
+fn hint(text: String, color: Color) -> Span<'static> {
     Span::styled(
         text,
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
     )
 }
 
 fn render_monitor(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
+    let colors = &app.config().colors;
     let block = Block::default()
         .title(clip_title(" Serial Monitor ", area.width))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(focused_border(is_focused));
+        .border_style(focused_border(is_focused, colors.chrome.focused_border));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -178,20 +180,21 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
             if e.tag().is_empty() {
                 Line::from(Span::styled(
                     e.message(),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(colors.chrome.log_unparsed),
                 ))
             } else {
+                let level_color = level_color(e.level(), colors);
                 Line::from(vec![
                     Span::styled(
                         format!("[{}]", e.level().label()),
                         Style::default()
-                            .fg(e.level().color())
+                            .fg(level_color)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(" "),
                     Span::styled(
                         format!("{}: ", e.tag()),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(colors.chrome.log_tag),
                     ),
                     Span::raw(e.message()),
                 ])
@@ -211,18 +214,50 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
             hidden_level_count,
             hidden_tag_count,
             search_query,
+            colors.chrome.filter_bar,
         );
     }
 
     if is_focused {
         let w = usize::from(footer_area.width);
+        let scroll_hint = format!(
+            "  [{}] to follow live",
+            app.key_display(MappableAction::QuitPrompt)
+        );
+        let nav_hint = format!(
+            "[{}/{}  {}/{}] scroll  [{}] clear  [{}] filter  [{}/{}] resize  [{}] focus",
+            app.key_display(MappableAction::ScrollUp),
+            app.key_display(MappableAction::ScrollDown),
+            app.key_display(MappableAction::PageUp),
+            app.key_display(MappableAction::PageDown),
+            app.key_display(MappableAction::ClearLog),
+            app.key_display(MappableAction::ToggleFilter),
+            app.key_display(MappableAction::ShrinkMonitor),
+            app.key_display(MappableAction::GrowMonitor),
+            app.key_display(MappableAction::SwitchPane),
+        );
         let footer = scroll_footer(
             w,
             app.scroll() > 0,
-            "  q/Esc to follow live",
-            "[↑/↓  PgUp/PgDn] scroll  [^L] clear  [^F] filter  [^←/→] resize  [Tab] focus",
+            &scroll_hint,
+            &nav_hint,
+            colors.chrome.scroll_indicator,
+            colors.chrome.hint_text,
         );
         frame.render_widget(Paragraph::new(footer), footer_area);
+    }
+}
+
+fn level_color(
+    level: crate::log::Level,
+    colors: &crate::config::ColorsConfig,
+) -> Color {
+    match level {
+        crate::log::Level::Error => colors.log.error,
+        crate::log::Level::Warn => colors.log.warn,
+        crate::log::Level::Info => colors.log.info,
+        crate::log::Level::Debug => colors.log.debug,
+        crate::log::Level::Verbose => colors.log.verbose,
     }
 }
 
@@ -232,6 +267,7 @@ fn render_filter_bar(
     hidden_level_count: usize,
     hidden_tag_count: usize,
     search_query: &str,
+    color: Color,
 ) {
     let hidden_text = match (hidden_level_count, hidden_tag_count) {
         (0, 0) => None,
@@ -255,10 +291,7 @@ fn render_filter_bar(
         (None, None) => String::new(),
     };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            line,
-            Style::default().fg(Color::Yellow),
-        ))),
+        Paragraph::new(Line::from(Span::styled(line, Style::default().fg(color)))),
         area,
     );
 }
@@ -351,32 +384,38 @@ fn board_info_lines(app: &App, label: Style, col_width: usize) -> Vec<Line<'_>> 
     }
 }
 
-fn cpu_bar_color(usage: u8) -> Color {
+fn cpu_bar_color(usage: u8, ic: &crate::config::InspectorColors) -> Color {
     if usage > 80 {
-        Color::Red
+        ic.cpu_high
     } else if usage > 50 {
-        Color::Yellow
+        ic.cpu_medium
     } else {
-        Color::Green
+        ic.cpu_low
     }
+}
+
+struct InspectorStyle {
+    label: Style,
+    value_style: Style,
+    is_stale: bool,
+    metric_bar_color: Color,
+    hint_text_color: Color,
 }
 
 fn heap_section_lines(
     f: &agent_msg::Frame,
-    label: Style,
-    value_style: Style,
-    is_stale: bool,
     col_width: usize,
     heap_history: &std::collections::VecDeque<u32>,
     sparkline_w: usize,
+    s: &InspectorStyle,
 ) -> Vec<Line<'static>> {
     let heap_ratio = f64::from(f.heap_free) / f64::from(f.heap_total.max(1));
     let mut lines = vec![mline(
         vec![
-            Span::styled("Heap  ", label),
+            Span::styled("Heap  ", s.label),
             Span::styled(
                 inspector_bar(heap_ratio, INSPECTOR_BAR_W),
-                agent_bar_style(is_stale, Color::Green),
+                agent_bar_style(s.is_stale, s.metric_bar_color, s.hint_text_color),
             ),
             Span::styled(
                 format!(
@@ -384,7 +423,7 @@ fn heap_section_lines(
                     format_bytes(f.heap_free),
                     format_bytes(f.heap_total)
                 ),
-                value_style,
+                s.value_style,
             ),
         ],
         col_width,
@@ -392,10 +431,14 @@ fn heap_section_lines(
     if !heap_history.is_empty() {
         lines.push(mline(
             vec![
-                Span::styled(" hist ", label),
+                Span::styled(" hist ", s.label),
                 Span::styled(
                     sparkline_str(heap_history, f.heap_total, sparkline_w),
-                    agent_bar_style(is_stale, Color::Green),
+                    agent_bar_style(
+                        s.is_stale,
+                        s.metric_bar_color,
+                        s.hint_text_color,
+                    ),
                 ),
             ],
             col_width,
@@ -403,18 +446,18 @@ fn heap_section_lines(
     }
     lines.push(mline(
         vec![
-            Span::styled("Min   ", label),
-            Span::styled(format_bytes(f.heap_min_free), value_style),
-            Span::styled(" low-water", label),
+            Span::styled("Min   ", s.label),
+            Span::styled(format_bytes(f.heap_min_free), s.value_style),
+            Span::styled(" low-water", s.label),
         ],
         col_width,
     ));
     if f.heap_frag > 0 {
         lines.push(mline(
             vec![
-                Span::styled("Lrg   ", label),
-                Span::styled(format_bytes(f.heap_frag), value_style),
-                Span::styled(" largest block", label),
+                Span::styled("Lrg   ", s.label),
+                Span::styled(format_bytes(f.heap_frag), s.value_style),
+                Span::styled(" largest block", s.label),
             ],
             col_width,
         ));
@@ -422,9 +465,9 @@ fn heap_section_lines(
     if f.heap_iram > 0 {
         lines.push(mline(
             vec![
-                Span::styled("IRAM  ", label),
-                Span::styled(format_bytes(f.heap_iram), value_style),
-                Span::styled(" free", label),
+                Span::styled("IRAM  ", s.label),
+                Span::styled(format_bytes(f.heap_iram), s.value_style),
+                Span::styled(" free", s.label),
             ],
             col_width,
         ));
@@ -432,9 +475,9 @@ fn heap_section_lines(
     if f.heap_psram > 0 {
         lines.push(mline(
             vec![
-                Span::styled("PSRAM ", label),
-                Span::styled(format_bytes(f.heap_psram), value_style),
-                Span::styled(" free", label),
+                Span::styled("PSRAM ", s.label),
+                Span::styled(format_bytes(f.heap_psram), s.value_style),
+                Span::styled(" free", s.label),
             ],
             col_width,
         ));
@@ -448,80 +491,72 @@ fn wifi_nvs_lines(
     value_style: Style,
     col_width: usize,
 ) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    if let Some(rssi) = f.wifi_rssi {
+    let wifi = f.wifi_rssi.map(|rssi| {
         let ch_suffix = f
             .wifi_channel
             .map_or_else(String::new, |ch| format!("  ch {ch}"));
-        lines.push(Line::from(""));
-        lines.push(mline(
-            vec![
-                Span::styled("WiFi  ", label),
-                Span::styled(format!("{rssi} dBm{ch_suffix}"), value_style),
-            ],
-            col_width,
-        ));
-    }
-    if let Some((used, total)) = f.nvs {
-        lines.push(mline(
+        [
+            Line::from(""),
+            mline(
+                vec![
+                    Span::styled("WiFi  ", label),
+                    Span::styled(format!("{rssi} dBm{ch_suffix}"), value_style),
+                ],
+                col_width,
+            ),
+        ]
+    });
+    let nvs = f.nvs.map(|(used, total)| {
+        mline(
             vec![
                 Span::styled("NVS   ", label),
                 Span::styled(format!("{used}/{total} entries"), value_style),
             ],
             col_width,
-        ));
-    }
-    lines
+        )
+    });
+    wifi.into_iter().flatten().chain(nvs).collect()
 }
 
 fn frame_metric_lines(
     f: &agent_msg::Frame,
-    label: Style,
-    value_style: Style,
-    is_stale: bool,
     col_width: usize,
     heap_history: &std::collections::VecDeque<u32>,
     cpu_history: &[std::collections::VecDeque<u32>; 2],
+    ic: &crate::config::InspectorColors,
+    s: &InspectorStyle,
 ) -> Vec<Line<'static>> {
     let sparkline_w = (col_width.saturating_sub(6)).min(30);
-    let mut lines = heap_section_lines(
-        f,
-        label,
-        value_style,
-        is_stale,
-        col_width,
-        heap_history,
-        sparkline_w,
-    );
+    let mut lines = heap_section_lines(f, col_width, heap_history, sparkline_w, s);
     lines.push(Line::from(""));
     f.cpu_usage.iter().enumerate().for_each(|(i, &usage)| {
         let cpu_ratio = f64::from(usage) / 100.0;
-        let cpu_color = cpu_bar_color(usage);
+        let cpu_color = cpu_bar_color(usage, ic);
         lines.push(mline(
             vec![
-                Span::styled(format!("CPU{i}  "), label),
+                Span::styled(format!("CPU{i}  "), s.label),
                 Span::styled(
                     inspector_bar(cpu_ratio, INSPECTOR_BAR_W),
-                    agent_bar_style(is_stale, cpu_color),
+                    agent_bar_style(s.is_stale, cpu_color, s.hint_text_color),
                 ),
-                Span::styled(format!("  {usage}%"), value_style),
+                Span::styled(format!("  {usage}%"), s.value_style),
             ],
             col_width,
         ));
         if !cpu_history[i].is_empty() {
             lines.push(mline(
                 vec![
-                    Span::styled(" hist ", label),
+                    Span::styled(" hist ", s.label),
                     Span::styled(
                         sparkline_str(&cpu_history[i], 100, sparkline_w),
-                        agent_bar_style(is_stale, cpu_color),
+                        agent_bar_style(s.is_stale, cpu_color, s.hint_text_color),
                     ),
                 ],
                 col_width,
             ));
         }
     });
-    lines.extend(wifi_nvs_lines(f, label, value_style, col_width));
+    lines.extend(wifi_nvs_lines(f, s.label, s.value_style, col_width));
     lines
 }
 
@@ -607,11 +642,20 @@ fn task_lines(
 }
 
 fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
+    let colors = &app.config().colors;
+    let hint_text = colors.chrome.hint_text;
     let is_stale = app
         .agent_last_seen()
         .is_some_and(|t| t.elapsed() > Duration::from_secs(5));
-    let label = Style::default().fg(Color::DarkGray);
+    let label = Style::default().fg(hint_text);
     let value_style = if is_stale { label } else { Style::default() };
+    let s = InspectorStyle {
+        label,
+        value_style,
+        is_stale,
+        metric_bar_color: colors.inspector.metric_bar,
+        hint_text_color: hint_text,
+    };
     let frame = app.agent_frame();
     let mut lines: Vec<Line<'a>> = board_info_lines(app, label, col_width);
 
@@ -626,12 +670,11 @@ fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
         lines.push(Line::from(""));
         lines.extend(frame_metric_lines(
             f,
-            label,
-            value_style,
-            is_stale,
             col_width,
             app.heap_history(),
             app.cpu_history(),
+            &colors.inspector,
+            &s,
         ));
         if let Some(parts) = app.agent_partitions() {
             lines.extend(partition_lines(parts, label, value_style, col_width));
@@ -660,11 +703,12 @@ fn build_inspector_lines<'a>(app: &'a App, col_width: usize) -> Vec<Line<'a>> {
 }
 
 fn render_inspector(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
+    let colors = &app.config().colors;
     let block = Block::default()
         .title(clip_title(" System Inspector ", area.width))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(focused_border(is_focused));
+        .border_style(focused_border(is_focused, colors.chrome.focused_border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -673,11 +717,27 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) 
 
     if is_focused {
         let w = usize::from(footer_area.width);
+        let scroll_hint = format!(
+            "  [{}] to scroll top",
+            app.key_display(MappableAction::QuitPrompt)
+        );
+        let nav_hint = format!(
+            "[{}/{}  {}/{}] scroll  [{}/{}] resize  [{}] focus",
+            app.key_display(MappableAction::ScrollUp),
+            app.key_display(MappableAction::ScrollDown),
+            app.key_display(MappableAction::PageUp),
+            app.key_display(MappableAction::PageDown),
+            app.key_display(MappableAction::ShrinkMonitor),
+            app.key_display(MappableAction::GrowMonitor),
+            app.key_display(MappableAction::SwitchPane),
+        );
         let footer = scroll_footer(
             w,
             app.inspector_scroll().min(app.inspector_max_scroll()) > 0,
-            "  q/Esc to scroll top",
-            "[↑/↓  PgUp/PgDn] scroll  [^←/→] resize  [Tab] focus",
+            &scroll_hint,
+            &nav_hint,
+            colors.chrome.scroll_indicator,
+            colors.chrome.hint_text,
         );
         frame.render_widget(Paragraph::new(footer), footer_area);
     }
@@ -686,7 +746,7 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) 
     if app.port_name().is_none() {
         frame.render_widget(
             Paragraph::new("Connect a device to begin.")
-                .style(Style::default().fg(Color::DarkGray))
+                .style(Style::default().fg(colors.chrome.hint_text))
                 .wrap(ratatui::widgets::Wrap { trim: false }),
             content_area,
         );
@@ -865,20 +925,25 @@ fn task_state_label(state: agent_msg::TaskState) -> &'static str {
     }
 }
 
-fn agent_bar_style(is_stale: bool, color: Color) -> Style {
+fn agent_bar_style(
+    is_stale: bool,
+    active_color: Color,
+    stale_color: Color,
+) -> Style {
     if is_stale {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(stale_color)
     } else {
-        Style::default().fg(color)
+        Style::default().fg(active_color)
     }
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
+    let colors = &app.config().colors;
     let block = Block::default()
         .title(clip_title(" Status ", area.width))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(focused_border(is_focused));
+        .border_style(focused_border(is_focused, colors.chrome.focused_border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -890,7 +955,8 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, is_focused: bool)
         } => {
             if let Some(msg) = app.status_msg() {
                 frame.render_widget(
-                    Paragraph::new(msg).style(Style::default().fg(Color::Yellow)),
+                    Paragraph::new(msg)
+                        .style(Style::default().fg(colors.flash.message)),
                     inner,
                 );
             } else {
@@ -913,7 +979,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, is_focused: bool)
                     width.saturating_sub(addr_str.len() + mid + pct_str.len());
                 let label = format!("{addr_str}{:mid$}{pct_str}{:right$}", "", "");
                 let gauge = Gauge::default()
-                    .gauge_style(Style::default().fg(Color::Green))
+                    .gauge_style(Style::default().fg(colors.flash.gauge))
                     .ratio(ratio)
                     .label(label);
                 frame.render_widget(gauge, inner);
@@ -922,13 +988,14 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, is_focused: bool)
         flash::State::Erasing => {
             if let Some(msg) = app.status_msg() {
                 frame.render_widget(
-                    Paragraph::new(msg).style(Style::default().fg(Color::Yellow)),
+                    Paragraph::new(msg)
+                        .style(Style::default().fg(colors.flash.message)),
                     inner,
                 );
             } else {
                 frame.render_widget(
                     Paragraph::new("Erasing flash...")
-                        .style(Style::default().fg(Color::Yellow)),
+                        .style(Style::default().fg(colors.flash.message)),
                     inner,
                 );
             }
@@ -936,9 +1003,9 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, is_focused: bool)
         flash::State::Idle | flash::State::Reconnecting => {
             let content = app.status_msg().unwrap_or("");
             let style = if content.is_empty() {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(colors.chrome.hint_text)
             } else {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(colors.chrome.status_message)
             };
             frame.render_widget(
                 Paragraph::new(if content.is_empty() { "Ready" } else { content })
@@ -955,7 +1022,8 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     Rect::new(x, y, width.min(area.width), height.min(area.height))
 }
 
-fn render_quit_confirm_popup(frame: &mut Frame, area: Rect) {
+fn render_quit_confirm_popup(frame: &mut Frame, area: Rect, app: &App) {
+    let fc = &app.config().colors.flash;
     let popup = centered_rect(52, 7, area);
     frame.render_widget(Clear, popup);
 
@@ -970,7 +1038,9 @@ fn render_quit_confirm_popup(frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             "Are you sure you want to quit?",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(fc.confirm_title)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(""),
@@ -978,18 +1048,19 @@ fn render_quit_confirm_popup(frame: &mut Frame, area: Rect) {
             Span::styled(
                 "[Y]",
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(fc.confirm_ok)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" confirm   "),
-            Span::styled("[N] / [q/Esc]", Style::default().fg(Color::DarkGray)),
+            Span::styled("[N] / [Esc]", Style::default().fg(fc.confirm_cancel)),
             Span::raw(" cancel"),
         ]),
     ];
     frame.render_widget(Paragraph::new(text), inner);
 }
 
-fn render_erase_confirm_popup(frame: &mut Frame, area: Rect) {
+fn render_erase_confirm_popup(frame: &mut Frame, area: Rect, app: &App) {
+    let fc = &app.config().colors.flash;
     let popup = centered_rect(52, 7, area);
     frame.render_widget(Clear, popup);
 
@@ -1004,7 +1075,9 @@ fn render_erase_confirm_popup(frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             "This will erase ALL flash data.",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(fc.confirm_title)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from("This operation cannot be undone."),
         Line::from(""),
@@ -1012,11 +1085,11 @@ fn render_erase_confirm_popup(frame: &mut Frame, area: Rect) {
             Span::styled(
                 "[Y]",
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(fc.confirm_ok)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" confirm   "),
-            Span::styled("[N] / [q/Esc]", Style::default().fg(Color::DarkGray)),
+            Span::styled("[N] / [Esc]", Style::default().fg(fc.confirm_cancel)),
             Span::raw(" cancel"),
         ]),
     ];
@@ -1082,6 +1155,7 @@ fn render_elf_input(frame: &mut Frame, area: Rect, value: &str, cursor_pos: usiz
 
 fn render_elf_selector_popup(frame: &mut Frame, area: Rect, app: &App) {
     if let Some(sel) = app.elf_selector() {
+        let hint_color = app.config().colors.chrome.hint_text;
         let completions = sel.completions();
         let comp_count = u16::try_from(completions.len()).unwrap_or(u16::MAX);
         let height = if completions.is_empty() {
@@ -1123,7 +1197,7 @@ fn render_elf_selector_popup(frame: &mut Frame, area: Rect, app: &App) {
                     frame.render_widget(
                         Paragraph::new(Span::styled(
                             "[Tab] complete  [Enter] confirm  [Esc] cancel",
-                            Style::default().fg(Color::DarkGray),
+                            Style::default().fg(hint_color),
                         )),
                         hint_area,
                     );
@@ -1151,8 +1225,12 @@ fn render_elf_selector_popup(frame: &mut Frame, area: Rect, app: &App) {
                     frame.render_widget(List::new(items), comp_area);
                     frame.render_widget(
                         Paragraph::new(Span::styled(
-                            "[Tab] cycle  [↑/↓] navigate  [Enter] select  [Esc] cancel",
-                            Style::default().fg(Color::DarkGray),
+                            format!(
+                                "[Tab] cycle  [{}/{}] navigate  [Enter] select  [Esc] cancel",
+                                app.key_display(MappableAction::ScrollUp),
+                                app.key_display(MappableAction::ScrollDown),
+                            ),
+                            Style::default().fg(hint_color),
                         )),
                         hint_area,
                     );
@@ -1162,8 +1240,13 @@ fn render_elf_selector_popup(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn filter_search_item(filter: &filter::State, search_focused: bool) -> ListItem<'_> {
-    let label = Span::styled(" Search: ", Style::default().fg(Color::DarkGray));
+fn filter_search_item(
+    filter: &filter::State,
+    search_focused: bool,
+    search_label_color: Color,
+    search_query_color: Color,
+) -> ListItem<'_> {
+    let label = Span::styled(" Search: ", Style::default().fg(search_label_color));
     let query = filter.search_query();
     let content: Line<'_> = if search_focused {
         let mut spans = vec![label];
@@ -1172,21 +1255,19 @@ fn filter_search_item(filter: &filter::State, search_focused: bool) -> ListItem<
     } else if query.is_empty() {
         Line::from(vec![
             label,
-            Span::styled("type to search…", Style::default().fg(Color::DarkGray)),
+            Span::styled("type to search…", Style::default().fg(search_label_color)),
         ])
     } else {
         Line::from(vec![
             label,
-            Span::styled(query, Style::default().fg(Color::Yellow)),
+            Span::styled(query, Style::default().fg(search_query_color)),
         ])
     };
     ListItem::new(content)
 }
 
 fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
-    const HINT_NAV: &str = " [↑/↓] navigate  [Space] toggle  [^A] all  [Esc] close";
-    const HINT_SEARCH: &str = " [↑/↓] navigate  [Esc] done";
-
+    let colors = &app.config().colors;
     let filter = app.filter();
     let levels = filter::State::levels();
     let all_tags: Vec<&str> =
@@ -1194,12 +1275,14 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
     let any_tags = !filter.known_tags().is_empty();
     let search_focused = filter.is_search_focused();
 
-    let hint = if search_focused {
-        HINT_SEARCH
+    let hint_nav = " [↑/↓] navigate  [Space] toggle  [^A] all  [Esc] close";
+    let hint_search = " [↑/↓] navigate  [Esc] done";
+    let popup_hint = if search_focused {
+        hint_search
     } else {
-        HINT_NAV
+        hint_nav
     };
-    let hint_width = HINT_NAV.len().max(HINT_SEARCH.len());
+    let hint_width = hint_nav.len().max(hint_search.len());
 
     let tag_section_rows: u16 = if any_tags {
         1 + u16::try_from(all_tags.len()).unwrap_or(u16::MAX)
@@ -1224,10 +1307,15 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
         .border_type(BorderType::Rounded);
 
     let section_style = Style::default()
-        .fg(Color::DarkGray)
+        .fg(colors.chrome.hint_text)
         .add_modifier(Modifier::BOLD);
 
-    let search_item = filter_search_item(filter, search_focused);
+    let search_item = filter_search_item(
+        filter,
+        search_focused,
+        colors.chrome.search_label,
+        colors.chrome.search_query,
+    );
 
     let level_items = levels.iter().enumerate().map(|(i, &level)| {
         let marker = if filter.is_level_hidden(level) {
@@ -1235,12 +1323,11 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             "[x]"
         };
+        let lc = level_color(level, colors);
         let style = if filter.cursor() == i {
-            Style::default()
-                .fg(level.color())
-                .add_modifier(Modifier::REVERSED)
+            Style::default().fg(lc).add_modifier(Modifier::REVERSED)
         } else {
-            Style::default().fg(level.color())
+            Style::default().fg(lc)
         };
         ListItem::new(format!("  {marker} {}", level.label())).style(style)
     });
@@ -1274,7 +1361,8 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
         .chain(level_items)
         .chain(tag_items)
         .chain(std::iter::once(
-            ListItem::new(hint).style(Style::default().fg(Color::DarkGray)),
+            ListItem::new(popup_hint)
+                .style(Style::default().fg(colors.chrome.hint_text)),
         ))
         .collect();
 
@@ -1282,8 +1370,19 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(list, popup);
 }
 
-fn render_port_selector(frame: &mut Frame, area: Rect, sel: &crate::port::Selector) {
-    const HINT: &str = " [↑/↓] navigate  [Enter] connect  [q/Esc] close";
+fn render_port_selector(
+    frame: &mut Frame,
+    area: Rect,
+    sel: &crate::port::Selector,
+    app: &App,
+) {
+    let hint_color = app.config().colors.chrome.hint_text;
+    let hint = format!(
+        " [{}/{}] navigate  [Enter] connect  [Esc] / [{}] close",
+        app.key_display(MappableAction::ScrollUp),
+        app.key_display(MappableAction::ScrollDown),
+        app.key_display(MappableAction::ScanPorts),
+    );
 
     let ports = sel.ports();
     let height = (u16::try_from(ports.len())
@@ -1292,7 +1391,7 @@ fn render_port_selector(frame: &mut Frame, area: Rect, sel: &crate::port::Select
     .max(4)
     .min(area.height);
     let width =
-        (u16::try_from(HINT.chars().count()).unwrap_or(50) + 4).min(area.width);
+        (u16::try_from(hint.chars().count()).unwrap_or(50) + 4).min(area.width);
     let popup = centered_rect(width, height, area);
 
     frame.render_widget(Clear, popup);
@@ -1314,7 +1413,7 @@ fn render_port_selector(frame: &mut Frame, area: Rect, sel: &crate::port::Select
             ListItem::new(format!("  {port}")).style(style)
         })
         .chain(std::iter::once(
-            ListItem::new(HINT).style(Style::default().fg(Color::DarkGray)),
+            ListItem::new(hint.as_str()).style(Style::default().fg(hint_color)),
         ))
         .collect();
 
@@ -1330,6 +1429,15 @@ mod tests {
 
     use super::centered_rect;
     use crate::app::App;
+    use crate::config::Config;
+
+    fn app() -> App {
+        App::new(None, Config::default())
+    }
+
+    fn app_with_port(port: &str) -> App {
+        App::new(Some(port.into()), Config::default())
+    }
 
     fn render(app: &App) {
         let backend = TestBackend::new(120, 40);
@@ -1339,12 +1447,12 @@ mod tests {
 
     #[test]
     fn draw_empty_app_does_not_panic() {
-        render(&App::new(None));
+        render(&app());
     }
 
     #[test]
     fn draw_with_log_entries_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.push_line("I (1) wifi: Connected");
         app.push_line("E (1) i2c: Timeout");
         app.push_line("some raw line");
@@ -1353,7 +1461,7 @@ mod tests {
 
     #[test]
     fn draw_with_filter_popup_open_does_not_panic() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.push_line("I (1) wifi: msg");
         app.filter_mut().toggle_popup();
         render(&app);
@@ -1361,28 +1469,28 @@ mod tests {
 
     #[test]
     fn draw_with_port_selector_open_does_not_panic() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_port_selector(vec!["COM1".into(), "COM2".into()]);
         render(&app);
     }
 
     #[test]
     fn draw_with_erase_confirm_open_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.open_erase_confirm();
         render(&app);
     }
 
     #[test]
     fn draw_with_quit_confirm_open_does_not_panic() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_quit_confirm();
         render(&app);
     }
 
     #[test]
     fn draw_with_quit_confirm_open_while_flashing_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
             current: 0,
@@ -1394,7 +1502,7 @@ mod tests {
 
     #[test]
     fn draw_with_elf_selector_open_does_not_panic() {
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_elf_selector(None);
         render(&app);
     }
@@ -1414,7 +1522,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("fw_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
         std::fs::write(dir.join("fw_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
-        let mut app = App::new(None);
+        let mut app = app();
         app.open_elf_selector(None);
         for ch in format!("{}/fw", dir.display()).chars() {
             app.handle_key(key(KeyCode::Char(ch)));
@@ -1425,7 +1533,7 @@ mod tests {
 
     #[test]
     fn draw_with_flash_state_flashing_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0x1000,
             current: 512,
@@ -1436,7 +1544,7 @@ mod tests {
 
     #[test]
     fn draw_with_flash_state_flashing_and_status_overlay_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Flashing {
             addr: 0,
             current: 0,
@@ -1448,14 +1556,14 @@ mod tests {
 
     #[test]
     fn draw_with_flash_state_erasing_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Erasing);
         render(&app);
     }
 
     #[test]
     fn draw_with_flash_state_erasing_and_status_overlay_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Erasing);
         app.set_status("Operation already in progress.");
         render(&app);
@@ -1463,7 +1571,7 @@ mod tests {
 
     #[test]
     fn draw_with_flash_state_reconnecting_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Reconnecting);
         app.set_status("Flash complete. Reconnecting...");
         render(&app);
@@ -1471,7 +1579,7 @@ mod tests {
 
     #[test]
     fn draw_with_device_info_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_device_info(crate::flash::DeviceInfo::new(
             "ESP32-S3 (rev v0.1)",
             "4MB",
@@ -1482,19 +1590,19 @@ mod tests {
 
     #[test]
     fn draw_with_elf_path_set_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.set_elf_path(std::path::PathBuf::from("/tmp/firmware.elf"));
         render(&app);
     }
 
     #[test]
     fn draw_inspector_connected_no_agent_does_not_panic() {
-        render(&App::new(Some("COM1".into())));
+        render(&app_with_port("COM1"));
     }
 
     #[test]
     fn draw_inspector_with_agent_frame_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.push_line(
             "V (1) esp_agent: heap=100000/200000 min=50000 frag=10000 \
              iram=40000 psram=0 cpu=23,45 tasks=main:R:3200:1,wifi:B:1800:5",
@@ -1504,7 +1612,7 @@ mod tests {
 
     #[test]
     fn draw_inspector_with_psram_and_wifi_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.push_line(
             "V (1) esp_agent: heap=100000/200000 min=50000 frag=10000 \
              iram=0 psram=524288 cpu=90 wifi=-65 nvs=45/512 tasks=",
@@ -1514,7 +1622,7 @@ mod tests {
 
     #[test]
     fn draw_inspector_with_agent_startup_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.push_line(
             "V (1) esp_agent: start reason=poweron chip=esp32s3 cores=2 \
              rev=1 mac=AA:BB:CC:DD:EE:FF flash=0x400000",
@@ -1525,7 +1633,7 @@ mod tests {
     #[test]
     fn draw_inspector_inspector_pane_focused_does_not_panic() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.push_line(
             "V (1) esp_agent: heap=100000/200000 min=50000 frag=10000 \
              iram=0 psram=0 cpu=50 tasks=t1:R:1024:1,t2:B:512:2,t3:r:256:3",
@@ -1732,7 +1840,7 @@ mod tests {
 
     #[test]
     fn draw_inspector_with_wifi_channel_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         app.push_line(
             "V (5000) esp_agent: heap=100000/200000 min=50000 frag=8000 \
              iram=0 psram=0 cpu=30 wifi=-65 wifi_ch=6 tasks=",
@@ -1742,7 +1850,7 @@ mod tests {
 
     #[test]
     fn draw_inspector_with_sparkline_history_does_not_panic() {
-        let mut app = App::new(Some("COM1".into()));
+        let mut app = app_with_port("COM1");
         for _ in 0..10 {
             app.push_line(
                 "V (1000) esp_agent: heap=100000/200000 min=50000 frag=8000 \

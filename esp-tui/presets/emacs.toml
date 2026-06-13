@@ -1,0 +1,8 @@
+"ctrl+n" = "scroll_down"
+"ctrl+p" = "scroll_up"
+"ctrl+v" = "page_down"
+"alt+v" = "page_up"
+"alt+<" = "scroll_top"
+"alt+>" = "scroll_bottom"
+"ctrl+s" = "toggle_filter"
+"ctrl+g" = "quit_prompt"

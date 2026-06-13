@@ -1,0 +1,114 @@
+# esp-tui.example.toml
+#
+# Copy this file to esp-tui.toml in your project directory, or to
+# ~/.config/esp-tui/config.toml for a global default. Project-local
+# settings override global ones key-by-key. All keys are optional.
+
+# ---------------------------------------------------------------------------
+# Serial connection
+# ---------------------------------------------------------------------------
+# Overridden by --port / --baud on the command line.
+
+[serial]
+port = "/dev/ttyUSB0"   # default: auto-detect
+baud = 9600             # default: 115200
+
+# ---------------------------------------------------------------------------
+# Flash / ELF
+# ---------------------------------------------------------------------------
+
+[flash]
+elf_path = "target/xtensa-esp32s3-espidf/release/my-firmware"   # default: none
+
+# ---------------------------------------------------------------------------
+# UI layout
+# ---------------------------------------------------------------------------
+# initial_pane is overridden by --pane on the command line.
+
+[ui]
+initial_pane = "inspector"  # "monitor" | "inspector"; overrides monitor_pct at startup; default: split view
+monitor_pct = 40            # initial monitor width % in split view; ignored when initial_pane is set; default: 60
+buffer_size = 5000          # default: 10000
+sparkline_len = 30          # default: 60
+
+# ---------------------------------------------------------------------------
+# Colors
+#
+# Every value is a named color or #RRGGBB hex string.
+# Named colors: black, red, green, yellow, blue, magenta, cyan, gray,
+#   dark_gray, light_red, light_green, light_yellow, light_blue,
+#   light_magenta, light_cyan, white, reset.
+# ---------------------------------------------------------------------------
+
+[colors.log]
+error = "light_red"   # default: "red"
+warn = "light_yellow" # default: "yellow"
+info = "light_green"  # default: "green"
+debug = "blue"        # default: "cyan"
+verbose = "gray"      # default: "white"
+
+[colors.chrome]
+focused_border = "blue"       # default: "cyan"
+port_connected = "cyan"       # default: "green"
+port_disconnected = "yellow"  # default: "red"
+scroll_indicator = "magenta"  # default: "yellow"
+hint_text = "gray"            # default: "dark_gray"   (nav hints, labels, raw log lines)
+filter_bar = "cyan"           # default: "yellow"       (active-filter summary bar)
+log_tag = "gray"              # default: "dark_gray"
+log_unparsed = "gray"         # default: "dark_gray"   (raw lines without a level)
+search_label = "gray"         # default: "dark_gray"
+search_query = "cyan"         # default: "yellow"
+status_message = "green"      # default: "yellow"
+
+[colors.inspector]
+cpu_low = "cyan"          # default: "green"    (< 50 %)
+cpu_medium = "light_red"  # default: "yellow"   (50-80 %)
+cpu_high = "magenta"      # default: "red"      (> 80 %)
+metric_bar = "blue"       # default: "green"    (heap and CPU bar fill)
+
+[colors.flash]
+message = "cyan"           # default: "yellow"
+gauge = "blue"             # default: "green"
+confirm_title = "magenta"  # default: "red"
+confirm_ok = "cyan"        # default: "green"
+confirm_cancel = "gray"    # default: "dark_gray"
+
+# ---------------------------------------------------------------------------
+# Keybindings
+#
+# Notes:
+#   - Bindings here apply in normal mode only.
+#   - Ctrl+C always quits and cannot be remapped.
+#   - Esc always cancels the active modal and cannot be remapped.
+#   - Bindings override defaults; the last binding for a given key wins.
+#     Remapping a default key (e.g. "f" = "scan_ports") replaces its default
+#     action. Unknown key strings or action names are silently ignored.
+# ---------------------------------------------------------------------------
+
+[keys]
+preset = "vim"   # default: none
+
+# Per-key overrides applied on top of the preset (and on top of defaults).
+# Key format: "j", "G", "ctrl+n", "alt+v", "F5", "alt+left",
+#   "enter", "esc", "tab", "backspace", "delete",
+#   "up", "down", "left", "right", "pageup", "pagedown", "home", "end"
+
+[keys.overrides]
+"k" = "scroll_up"              # default: up
+"j" = "scroll_down"            # default: down
+"ctrl+u" = "page_up"           # default: pageup
+"ctrl+d" = "page_down"         # default: pagedown
+"g" = "scroll_top"             # default: none
+"G" = "scroll_bottom"          # default: none
+"ctrl+t" = "switch_pane"       # default: tab
+"alt+right" = "grow_monitor"   # default: ctrl+right
+"alt+left" = "shrink_monitor"  # default: ctrl+left
+"alt+f" = "toggle_filter"      # default: ctrl+f
+"alt+l" = "clear_log"          # default: ctrl+l
+"x" = "quit_prompt"            # default: q, esc
+"ctrl+q" = "quit"              # default: none  (ctrl+c always works)
+"ctrl+e" = "flash"             # default: f
+"ctrl+x" = "erase_prompt"      # default: e
+"ctrl+r" = "reset_device"      # default: r
+"ctrl+w" = "disconnect"        # default: d
+"ctrl+s" = "scan_ports"        # default: c

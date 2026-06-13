@@ -112,21 +112,38 @@ Opening the repo in a devcontainer installs all prerequisites automatically, inc
 esp-tui [OPTIONS]
 
 Options:
-  -p, --port <PORT>  Serial port to connect to
-  -b, --baud <BAUD>  Serial baud rate (default: 115200)
-  -h, --help         Print help
+  -p, --port <PORT>    Serial port to connect to
+  -b, --baud <BAUD>    Serial baud rate (default: 115200)
+      --pane <PANE>    Open with only one pane visible [monitor|inspector]
+      --config <FILE>  Path to a config file (default: ./esp-tui.toml)
+  -h, --help           Print help
 ```
 
 **Examples**
 
 ```
-esp-tui                          # auto-detect port
-esp-tui --port /dev/ttyUSB0      # connect to a specific port
+esp-tui                           # auto-detect port
+esp-tui --port /dev/ttyUSB0       # connect to a specific port
+esp-tui --pane inspector          # open with only the System Inspector visible
 ```
 
 ---
 
+## Configuration
+
+esp-tui reads `esp-tui.toml` in the current directory, falling back to
+`~/.config/esp-tui/config.toml` for global defaults. CLI flags override both.
+
+See [`esp-tui.example.toml`](./esp-tui.example.toml) in the repo root for a
+fully documented reference of every available key.
+
+---
+
 ## Keybindings
+
+All bindings below are defaults. Every action is remappable via `[keys]` in
+`esp-tui.toml`; see [`esp-tui.example.toml`](./esp-tui.example.toml) for the
+full reference.
 
 | Key | Action |
 |---|---|
@@ -146,6 +163,23 @@ esp-tui --port /dev/ttyUSB0      # connect to a specific port
 | `q` / `Esc` | Exit scroll mode, or quit |
 | `Ctrl-C` | Quit |
 
+**Presets**
+
+Set `preset = "vim"` or `preset = "emacs"` under `[keys]` to switch to a
+familiar binding scheme. Presets replace the default scroll and filter keys;
+all other defaults remain.
+
+| Action | vim | emacs |
+|---|---|---|
+| Scroll up / down | `k` / `j` | `Ctrl-P` / `Ctrl-N` |
+| Page up / down | `Ctrl-B` / `Ctrl-F` | `Alt-V` / `Ctrl-V` |
+| Jump to top / bottom | `g` / `G` | `Alt-<` / `Alt->` |
+| Open / close filter | `/` | `Ctrl-S` |
+| Switch pane | `Ctrl-W` | |
+| Cancel / quit prompt | | `Ctrl-G` |
+
+Individual bindings can be overridden on top of a preset via `[keys.overrides]`.
+
 **Filter popup** (type any character to search tags by name)
 
 | Key | Action |
@@ -155,7 +189,7 @@ esp-tui --port /dev/ttyUSB0      # connect to a specific port
 | `↑` / `↓` | Move selection |
 | `Space` | Toggle selected item |
 | `Ctrl-A` | Toggle all items |
-| `q` / `Esc` | Close popup |
+| `Esc` / filter key | Close popup |
 
 **ELF path selector** (active while the `f` popup is open)
 
