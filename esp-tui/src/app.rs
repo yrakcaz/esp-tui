@@ -2506,8 +2506,8 @@ mod tests {
         assert!(!app.is_flashing(), "Reconnecting state must be cleared");
     }
 
-    #[test]
-    fn handle_action_scan_ports_leaves_app_in_consistent_state() {
+    #[tokio::test]
+    async fn handle_action_scan_ports_leaves_app_in_consistent_state() {
         let mut app = app();
         handle_action(&mut app, Action::ScanPorts, &make_tx());
         assert!(

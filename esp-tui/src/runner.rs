@@ -97,9 +97,13 @@ fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
             }
             Ok(mut ports) if ports.len() == 1 => {
                 let port = ports.remove(0);
-                app.set_status(format!("Connecting to {port}..."));
-                begin_connect(&port, app.baud(), tx);
-                app.set_port(port);
+                if app.port_name().is_none() {
+                    app.set_status(format!("Connecting to {port}..."));
+                    begin_connect(&port, app.baud(), tx);
+                    app.set_port(port);
+                } else {
+                    app.set_status(format!("Connected to {port}."));
+                }
             }
             Ok(ports) => app.open_port_selector(ports),
         }
@@ -348,6 +352,9 @@ pub(crate) fn handle_action(
         Action::ConnectPort(port) => {
             if app.is_flashing() {
                 app.set_status(MSG_OP_IN_PROGRESS);
+            } else if app.port_name() == Some(port.as_str()) {
+                app.close_port_selector();
+                app.set_status(format!("Connected to {port}."));
             } else {
                 app.set_status(format!("Connecting to {port}..."));
                 begin_connect(&port, app.baud(), tx);

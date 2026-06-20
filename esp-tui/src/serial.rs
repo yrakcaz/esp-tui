@@ -17,6 +17,18 @@ fn is_esp_port(info: &SerialPortInfo) -> bool {
     }
 }
 
+/// On macOS every physical device appears as both `/dev/tty.*` and `/dev/cu.*`.
+/// Only `tty.*` is the correct interface for ESP32 serial communication.
+#[cfg(target_os = "macos")]
+fn is_tty_device(name: &str) -> bool {
+    !name.starts_with("/dev/cu.")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_tty_device(_: &str) -> bool {
+    true
+}
+
 /// Detects available ESP32 serial ports by filtering system USB serial ports
 /// against known ESP32 USB vendor IDs.
 ///
@@ -33,14 +45,17 @@ pub(crate) fn detect_esp_ports() -> anyhow::Result<Vec<String>> {
     let all =
         serialport::available_ports().context("failed to enumerate serial ports")?;
 
-    let esp: Vec<String> = all
+    let candidates: Vec<&SerialPortInfo> =
+        all.iter().filter(|p| is_tty_device(&p.port_name)).collect();
+
+    let esp: Vec<String> = candidates
         .iter()
         .filter(|p| is_esp_port(p))
         .map(|p| p.port_name.clone())
         .collect();
 
     if esp.is_empty() {
-        Ok(all
+        Ok(candidates
             .iter()
             .filter(|p| {
                 matches!(p.port_type, serialport::SerialPortType::UsbPort(_))
@@ -235,5 +250,26 @@ mod tests {
             port_type: SerialPortType::Unknown,
         };
         assert!(!is_esp_port(&info));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn is_tty_device_rejects_cu_entries() {
+        assert!(!is_tty_device("/dev/cu.usbserial-0001"));
+        assert!(!is_tty_device("/dev/cu.SLAB_USBtoUART"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn is_tty_device_accepts_tty_entries() {
+        assert!(is_tty_device("/dev/tty.usbserial-0001"));
+        assert!(is_tty_device("/dev/tty.SLAB_USBtoUART"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn is_tty_device_always_true_on_non_macos() {
+        assert!(is_tty_device("/dev/cu.usbserial-0001"));
+        assert!(is_tty_device("/dev/ttyUSB0"));
     }
 }
