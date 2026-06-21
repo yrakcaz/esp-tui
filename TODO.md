@@ -49,7 +49,7 @@
 - [ ] Revisit Rust-native integration: evaluate whether to publish `esp-agent` as a Cargo dependency with a safe `configure()` API (requires solving panic handler conflicts with `esp-idf-sys` and the linker inclusion problem without user-side `build.rs` changes)
 
 
-- [ ] On macOS, filter `cu.*` entries from port detection: only `tty.*` devices should appear in the selector and auto-connect logic, since `cu.*` is not the correct interface for ESP32 serial communication
+- [x] On macOS, filter `cu.*` entries from port detection: only `tty.*` devices should appear in the selector and auto-connect logic, since `cu.*` is not the correct interface for ESP32 serial communication
 - [ ] Panic/backtrace decoder: addr2line + ELF symbol resolution
 - [x] Historical sparklines for heap and CPU over last N seconds
 - [x] WiFi stats in inspector: RSSI and channel
