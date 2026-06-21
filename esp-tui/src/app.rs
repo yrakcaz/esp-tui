@@ -2411,6 +2411,23 @@ mod tests {
     }
 
     #[test]
+    fn handle_action_connect_port_same_port_closes_selector_and_sets_status() {
+        let mut app = app_with_port("COM1");
+        app.open_port_selector(vec!["COM1".into()]);
+        handle_action(&mut app, Action::ConnectPort("COM1".into()), &make_tx());
+        assert_eq!(app.port_name(), Some("COM1"));
+        assert!(app.port_selector().is_none());
+        assert_eq!(app.status_msg(), Some("Connected to COM1."));
+    }
+
+    #[test]
+    fn handle_action_scan_ports_already_connected_shows_status() {
+        let mut app = app_with_port("COM1");
+        handle_action(&mut app, Action::ScanPorts, &make_tx());
+        assert_eq!(app.port_name(), Some("COM1"));
+    }
+
+    #[test]
     fn handle_action_reset_no_port() {
         let mut app = app();
         handle_action(&mut app, Action::ResetDevice, &make_tx());

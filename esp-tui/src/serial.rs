@@ -45,20 +45,18 @@ pub(crate) fn detect_esp_ports() -> anyhow::Result<Vec<String>> {
     let all =
         serialport::available_ports().context("failed to enumerate serial ports")?;
 
-    let candidates: Vec<&SerialPortInfo> =
-        all.iter().filter(|p| is_tty_device(&p.port_name)).collect();
-
-    let esp: Vec<String> = candidates
+    let esp: Vec<String> = all
         .iter()
-        .filter(|p| is_esp_port(p))
+        .filter(|p| is_tty_device(&p.port_name) && is_esp_port(p))
         .map(|p| p.port_name.clone())
         .collect();
 
     if esp.is_empty() {
-        Ok(candidates
+        Ok(all
             .iter()
             .filter(|p| {
-                matches!(p.port_type, serialport::SerialPortType::UsbPort(_))
+                is_tty_device(&p.port_name)
+                    && matches!(p.port_type, serialport::SerialPortType::UsbPort(_))
             })
             .map(|p| p.port_name.clone())
             .collect())

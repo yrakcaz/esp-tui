@@ -86,6 +86,16 @@ fn resolve_ports(port_arg: Option<String>) -> anyhow::Result<Vec<String>> {
     port_arg.map_or_else(serial::detect_esp_ports, |p| Ok(vec![p]))
 }
 
+fn connect_sole_port(
+    app: &mut App,
+    port: String,
+    tx: &mpsc::UnboundedSender<event::Message>,
+) {
+    app.set_status(format!("Connecting to {port}..."));
+    begin_connect(&port, app.baud(), tx);
+    app.set_port(port);
+}
+
 fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
     if app.is_flashing() {
         app.set_status(MSG_OP_IN_PROGRESS);
@@ -98,11 +108,11 @@ fn apply_scan(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
             Ok(mut ports) if ports.len() == 1 => {
                 let port = ports.remove(0);
                 if app.port_name().is_none() {
-                    app.set_status(format!("Connecting to {port}..."));
-                    begin_connect(&port, app.baud(), tx);
-                    app.set_port(port);
-                } else {
+                    connect_sole_port(app, port, tx);
+                } else if app.port_name() == Some(port.as_str()) {
                     app.set_status(format!("Connected to {port}."));
+                } else {
+                    app.open_port_selector(vec![port]);
                 }
             }
             Ok(ports) => app.open_port_selector(ports),
@@ -137,10 +147,7 @@ pub(crate) fn handle_ports_detected(
                     }
                     1 => {
                         app.close_port_selector();
-                        let port = current.remove(0);
-                        app.set_status(format!("Connecting to {port}..."));
-                        begin_connect(&port, app.baud(), tx);
-                        app.set_port(port);
+                        connect_sole_port(app, current.remove(0), tx);
                     }
                     _ => app.refresh_port_selector(current),
                 }
@@ -148,10 +155,7 @@ pub(crate) fn handle_ports_detected(
                 match current.len() {
                     0 => {}
                     1 => {
-                        let port = current.remove(0);
-                        app.set_status(format!("Connecting to {port}..."));
-                        begin_connect(&port, app.baud(), tx);
-                        app.set_port(port);
+                        connect_sole_port(app, current.remove(0), tx);
                     }
                     _ => app.open_port_selector(current),
                 }
@@ -356,9 +360,7 @@ pub(crate) fn handle_action(
                 app.close_port_selector();
                 app.set_status(format!("Connected to {port}."));
             } else {
-                app.set_status(format!("Connecting to {port}..."));
-                begin_connect(&port, app.baud(), tx);
-                app.set_port(port);
+                connect_sole_port(app, port, tx);
             }
         }
         Action::ErasePrompt => {
@@ -527,12 +529,7 @@ async fn run_inner(args: Args, mut cfg: config::Config) -> anyhow::Result<()> {
     let mut ports = resolve_ports(port_arg)?;
     match ports.len() {
         0 => {}
-        1 => {
-            let port = ports.remove(0);
-            app.set_status(format!("Connecting to {port}..."));
-            begin_connect(&port, baud, &tx);
-            app.set_port(port);
-        }
+        1 => connect_sole_port(&mut app, ports.remove(0), &tx),
         _ => app.open_port_selector(ports),
     }
     spawn_port_poller(tx.clone(), shutdown_rx.clone());
