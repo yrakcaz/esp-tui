@@ -61,8 +61,7 @@
 - [x] Configurable keybindings with preset support (vim, emacs) and per-key overrides via `esp-tui.toml`; preset files are TOML and can be shared or path-referenced
 - [x] Configurable color scheme (full UI palette) via `esp-tui.toml`
 - [ ] Mouse support for scrolling log pane
-- [ ] Log search: `/` opens an inline search bar at the bottom of the monitor pane (like tmux/less); `n`/`N` to jump between matches with highlighting
-- [ ] Log regex filter: live filter mode that hides non-matching lines, stacking on top of the existing level/tag filter; consider reusing the `/` entry point with a toggle between highlight and filter modes
+- [x] Log search: regex search bar in Search/Filter popup; matches highlighted inline; `n`/`N` to jump between matches; invalid pattern shown in red
 
 ## Release
 

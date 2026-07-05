@@ -3,6 +3,7 @@ use std::hash::Hash;
 
 use crossterm::event::KeyEvent;
 use esp_agent_msg as agent_msg;
+use regex::Regex;
 
 use crate::input::TextInput;
 use crate::log;
@@ -21,8 +22,14 @@ const LEVELS: [log::Level; 5] = [
     log::Level::Verbose,
 ];
 
-/// Tracks which severity levels and ESP-IDF tags are visible, and manages
-/// the filter popup state.
+struct FilterSnapshot {
+    hidden_levels: HashSet<log::Level>,
+    hidden_tags: HashSet<String>,
+    search: String,
+}
+
+/// Tracks which severity levels and ESP-IDF tags are visible, manages
+/// the filter popup state, and holds the compiled regex for inline search.
 pub(crate) struct State {
     known_tags: Vec<String>,
     hidden_tags: HashSet<String>,
@@ -31,6 +38,9 @@ pub(crate) struct State {
     cursor: usize,
     search: TextInput,
     search_focused: bool,
+    compiled_regex: Option<Regex>,
+    regex_error: bool,
+    snapshot: Option<FilterSnapshot>,
 }
 
 impl State {
@@ -50,6 +60,9 @@ impl State {
             cursor: 0,
             search: TextInput::new(),
             search_focused: false,
+            compiled_regex: None,
+            regex_error: false,
+            snapshot: None,
         }
     }
 
@@ -127,10 +140,42 @@ impl State {
         }
     }
 
-    /// Toggles the filter popup open or closed, resetting search focus.
-    pub(crate) fn toggle_popup(&mut self) {
-        self.popup_open = !self.popup_open;
+    /// Opens the filter popup and snapshots the current state so it can be
+    /// restored if the user cancels. The search bar is focused automatically.
+    pub(crate) fn open_popup(&mut self) {
+        self.snapshot = Some(FilterSnapshot {
+            hidden_levels: self.hidden_levels.clone(),
+            hidden_tags: self.hidden_tags.clone(),
+            search: self.search.value().to_owned(),
+        });
+        self.popup_open = true;
+        self.search_focused = true;
+    }
+
+    /// Closes the popup and commits all changes made since opening.
+    pub(crate) fn confirm_popup(&mut self) {
+        self.snapshot = None;
+        self.popup_open = false;
         self.search_focused = false;
+    }
+
+    /// Closes the popup and reverts all changes made since opening.
+    pub(crate) fn cancel_popup(&mut self) {
+        if let Some(snap) = self.snapshot.take() {
+            self.hidden_levels = snap.hidden_levels;
+            self.hidden_tags = snap.hidden_tags;
+            self.search.set_value(&snap.search);
+            self.recompile_regex();
+        }
+        self.popup_open = false;
+        self.search_focused = false;
+    }
+
+    /// Clears the search query and resets regex state.
+    pub(crate) fn clear_search(&mut self) {
+        self.search.clear_input();
+        self.compiled_regex = None;
+        self.regex_error = false;
     }
 
     /// Returns whether the filter popup is currently open.
@@ -239,13 +284,63 @@ impl State {
         self.search.cursor_pos()
     }
 
-    /// Applies a text-editing key event to the search input.
+    /// Applies a text-editing key event to the search input and recompiles the
+    /// regex when the query content changes.
     ///
     /// # Arguments
     ///
     /// * `key` - The key event to process.
-    pub(crate) fn apply_search_key(&mut self, key: KeyEvent) {
+    ///
+    /// # Returns
+    ///
+    /// `true` when the query string content changed (character inserted,
+    /// deleted, or cleared); `false` for cursor-only movements.
+    pub(crate) fn apply_search_key(&mut self, key: KeyEvent) -> bool {
+        let len_before = self.search.value().len();
         self.search.apply_key(key);
+        let changed = self.search.value().len() != len_before;
+        if changed {
+            self.recompile_regex();
+        }
+        changed
+    }
+
+    fn recompile_regex(&mut self) {
+        let query = self.search.value();
+        if query.is_empty() {
+            self.compiled_regex = None;
+            self.regex_error = false;
+        } else if let Ok(re) = regex::RegexBuilder::new(query)
+            .case_insensitive(true)
+            .build()
+        {
+            self.compiled_regex = Some(re);
+            self.regex_error = false;
+        } else {
+            self.compiled_regex = None;
+            self.regex_error = true;
+        }
+    }
+
+    /// Returns the compiled case-insensitive regex for the current search query,
+    /// or `None` when the query is empty or contains an invalid pattern.
+    ///
+    /// # Returns
+    ///
+    /// `Some` when the query is a valid non-empty regex; `None` otherwise.
+    #[must_use]
+    pub(crate) fn compiled_regex(&self) -> Option<&Regex> {
+        self.compiled_regex.as_ref()
+    }
+
+    /// Returns whether the current search query is a non-empty but invalid regex.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the user has typed a pattern that fails to compile.
+    #[must_use]
+    pub(crate) fn is_regex_error(&self) -> bool {
+        self.regex_error
     }
 }
 
@@ -259,10 +354,12 @@ impl Default for State {
 impl State {
     pub(crate) fn push_search_char(&mut self, c: char) {
         self.search.push_char(c);
+        self.recompile_regex();
     }
 
     pub(crate) fn pop_search_char(&mut self) {
         self.search.backspace();
+        self.recompile_regex();
     }
 }
 
@@ -420,13 +517,172 @@ mod tests {
     }
 
     #[test]
-    fn search_persists_on_popup_close() {
+    fn search_persists_on_confirm() {
         let mut s = State::new();
-        s.toggle_popup();
+        s.open_popup();
         s.push_search_char('w');
         assert_eq!(s.search_query(), "w");
-        s.toggle_popup();
+        s.confirm_popup();
         assert!(!s.is_popup_open());
         assert_eq!(s.search_query(), "w");
+    }
+
+    #[test]
+    fn cancel_popup_reverts_search_query() {
+        let mut s = State::new();
+        s.open_popup();
+        s.push_search_char('w');
+        s.push_search_char('i');
+        s.cancel_popup();
+        assert!(!s.is_popup_open());
+        assert_eq!(s.search_query(), "");
+        assert!(s.compiled_regex().is_none());
+    }
+
+    #[test]
+    fn cancel_popup_reverts_hidden_levels() {
+        let mut s = State::new();
+        s.open_popup();
+        s.toggle_at_cursor();
+        assert!(s.is_level_hidden(log::Level::Error));
+        s.cancel_popup();
+        assert!(!s.is_level_hidden(log::Level::Error));
+    }
+
+    #[test]
+    fn cancel_popup_reverts_hidden_tags() {
+        let mut s = State::new();
+        s.record_tag("wifi");
+        s.open_popup();
+        s.move_cursor(LEVELS.len().cast_signed());
+        s.toggle_at_cursor();
+        assert!(s.is_tag_hidden("wifi"));
+        s.cancel_popup();
+        assert!(!s.is_tag_hidden("wifi"));
+    }
+
+    #[test]
+    fn confirm_popup_keeps_changes() {
+        let mut s = State::new();
+        s.open_popup();
+        s.toggle_at_cursor();
+        s.push_search_char('x');
+        s.confirm_popup();
+        assert!(s.is_level_hidden(log::Level::Error));
+        assert_eq!(s.search_query(), "x");
+    }
+
+    #[test]
+    fn compiled_regex_none_when_query_empty() {
+        let s = State::new();
+        assert!(s.compiled_regex().is_none());
+        assert!(!s.is_regex_error());
+    }
+
+    #[test]
+    fn compiled_regex_some_for_valid_pattern() {
+        let mut s = State::new();
+        s.push_search_char('w');
+        s.push_search_char('i');
+        s.push_search_char('f');
+        s.push_search_char('i');
+        assert!(s.compiled_regex().is_some());
+        assert!(!s.is_regex_error());
+    }
+
+    #[test]
+    fn compiled_regex_none_and_error_for_invalid_pattern() {
+        let mut s = State::new();
+        s.push_search_char('[');
+        assert!(s.compiled_regex().is_none());
+        assert!(s.is_regex_error());
+    }
+
+    #[test]
+    fn compiled_regex_is_case_insensitive() {
+        let mut s = State::new();
+        s.push_search_char('W');
+        s.push_search_char('I');
+        s.push_search_char('F');
+        s.push_search_char('I');
+        let re = s.compiled_regex().unwrap();
+        assert!(re.is_match("wifi connected"));
+        assert!(re.is_match("WIFI CONNECTED"));
+    }
+
+    #[test]
+    fn compiled_regex_supports_alternation() {
+        let mut s = State::new();
+        for c in "wifi|i2c".chars() {
+            s.push_search_char(c);
+        }
+        let re = s.compiled_regex().unwrap();
+        assert!(re.is_match("wifi connected"));
+        assert!(re.is_match("i2c timeout"));
+        assert!(!re.is_match("uart ok"));
+    }
+
+    #[test]
+    fn compiled_regex_clears_on_pop_to_empty() {
+        let mut s = State::new();
+        s.push_search_char('w');
+        assert!(s.compiled_regex().is_some());
+        s.pop_search_char();
+        assert!(s.compiled_regex().is_none());
+        assert!(!s.is_regex_error());
+    }
+
+    fn make_key(code: crossterm::event::KeyCode) -> KeyEvent {
+        KeyEvent::new(code, crossterm::event::KeyModifiers::empty())
+    }
+
+    #[test]
+    fn apply_search_key_returns_true_on_char_insert() {
+        let mut s = State::new();
+        assert!(s.apply_search_key(make_key(crossterm::event::KeyCode::Char('w'))));
+    }
+
+    #[test]
+    fn apply_search_key_returns_true_on_backspace_when_nonempty() {
+        let mut s = State::new();
+        s.push_search_char('w');
+        assert!(s.apply_search_key(make_key(crossterm::event::KeyCode::Backspace)));
+    }
+
+    #[test]
+    fn apply_search_key_returns_false_on_backspace_at_empty() {
+        let mut s = State::new();
+        assert!(!s.apply_search_key(make_key(crossterm::event::KeyCode::Backspace)));
+    }
+
+    #[test]
+    fn apply_search_key_returns_false_on_cursor_move() {
+        let mut s = State::new();
+        s.push_search_char('w');
+        assert!(!s.apply_search_key(make_key(crossterm::event::KeyCode::Left)));
+        assert!(!s.apply_search_key(make_key(crossterm::event::KeyCode::Right)));
+    }
+
+    #[test]
+    fn popup_opens_with_search_focused() {
+        let mut s = State::new();
+        assert!(!s.is_search_focused());
+        s.open_popup();
+        assert!(s.is_search_focused());
+        s.confirm_popup();
+        assert!(!s.is_search_focused());
+    }
+
+    #[test]
+    fn clear_search_resets_query_and_regex() {
+        let mut s = State::new();
+        s.push_search_char('w');
+        s.push_search_char('i');
+        assert_eq!(s.search_query(), "wi");
+        assert!(s.compiled_regex().is_some());
+        s.clear_search();
+        assert_eq!(s.search_query(), "");
+        assert!(s.compiled_regex().is_none());
+        assert!(!s.is_regex_error());
     }
 }

@@ -324,12 +324,6 @@ pub(crate) fn handle_action(
             }
         }
         Action::CloseElfSelector => {
-            if let Some(draft) = app.elf_selector().map(|s| PathBuf::from(s.value()))
-            {
-                if !draft.as_os_str().is_empty() {
-                    app.set_elf_path(draft);
-                }
-            }
             app.close_elf_selector();
         }
         Action::ConfirmElfPath => confirm_elf_path(app, tx),
