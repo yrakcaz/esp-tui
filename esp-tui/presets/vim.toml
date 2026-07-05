@@ -6,3 +6,4 @@
 "G" = "scroll_bottom"
 "/" = "toggle_filter"
 "ctrl+w" = "switch_pane"
+"q" = "dismiss"

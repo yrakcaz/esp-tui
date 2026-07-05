@@ -39,6 +39,9 @@ pub(crate) enum MappableAction {
     ResetDevice,
     Disconnect,
     ScanPorts,
+    SearchNext,
+    SearchPrev,
+    Dismiss,
 }
 
 pub(crate) type KeyMap = HashMap<(KeyCode, KeyModifiers), MappableAction>;
@@ -46,9 +49,10 @@ pub(crate) type KeyMap = HashMap<(KeyCode, KeyModifiers), MappableAction>;
 pub(crate) fn default_keymap() -> KeyMap {
     let none = KeyModifiers::empty();
     let ctrl = KeyModifiers::CONTROL;
+    let shift = KeyModifiers::SHIFT;
     [
         ((KeyCode::Char('q'), none), MappableAction::QuitPrompt),
-        ((KeyCode::Esc, none), MappableAction::QuitPrompt),
+        ((KeyCode::Esc, none), MappableAction::Dismiss),
         ((KeyCode::Char('d'), none), MappableAction::Disconnect),
         ((KeyCode::Char('r'), none), MappableAction::ResetDevice),
         ((KeyCode::Char('f'), ctrl), MappableAction::ToggleFilter),
@@ -63,6 +67,8 @@ pub(crate) fn default_keymap() -> KeyMap {
         ((KeyCode::Down, none), MappableAction::ScrollDown),
         ((KeyCode::PageUp, none), MappableAction::PageUp),
         ((KeyCode::PageDown, none), MappableAction::PageDown),
+        ((KeyCode::Char('n'), none), MappableAction::SearchNext),
+        ((KeyCode::Char('N'), shift), MappableAction::SearchPrev),
     ]
     .into_iter()
     .collect()
@@ -88,7 +94,13 @@ pub(crate) fn format_key_display(code: KeyCode, mods: KeyModifiers) -> String {
         (false, false) => "",
     };
     match code {
-        KeyCode::Char(c) => format!("{}{}", prefix, c.to_ascii_uppercase()),
+        KeyCode::Char(c) => {
+            if ctrl || alt {
+                format!("{}{}", prefix, c.to_ascii_uppercase())
+            } else {
+                c.to_string()
+            }
+        }
         KeyCode::Up => format!("{prefix}↑"),
         KeyCode::Down => format!("{prefix}↓"),
         KeyCode::Left => format!("{prefix}←"),
@@ -142,6 +154,9 @@ fn parse_action(s: &str) -> Option<MappableAction> {
         "reset_device" => Some(MappableAction::ResetDevice),
         "disconnect" => Some(MappableAction::Disconnect),
         "scan_ports" => Some(MappableAction::ScanPorts),
+        "search_next" => Some(MappableAction::SearchNext),
+        "search_prev" => Some(MappableAction::SearchPrev),
+        "dismiss" => Some(MappableAction::Dismiss),
         _ => None,
     }
 }
@@ -221,6 +236,25 @@ fn is_modal_safe_key(key: KeyEvent) -> bool {
     !matches!(key.code, KeyCode::Char(_)) || !key.modifiers.is_empty()
 }
 
+fn normalize_key(key: KeyEvent) -> KeyEvent {
+    match key.code {
+        KeyCode::Char(c) if c.is_uppercase() => {
+            KeyEvent::new(key.code, key.modifiers | KeyModifiers::SHIFT)
+        }
+        KeyCode::Char(c)
+            if c.is_lowercase() && key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            KeyEvent::new(KeyCode::Char(c.to_ascii_uppercase()), key.modifiers)
+        }
+        _ => key,
+    }
+}
+
+fn viewport_start(total: usize, height: usize, scroll: usize) -> usize {
+    let skip = scroll.min(total.saturating_sub(height));
+    total.saturating_sub(height).saturating_sub(skip)
+}
+
 fn push_history(history: &mut VecDeque<u32>, val: u32, max_len: usize) {
     history.push_back(val);
     if history.len() > max_len {
@@ -228,10 +262,16 @@ fn push_history(history: &mut VecDeque<u32>, val: u32, max_len: usize) {
     }
 }
 
-fn matches_search(entry: &log::Entry, query: &str) -> bool {
-    query.is_empty()
-        || entry.message().to_lowercase().contains(query)
-        || entry.tag().to_lowercase().contains(query)
+fn matches_search(
+    entry: &log::Entry,
+    re: Option<&regex::Regex>,
+    error: bool,
+) -> bool {
+    if error {
+        false
+    } else {
+        re.is_none_or(|re| re.is_match(entry.message()) || re.is_match(entry.tag()))
+    }
 }
 
 /// Central application state.
@@ -265,6 +305,7 @@ pub(crate) struct App {
     connected_at: Option<Instant>,
     heap_history: VecDeque<u32>,
     cpu_history: [VecDeque<u32>; 2],
+    focused_match: Option<usize>,
 }
 
 impl App {
@@ -312,6 +353,7 @@ impl App {
             connected_at: None,
             heap_history: VecDeque::new(),
             cpu_history: [VecDeque::new(), VecDeque::new()],
+            focused_match: None,
         }
     }
 
@@ -357,16 +399,30 @@ impl App {
                 }
             }
             if self.log_buffer.len() >= self.config.ui.buffer_size {
+                let evicted_was_visible = self
+                    .log_buffer
+                    .front()
+                    .is_some_and(|e| self.filter.is_visible(e));
                 self.log_buffer.pop_front();
+                if evicted_was_visible {
+                    self.focused_match =
+                        self.focused_match.and_then(|k| k.checked_sub(1));
+                }
             }
-            let query = self.filter.search_query().to_lowercase();
-            if self.scroll > 0
-                && self.filter.is_visible(&entry)
-                && matches_search(&entry, &query)
-            {
-                self.scroll = self.scroll.saturating_add(1);
-            }
+            let was_visible = self.filter.is_visible(&entry);
             self.log_buffer.push_back(entry);
+            if was_visible {
+                if let Some(focused) = self.focused_match {
+                    let total = self
+                        .log_buffer
+                        .iter()
+                        .filter(|e| self.filter.is_visible(e))
+                        .count();
+                    self.scroll = total.saturating_sub(focused + 1);
+                } else if self.scroll > 0 || !self.filter.search_query().is_empty() {
+                    self.scroll = self.scroll.saturating_add(1);
+                }
+            }
         }
     }
 
@@ -402,12 +458,22 @@ impl App {
         self.keymap.get(&(key.code, key.modifiers)) == Some(&action)
     }
 
+    fn cancel_filter_popup(&mut self) {
+        self.filter.cancel_popup();
+        self.focused_match = None;
+    }
+
+    fn is_cancel_key(&self, key: KeyEvent) -> bool {
+        self.mapped_to(key, MappableAction::QuitPrompt)
+            || self.mapped_to(key, MappableAction::Dismiss)
+    }
+
     fn handle_key_quit_confirm(&mut self, key: KeyEvent) -> Action {
         if key.code == KeyCode::Char('y') {
             Action::Quit
         } else if key.code == KeyCode::Char('n')
             || key.code == KeyCode::Esc
-            || self.mapped_to(key, MappableAction::QuitPrompt)
+            || self.is_cancel_key(key)
         {
             self.close_quit_confirm();
             Action::None
@@ -422,7 +488,7 @@ impl App {
         } else if key.code == KeyCode::Char('n')
             || key.code == KeyCode::Esc
             || self.mapped_to(key, MappableAction::ErasePrompt)
-            || self.mapped_to(key, MappableAction::QuitPrompt)
+            || self.is_cancel_key(key)
         {
             self.confirm = ConfirmDialog::None;
             Action::None
@@ -436,7 +502,7 @@ impl App {
         // keys (arrows, Esc, modifier combos) so that plain chars still type.
         let safe = is_modal_safe_key(key);
         if key.code == KeyCode::Esc
-            || (safe && self.mapped_to(key, MappableAction::QuitPrompt))
+            || (safe && self.is_cancel_key(key))
             || (safe && self.mapped_to(key, MappableAction::Flash))
         {
             return Action::CloseElfSelector;
@@ -491,7 +557,7 @@ impl App {
 
     fn handle_key_port_selector(&mut self, key: KeyEvent) -> Action {
         let cancel = self.mapped_to(key, MappableAction::ScanPorts)
-            || self.mapped_to(key, MappableAction::QuitPrompt)
+            || self.is_cancel_key(key)
             || key.code == KeyCode::Esc;
         if cancel {
             self.port_selector = None;
@@ -521,9 +587,17 @@ impl App {
     fn handle_key_filter_popup(&mut self, key: KeyEvent) {
         let safe = is_modal_safe_key(key);
         if self.filter.is_search_focused() {
-            if key.code == KeyCode::Esc
-                || (safe && self.mapped_to(key, MappableAction::QuitPrompt))
+            if self.mapped_to(key, MappableAction::ToggleFilter)
+                || key.code == KeyCode::Enter
             {
+                self.filter.confirm_popup();
+            } else if key.code == KeyCode::Esc {
+                if self.filter.search_query().is_empty() {
+                    self.cancel_filter_popup();
+                } else {
+                    self.filter.unfocus_search();
+                }
+            } else if safe && self.is_cancel_key(key) {
                 self.filter.unfocus_search();
             } else if key.code == KeyCode::Up {
                 self.filter.unfocus_search();
@@ -531,14 +605,15 @@ impl App {
             } else if key.code == KeyCode::Down {
                 self.filter.unfocus_search();
                 self.filter.move_cursor(1);
-            } else {
-                self.filter.apply_search_key(key);
+            } else if self.filter.apply_search_key(key) {
+                self.focused_match = None;
             }
-        } else if key.code == KeyCode::Esc
-            || (safe && self.mapped_to(key, MappableAction::QuitPrompt))
+        } else if key.code == KeyCode::Enter
             || self.mapped_to(key, MappableAction::ToggleFilter)
         {
-            self.filter.toggle_popup();
+            self.filter.confirm_popup();
+        } else if key.code == KeyCode::Esc || (safe && self.is_cancel_key(key)) {
+            self.cancel_filter_popup();
         } else if key.code == KeyCode::Up {
             if self.filter.cursor() == 0 {
                 self.filter.focus_search();
@@ -553,19 +628,25 @@ impl App {
                     if !key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
                     self.filter.toggle_at_cursor();
+                    self.focused_match = None;
                 }
                 KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
                     self.filter.toggle_all();
+                    self.focused_match = None;
                 }
                 KeyCode::Backspace => {
                     self.filter.focus_search();
-                    self.filter.apply_search_key(key);
+                    if self.filter.apply_search_key(key) {
+                        self.focused_match = None;
+                    }
                 }
                 KeyCode::Char(_)
                     if !key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
                     self.filter.focus_search();
-                    self.filter.apply_search_key(key);
+                    if self.filter.apply_search_key(key) {
+                        self.focused_match = None;
+                    }
                 }
                 _ => {}
             }
@@ -599,11 +680,44 @@ impl App {
         }
     }
 
+    fn switch_pane(&mut self) {
+        self.focused_pane = match self.focused_pane {
+            Pane::Monitor => {
+                self.monitor_pct = self.monitor_pct.min(80);
+                Pane::Inspector
+            }
+            Pane::Inspector => {
+                self.monitor_pct = self.monitor_pct.max(20);
+                Pane::Monitor
+            }
+            Pane::Status => Pane::Monitor,
+        };
+    }
+
+    fn dismiss_action(&mut self) -> Action {
+        if self.focused_pane == Pane::Monitor
+            && !self.filter.search_query().is_empty()
+        {
+            self.filter.clear_search();
+            self.focused_match = None;
+            Action::None
+        } else if self.focused_pane == Pane::Monitor && self.scroll > 0 {
+            self.scroll = 0;
+            Action::None
+        } else if self.focused_pane == Pane::Inspector && self.inspector_scroll > 0 {
+            self.inspector_scroll = 0;
+            Action::None
+        } else {
+            Action::QuitPrompt
+        }
+    }
+
     fn handle_key_normal(&mut self, key: KeyEvent) -> Action {
         self.apply_keymap(key)
     }
 
     fn apply_keymap(&mut self, key: KeyEvent) -> Action {
+        let key = normalize_key(key);
         match self.keymap.get(&(key.code, key.modifiers)).copied() {
             Some(MappableAction::ScrollUp) => {
                 self.scroll_active_pane_up(1);
@@ -640,17 +754,7 @@ impl App {
                 Action::None
             }
             Some(MappableAction::SwitchPane) => {
-                self.focused_pane = match self.focused_pane {
-                    Pane::Monitor => {
-                        self.monitor_pct = self.monitor_pct.min(80);
-                        Pane::Inspector
-                    }
-                    Pane::Inspector => {
-                        self.monitor_pct = self.monitor_pct.max(20);
-                        Pane::Monitor
-                    }
-                    Pane::Status => Pane::Monitor,
-                };
+                self.switch_pane();
                 Action::None
             }
             Some(MappableAction::GrowMonitor) => {
@@ -669,7 +773,7 @@ impl App {
             }
             Some(MappableAction::ToggleFilter) => {
                 if self.focused_pane == Pane::Monitor {
-                    self.filter.toggle_popup();
+                    self.filter.open_popup();
                 }
                 Action::None
             }
@@ -680,24 +784,26 @@ impl App {
                 Action::None
             }
             Some(MappableAction::Quit) => Action::Quit,
-            Some(MappableAction::QuitPrompt) => {
-                if self.focused_pane == Pane::Monitor && self.scroll > 0 {
-                    self.scroll = 0;
-                    Action::None
-                } else if self.focused_pane == Pane::Inspector
-                    && self.inspector_scroll > 0
-                {
-                    self.inspector_scroll = 0;
-                    Action::None
-                } else {
-                    Action::QuitPrompt
-                }
+            Some(MappableAction::QuitPrompt | MappableAction::Dismiss) => {
+                self.dismiss_action()
             }
             Some(MappableAction::Flash) => Action::Flash,
             Some(MappableAction::ErasePrompt) => Action::ErasePrompt,
             Some(MappableAction::ResetDevice) => Action::ResetDevice,
             Some(MappableAction::Disconnect) => Action::Disconnect,
             Some(MappableAction::ScanPorts) => Action::ScanPorts,
+            Some(MappableAction::SearchNext) => {
+                if self.focused_pane == Pane::Monitor {
+                    self.search_next();
+                }
+                Action::None
+            }
+            Some(MappableAction::SearchPrev) => {
+                if self.focused_pane == Pane::Monitor {
+                    self.search_prev();
+                }
+                Action::None
+            }
             None => Action::None,
         }
     }
@@ -784,15 +890,13 @@ impl App {
     /// A `Vec` of references to visible entries, oldest first.
     #[must_use]
     pub(crate) fn visible_entries(&self, height: usize) -> Vec<&log::Entry> {
-        let query = self.filter.search_query().to_lowercase();
         let visible: Vec<&log::Entry> = self
             .log_buffer
             .iter()
-            .filter(|e| self.filter.is_visible(e) && matches_search(e, &query))
+            .filter(|e| self.filter.is_visible(e))
             .collect();
         let total = visible.len();
-        let skip = self.scroll.min(total.saturating_sub(height));
-        let start = total.saturating_sub(height).saturating_sub(skip);
+        let start = viewport_start(total, height, self.scroll);
         visible.into_iter().skip(start).take(height).collect()
     }
 
@@ -922,10 +1026,112 @@ impl App {
         self.running = false;
     }
 
-    /// Clears the log buffer and resets the scroll offset to zero.
+    /// Clears the log buffer and resets the scroll offset and search position.
     pub(crate) fn clear_log(&mut self) {
         self.log_buffer.clear();
         self.scroll = 0;
+        self.focused_match = None;
+    }
+
+    /// Returns the zero-based row index within the current viewport of the
+    /// focused search match, if that match is currently visible.
+    ///
+    /// # Arguments
+    ///
+    /// * `height` - The number of rows the monitor pane can display.
+    ///
+    /// # Returns
+    ///
+    /// `Some(row)` when the focused match is in the visible window,
+    /// `None` when no match is focused or the match is scrolled out of view.
+    #[must_use]
+    pub(crate) fn focused_match_in_window(&self, height: usize) -> Option<usize> {
+        let focused = self.focused_match?;
+        let total = self
+            .log_buffer
+            .iter()
+            .filter(|e| self.filter.is_visible(e))
+            .count();
+        let start = viewport_start(total, height, self.scroll);
+        (focused >= start && focused < start + height).then(|| focused - start)
+    }
+
+    /// Returns `true` if the active regex matches at least one visible entry,
+    /// or if no search query is active. Returns `false` only when a valid regex
+    /// is present but nothing in the log matches it.
+    ///
+    /// # Returns
+    ///
+    /// `false` exclusively when there is a non-empty valid regex with zero
+    /// matches in the level+tag-filtered buffer.
+    #[must_use]
+    pub(crate) fn has_search_matches(&self) -> bool {
+        let Some(re) = self.filter.compiled_regex() else {
+            return true;
+        };
+        self.log_buffer
+            .iter()
+            .filter(|e| self.filter.is_visible(e))
+            .any(|e| re.is_match(e.message()) || re.is_match(e.tag()))
+    }
+
+    /// Returns the index in the level+tag-filtered entry list of the focused
+    /// search match, if any navigation has occurred.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with the filtered-list index, or `None` before the first
+    /// [`Self::search_next`] or [`Self::search_prev`] call.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn focused_match(&self) -> Option<usize> {
+        self.focused_match
+    }
+
+    fn search_step(
+        &mut self,
+        pick: impl Fn(&[usize], Option<usize>) -> Option<usize>,
+    ) {
+        let re = self.filter.compiled_regex().cloned();
+        let error = self.filter.is_regex_error();
+        if re.is_none() && !error {
+            return;
+        }
+        let filtered: Vec<&log::Entry> = self
+            .log_buffer
+            .iter()
+            .filter(|e| self.filter.is_visible(e))
+            .collect();
+        let matches: Vec<usize> = filtered
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches_search(e, re.as_ref(), error))
+            .map(|(i, _)| i)
+            .collect();
+        if let Some(idx) = pick(&matches, self.focused_match) {
+            self.focused_match = Some(idx);
+            self.scroll = filtered.len().saturating_sub(idx + 1);
+        }
+    }
+
+    fn search_next(&mut self) {
+        self.search_step(|matches, cur| {
+            let &first = matches.first()?;
+            Some(
+                cur.and_then(|c| matches.iter().copied().find(|&i| i > c))
+                    .unwrap_or(first),
+            )
+        });
+    }
+
+    fn search_prev(&mut self) {
+        self.search_step(|matches, cur| {
+            let &last = matches.last()?;
+            Some(
+                cur.and_then(|c| matches.iter().copied().rev().find(|&i| i < c))
+                    .unwrap_or(last),
+            )
+        });
     }
 
     /// Expires the status message if its TTL has elapsed. Called on each tick.
@@ -1658,48 +1864,42 @@ mod tests {
     }
 
     #[test]
-    fn visible_entries_filters_by_search_query() {
+    fn visible_entries_search_does_not_hide_lines() {
         let mut app = app();
         app.push_line("I (1) wifi: connected");
         app.push_line("E (1) i2c: timeout");
         app.push_line("I (1) wifi: disconnected");
-        app.filter_mut().toggle_popup();
+        app.filter_mut().open_popup();
         app.filter_mut().push_search_char('t');
         app.filter_mut().push_search_char('i');
         app.filter_mut().push_search_char('m');
-        let entries = app.visible_entries(10);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].message(), "timeout");
+        assert_eq!(app.visible_entries(10).len(), 3);
     }
 
     #[test]
-    fn visible_entries_search_case_insensitive() {
+    fn visible_entries_search_all_entries_shown_regardless_of_query() {
         let mut app = app();
         app.push_line("I (1) tag: HEAP overflow");
         app.push_line("I (1) tag: stack ok");
-        app.filter_mut().toggle_popup();
+        app.filter_mut().open_popup();
         app.filter_mut().push_search_char('h');
         app.filter_mut().push_search_char('e');
         app.filter_mut().push_search_char('a');
         app.filter_mut().push_search_char('p');
-        let entries = app.visible_entries(10);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].message(), "HEAP overflow");
+        assert_eq!(app.visible_entries(10).len(), 2);
     }
 
     #[test]
-    fn visible_entries_search_matches_tag() {
+    fn visible_entries_search_by_tag_still_shows_all() {
         let mut app = app();
         app.push_line("I (1) wifi: ok");
         app.push_line("I (1) i2c: ok");
-        app.filter_mut().toggle_popup();
+        app.filter_mut().open_popup();
         app.filter_mut().push_search_char('w');
         app.filter_mut().push_search_char('i');
         app.filter_mut().push_search_char('f');
         app.filter_mut().push_search_char('i');
-        let entries = app.visible_entries(10);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].tag(), "wifi");
+        assert_eq!(app.visible_entries(10).len(), 2);
     }
 
     #[test]
@@ -1932,6 +2132,8 @@ mod tests {
     fn handle_key_filter_popup_space_toggles_item() {
         let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
+        app.handle_key(key(KeyCode::Down)); // unfocus search → cursor=1
+        app.handle_key(key(KeyCode::Up)); // cursor=0, not focused
         assert!(!app.filter().is_level_hidden(log::Level::Error));
         app.handle_key(key(KeyCode::Char(' ')));
         assert!(app.filter().is_level_hidden(log::Level::Error));
@@ -1941,6 +2143,7 @@ mod tests {
     fn handle_key_filter_popup_ctrl_a_toggles_all() {
         let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
+        app.handle_key(key(KeyCode::Down)); // unfocus search
         app.handle_key(ctrl(KeyCode::Char('a')));
         assert!(app.filter().is_level_hidden(log::Level::Error));
         assert!(app.filter().is_level_hidden(log::Level::Info));
@@ -2030,6 +2233,8 @@ mod tests {
     fn handle_key_filter_popup_up_at_top_focuses_search() {
         let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
+        app.handle_key(key(KeyCode::Down)); // unfocus search → cursor=1
+        app.handle_key(key(KeyCode::Up)); // cursor=0, not focused
         assert_eq!(app.filter().cursor(), 0);
         assert!(!app.filter().is_search_focused());
         app.handle_key(key(KeyCode::Up));
@@ -2051,6 +2256,7 @@ mod tests {
     fn handle_key_filter_popup_ctrl_a_still_toggles_all_when_unfocused() {
         let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('f')));
+        app.handle_key(key(KeyCode::Down)); // unfocus search
         app.handle_key(ctrl(KeyCode::Char('a')));
         assert!(app.filter().is_level_hidden(log::Level::Error));
         assert!(!app.filter().is_search_focused());
@@ -2811,6 +3017,19 @@ mod tests {
     }
 
     #[test]
+    fn handle_action_close_elf_selector_does_not_save_draft() {
+        let mut app = app();
+        app.open_elf_selector(None);
+        if let Some(s) = app.elf_selector_mut() {
+            for ch in "/tmp/app.elf".chars() {
+                s.push_char(ch);
+            }
+        }
+        handle_action(&mut app, Action::CloseElfSelector, &make_tx());
+        assert_eq!(app.elf_path(), None);
+    }
+
+    #[test]
     fn handle_action_flash_while_flashing_sets_status() {
         let mut app = app_with_port("COM1");
         app.set_flash_state(crate::flash::State::Flashing {
@@ -3103,7 +3322,11 @@ mod tests {
     fn format_key_display_plain_char() {
         assert_eq!(
             format_key_display(KeyCode::Char('j'), KeyModifiers::empty()),
-            "J"
+            "j"
+        );
+        assert_eq!(
+            format_key_display(KeyCode::Char('N'), KeyModifiers::SHIFT),
+            "N"
         );
     }
 
@@ -3204,11 +3427,11 @@ mod tests {
         );
         assert!(
             !map.contains_key(&(KeyCode::Char('q'), KeyModifiers::empty())),
-            "old 'q' binding should have been removed"
+            "old q → QuitPrompt binding should be removed when QuitPrompt is remapped"
         );
         assert!(
-            !map.contains_key(&(KeyCode::Esc, KeyModifiers::empty())),
-            "old 'Esc' binding should have been removed"
+            map.contains_key(&(KeyCode::Esc, KeyModifiers::empty())),
+            "Esc maps to Dismiss — should not be removed"
         );
     }
 
@@ -3314,5 +3537,448 @@ mod tests {
             !app.filter().is_popup_open(),
             "/ should close the filter popup"
         );
+    }
+
+    #[test]
+    fn ctrl_f_opens_filter_popup_in_default_keymap() {
+        let mut app = app();
+        app.handle_key(ctrl(KeyCode::Char('f')));
+        assert!(app.filter().is_popup_open());
+    }
+
+    #[test]
+    fn search_next_no_op_when_query_empty() {
+        let mut app = app();
+        app.push_line("I (1) wifi: connected");
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), None);
+    }
+
+    #[test]
+    fn search_next_no_op_on_invalid_regex() {
+        let mut app = app();
+        app.push_line("I (1) wifi: connected");
+        app.filter_mut().push_search_char('[');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), None);
+    }
+
+    #[test]
+    fn search_next_finds_first_match() {
+        let mut app = app();
+        app.push_line("I (1) wifi: connected");
+        app.push_line("E (1) i2c: timeout");
+        app.push_line("I (1) wifi: reconnected");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(1));
+    }
+
+    #[test]
+    fn search_next_advances_to_next_match() {
+        let mut app = app();
+        app.push_line("I (1) wifi: timeout one");
+        app.push_line("E (1) i2c: ok");
+        app.push_line("I (1) wifi: timeout two");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(0));
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(2));
+    }
+
+    #[test]
+    fn search_next_wraps_to_first_after_last() {
+        let mut app = app();
+        app.push_line("I (1) wifi: timeout one");
+        app.push_line("E (1) i2c: ok");
+        app.push_line("I (1) wifi: timeout two");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(2));
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(0));
+    }
+
+    #[test]
+    fn search_prev_starts_at_last_when_no_focused_match() {
+        let mut app = app();
+        app.push_line("I (1) wifi: timeout one");
+        app.push_line("E (1) i2c: ok");
+        app.push_line("I (1) wifi: timeout two");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+        assert_eq!(app.focused_match(), Some(2));
+    }
+
+    #[test]
+    fn search_prev_goes_to_previous_match() {
+        let mut app = app();
+        app.push_line("I (1) wifi: timeout one");
+        app.push_line("E (1) i2c: ok");
+        app.push_line("I (1) wifi: timeout two");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(2));
+        app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+        assert_eq!(app.focused_match(), Some(0));
+    }
+
+    #[test]
+    fn search_prev_wraps_to_last_from_first() {
+        let mut app = app();
+        app.push_line("I (1) wifi: timeout one");
+        app.push_line("E (1) i2c: ok");
+        app.push_line("I (1) wifi: timeout two");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(0));
+        app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+        assert_eq!(app.focused_match(), Some(2));
+    }
+
+    #[test]
+    fn search_nav_skips_level_filtered_entries() {
+        let mut app = app();
+        app.push_line("E (1) tag: timeout error");
+        app.push_line("I (1) tag: timeout info");
+        app.filter_mut().toggle_at_cursor();
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(0));
+        let entries: Vec<&log::Entry> = app
+            .log_buffer
+            .iter()
+            .filter(|e| app.filter().is_visible(e))
+            .collect();
+        assert_eq!(entries[0].message(), "timeout info");
+    }
+
+    #[test]
+    fn search_next_regex_alternation() {
+        let mut app = app();
+        app.push_line("I (1) wifi: connected");
+        app.push_line("E (1) i2c: timeout");
+        app.push_line("I (1) uart: ok");
+        for c in "wifi|i2c".chars() {
+            app.filter_mut().push_search_char(c);
+        }
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(0));
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(1));
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(0));
+    }
+
+    #[test]
+    fn focused_match_resets_on_query_change() {
+        let mut app = app();
+        app.push_line("I (1) wifi: timeout one");
+        app.push_line("I (1) wifi: timeout two");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert!(app.focused_match().is_some());
+        app.filter_mut().open_popup();
+        app.handle_key(key(KeyCode::Char('e')));
+        assert_eq!(app.focused_match(), None);
+    }
+
+    #[test]
+    fn focused_match_does_not_reset_on_cursor_move_in_popup() {
+        let mut app = app();
+        app.push_line("I (1) wifi: timeout");
+        app.push_line("I (1) wifi: timeout two");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert!(app.focused_match().is_some());
+        app.filter_mut().open_popup();
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Up));
+        assert!(app.focused_match().is_some());
+    }
+
+    #[test]
+    fn focused_match_resets_on_clear_log() {
+        let mut app = app();
+        app.push_line("I (1) wifi: timeout");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert!(app.focused_match().is_some());
+        app.handle_key(ctrl(KeyCode::Char('l')));
+        assert_eq!(app.focused_match(), None);
+    }
+
+    #[test]
+    fn focused_match_resets_on_level_toggle_in_popup() {
+        let mut app = app();
+        app.push_line("I (1) wifi: timeout");
+        app.push_line("E (1) i2c: timeout");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert!(app.focused_match().is_some());
+        app.filter_mut().open_popup();
+        app.handle_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.focused_match(), None);
+    }
+
+    #[test]
+    fn focused_match_in_window_returns_none_when_no_focused_match() {
+        let app = app();
+        assert_eq!(app.focused_match_in_window(10), None);
+    }
+
+    #[test]
+    fn focused_match_in_window_returns_row_after_search_next() {
+        let mut app = app();
+        for i in 0..5 {
+            app.push_line(&format!("I (1) wifi: line {i}"));
+        }
+        app.push_line("E (1) i2c: timeout target");
+        for i in 0..4 {
+            app.push_line(&format!("I (1) wifi: line {i}"));
+        }
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('a');
+        app.filter_mut().push_search_char('r');
+        app.filter_mut().push_search_char('g');
+        app.filter_mut().push_search_char('e');
+        app.filter_mut().push_search_char('t');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(5));
+        let row = app.focused_match_in_window(10);
+        assert!(row.is_some());
+    }
+
+    #[test]
+    fn focused_match_in_window_returns_none_when_scrolled_out() {
+        let mut app = app();
+        for i in 0..20 {
+            app.push_line(&format!("I (1) wifi: line {i}"));
+        }
+        app.push_line("E (1) i2c: target");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('a');
+        app.filter_mut().push_search_char('r');
+        app.filter_mut().push_search_char('g');
+        app.filter_mut().push_search_char('e');
+        app.filter_mut().push_search_char('t');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(20));
+        for _ in 0..15 {
+            app.handle_key(key(KeyCode::Up));
+        }
+        assert_eq!(app.focused_match_in_window(5), None);
+    }
+
+    #[test]
+    fn push_line_scroll_drifts_when_search_active_and_scrolled() {
+        let mut app = app();
+        for i in 0..10 {
+            app.push_line(&format!("I (1) wifi: line {i}"));
+        }
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.scroll(), 1);
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.push_line("I (1) wifi: unrelated");
+        assert_eq!(app.scroll(), 2, "scroll drifts for all visible lines");
+    }
+
+    #[test]
+    fn push_line_scroll_freezes_at_bottom_when_search_active() {
+        let mut app = app();
+        for i in 0..5 {
+            app.push_line(&format!("I (1) wifi: line {i}"));
+        }
+        assert_eq!(app.scroll(), 0, "starts at bottom");
+        app.filter_mut().push_search_char('l');
+        app.push_line("I (1) wifi: line 5");
+        assert_eq!(
+            app.scroll(),
+            1,
+            "search freezes viewport; new entry doesn't pull view down"
+        );
+    }
+
+    #[test]
+    fn push_line_scroll_tracks_focused_match() {
+        let mut app = app();
+        app.push_line("I (1) tag: match me");
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(0));
+        assert_eq!(
+            app.scroll(),
+            0,
+            "single entry: scroll is 0 after search_next"
+        );
+        app.push_line("I (1) tag: new entry");
+        assert_eq!(
+            app.scroll(),
+            1,
+            "scroll must increase to keep focused match in view as new lines arrive"
+        );
+    }
+
+    #[test]
+    fn focused_match_decrements_on_visible_eviction() {
+        let mut cfg = Config::default();
+        cfg.ui.buffer_size = 3;
+        let mut app = App::new(None, cfg);
+        app.push_line("I (1) tag: match one");
+        app.push_line("I (1) tag: match two");
+        app.push_line("I (1) tag: match three");
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(1));
+        app.push_line("I (1) tag: match four");
+        assert_eq!(
+            app.focused_match(),
+            Some(0),
+            "evicting the first visible entry decrements focused_match"
+        );
+    }
+
+    #[test]
+    fn focused_match_clears_when_eviction_removes_match_at_index_zero() {
+        let mut cfg = Config::default();
+        cfg.ui.buffer_size = 3;
+        let mut app = App::new(None, cfg);
+        app.push_line("I (1) tag: match one");
+        app.push_line("I (1) tag: match two");
+        app.push_line("I (1) tag: match three");
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focused_match(), Some(0));
+        app.push_line("I (1) tag: match four");
+        assert_eq!(
+            app.focused_match(),
+            None,
+            "evicting the focused entry clears focused_match"
+        );
+    }
+
+    #[test]
+    fn dismiss_clears_search_before_scrolling() {
+        let mut app = app();
+        for i in 0..5 {
+            app.push_line(&format!("I (1) tag: line {i}"));
+        }
+        app.handle_key(key(KeyCode::Up));
+        app.filter_mut().push_search_char('l');
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::None);
+        assert_eq!(app.filter().search_query(), "");
+        assert!(app.scroll() > 0, "scroll unchanged; search cleared first");
+    }
+
+    #[test]
+    fn dismiss_exits_scroll_when_no_search() {
+        let mut app = app();
+        for i in 0..5 {
+            app.push_line(&format!("I (1) tag: line {i}"));
+        }
+        app.handle_key(key(KeyCode::Up));
+        assert!(app.filter().search_query().is_empty());
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::None);
+        assert_eq!(app.scroll(), 0);
+    }
+
+    #[test]
+    fn dismiss_opens_quit_prompt_when_idle() {
+        let mut app = app();
+        assert_eq!(app.handle_key(key(KeyCode::Esc)), Action::QuitPrompt);
+    }
+
+    #[test]
+    fn q_clears_search_in_default_keymap() {
+        let mut app = app();
+        app.filter_mut().push_search_char('l');
+        assert_eq!(app.handle_key(key(KeyCode::Char('q'))), Action::None);
+        assert_eq!(app.filter().search_query(), "");
+    }
+
+    #[test]
+    fn has_search_matches_returns_true_when_no_query() {
+        let mut app = app();
+        app.push_line("I (1) tag: hello");
+        assert!(app.has_search_matches());
+    }
+
+    #[test]
+    fn has_search_matches_returns_true_when_match_exists() {
+        let mut app = app();
+        app.push_line("I (1) tag: hello");
+        app.filter_mut().push_search_char('h');
+        assert!(app.has_search_matches());
+    }
+
+    #[test]
+    fn has_search_matches_returns_false_when_no_match() {
+        let mut app = app();
+        app.push_line("I (1) tag: hello");
+        app.filter_mut().push_search_char('z');
+        assert!(!app.has_search_matches());
+    }
+
+    #[test]
+    fn n_key_triggers_search_next() {
+        let mut app = app();
+        app.push_line("I (1) wifi: timeout");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(key(KeyCode::Char('n')));
+        assert!(app.focused_match().is_some());
+    }
+
+    #[test]
+    fn shift_n_key_triggers_search_prev() {
+        let mut app = app();
+        app.push_line("I (1) wifi: timeout one");
+        app.push_line("I (1) wifi: timeout two");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+        assert_eq!(app.focused_match(), Some(1));
+    }
+
+    #[test]
+    fn uppercase_n_without_shift_modifier_triggers_search_prev() {
+        let mut app = app();
+        app.push_line("I (1) wifi: timeout one");
+        app.push_line("I (1) wifi: timeout two");
+        app.filter_mut().push_search_char('t');
+        app.filter_mut().push_search_char('i');
+        app.filter_mut().push_search_char('m');
+        app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::empty()));
+        assert_eq!(app.focused_match(), Some(1));
     }
 }

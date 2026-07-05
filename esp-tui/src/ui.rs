@@ -173,18 +173,34 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
 
     let height = content_area.height as usize;
     let entries = app.visible_entries(height);
+    let re = filter.compiled_regex();
+    let focused_row = app.focused_match_in_window(height);
+
+    let match_style = Style::default()
+        .fg(Color::Black)
+        .bg(colors.chrome.search_query);
+    let match_style_focused = match_style.add_modifier(Modifier::BOLD);
 
     let text: ratatui::text::Text = entries
         .iter()
-        .map(|e| {
+        .enumerate()
+        .map(|(row, e)| {
+            let hl = if focused_row == Some(row) {
+                match_style_focused
+            } else {
+                match_style
+            };
             if e.tag().is_empty() {
-                Line::from(Span::styled(
+                Line::from(highlight_spans(
                     e.message(),
+                    re,
                     Style::default().fg(colors.chrome.log_unparsed),
+                    hl,
                 ))
             } else {
                 let level_color = level_color(e.level(), colors);
-                Line::from(vec![
+                let tag_text = format!("{}: ", e.tag());
+                let mut spans = vec![
                     Span::styled(
                         format!("[{}]", e.level().label()),
                         Style::default()
@@ -192,12 +208,15 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(" "),
-                    Span::styled(
-                        format!("{}: ", e.tag()),
-                        Style::default().fg(colors.chrome.log_tag),
-                    ),
-                    Span::raw(e.message()),
-                ])
+                ];
+                spans.extend(highlight_spans(
+                    &tag_text,
+                    re,
+                    Style::default().fg(colors.chrome.log_tag),
+                    hl,
+                ));
+                spans.extend(highlight_spans(e.message(), re, Style::default(), hl));
+                Line::from(spans)
             }
         })
         .collect();
@@ -214,38 +233,50 @@ fn render_monitor(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) {
             hidden_level_count,
             hidden_tag_count,
             search_query,
-            colors.chrome.filter_bar,
+            !app.has_search_matches(),
+            colors,
         );
     }
 
     if is_focused {
-        let w = usize::from(footer_area.width);
-        let scroll_hint = format!(
-            "  [{}] to follow live",
-            app.key_display(MappableAction::QuitPrompt)
-        );
-        let nav_hint = format!(
-            "[{}/{}  {}/{}] scroll  [{}] clear  [{}] filter  [{}/{}] resize  [{}] focus",
-            app.key_display(MappableAction::ScrollUp),
-            app.key_display(MappableAction::ScrollDown),
-            app.key_display(MappableAction::PageUp),
-            app.key_display(MappableAction::PageDown),
-            app.key_display(MappableAction::ClearLog),
-            app.key_display(MappableAction::ToggleFilter),
-            app.key_display(MappableAction::ShrinkMonitor),
-            app.key_display(MappableAction::GrowMonitor),
-            app.key_display(MappableAction::SwitchPane),
-        );
-        let footer = scroll_footer(
-            w,
-            app.scroll() > 0,
-            &scroll_hint,
-            &nav_hint,
-            colors.chrome.scroll_indicator,
-            colors.chrome.hint_text,
-        );
-        frame.render_widget(Paragraph::new(footer), footer_area);
+        render_monitor_footer(frame, footer_area, app, colors);
     }
+}
+
+fn render_monitor_footer(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    colors: &crate::config::ColorsConfig,
+) {
+    let w = usize::from(area.width);
+    let scroll_hint = format!(
+        "  [{}] to follow live",
+        app.key_display(MappableAction::Dismiss)
+    );
+    let nav_hint = format!(
+        "[{}/{}  {}/{}] scroll  [{}] clear  [{}] search/filter  [{}/{}] next/prev  [{}/{}] resize  [{}] focus",
+        app.key_display(MappableAction::ScrollUp),
+        app.key_display(MappableAction::ScrollDown),
+        app.key_display(MappableAction::PageUp),
+        app.key_display(MappableAction::PageDown),
+        app.key_display(MappableAction::ClearLog),
+        app.key_display(MappableAction::ToggleFilter),
+        app.key_display(MappableAction::SearchNext),
+        app.key_display(MappableAction::SearchPrev),
+        app.key_display(MappableAction::ShrinkMonitor),
+        app.key_display(MappableAction::GrowMonitor),
+        app.key_display(MappableAction::SwitchPane),
+    );
+    let footer = scroll_footer(
+        w,
+        app.scroll() > 0,
+        &scroll_hint,
+        &nav_hint,
+        colors.chrome.scroll_indicator,
+        colors.chrome.hint_text,
+    );
+    frame.render_widget(Paragraph::new(footer), area);
 }
 
 fn level_color(
@@ -261,14 +292,44 @@ fn level_color(
     }
 }
 
+fn highlight_spans(
+    text: &str,
+    re: Option<&regex::Regex>,
+    normal_style: Style,
+    highlight_style: Style,
+) -> Vec<Span<'static>> {
+    let Some(re) = re else {
+        return vec![Span::styled(text.to_owned(), normal_style)];
+    };
+    let mut spans = Vec::new();
+    let mut pos = 0usize;
+    for m in re.find_iter(text) {
+        if m.start() > pos {
+            spans.push(Span::styled(text[pos..m.start()].to_owned(), normal_style));
+        }
+        spans.push(Span::styled(
+            text[m.start()..m.end()].to_owned(),
+            highlight_style,
+        ));
+        pos = m.end();
+    }
+    if pos < text.len() {
+        spans.push(Span::styled(text[pos..].to_owned(), normal_style));
+    }
+    spans
+}
+
 fn render_filter_bar(
     frame: &mut Frame,
     area: Rect,
     hidden_level_count: usize,
     hidden_tag_count: usize,
     search_query: &str,
-    color: Color,
+    no_matches: bool,
+    colors: &crate::config::ColorsConfig,
 ) {
+    let color = colors.chrome.filter_bar;
+    let error_color = colors.log.error;
     let hidden_text = match (hidden_level_count, hidden_tag_count) {
         (0, 0) => None,
         (l, 0) => Some(format!("{l} level{} hidden", if l == 1 { "" } else { "s" })),
@@ -282,7 +343,7 @@ fn render_filter_bar(
     let search_text =
         (!search_query.is_empty()).then(|| format!("Search: \"{search_query}\""));
     let w = usize::from(area.width);
-    let line = match (hidden_text, search_text) {
+    let main = match (hidden_text, search_text) {
         (Some(h), Some(s)) => {
             truncate_line(format!("  Active filters: {h}  •  {s}"), w)
         }
@@ -290,10 +351,14 @@ fn render_filter_bar(
         (None, Some(s)) => truncate_line(format!("  {s}"), w),
         (None, None) => String::new(),
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(line, Style::default().fg(color)))),
-        area,
-    );
+    let mut spans = vec![Span::styled(main, Style::default().fg(color))];
+    if no_matches {
+        spans.push(Span::styled(
+            "  •  no matches",
+            Style::default().fg(error_color),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn mline(spans: Vec<Span<'static>>, col_width: usize) -> Line<'static> {
@@ -1245,6 +1310,7 @@ fn filter_search_item(
     search_focused: bool,
     search_label_color: Color,
     search_query_color: Color,
+    search_error_color: Color,
 ) -> ListItem<'_> {
     let label = Span::styled(" Search: ", Style::default().fg(search_label_color));
     let query = filter.search_query();
@@ -1256,6 +1322,11 @@ fn filter_search_item(
         Line::from(vec![
             label,
             Span::styled("type to search…", Style::default().fg(search_label_color)),
+        ])
+    } else if filter.is_regex_error() {
+        Line::from(vec![
+            label,
+            Span::styled(query, Style::default().fg(search_error_color)),
         ])
     } else {
         Line::from(vec![
@@ -1275,8 +1346,9 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
     let any_tags = !filter.known_tags().is_empty();
     let search_focused = filter.is_search_focused();
 
-    let hint_nav = " [↑/↓] navigate  [Space] toggle  [^A] all  [Esc] close";
-    let hint_search = " [↑/↓] navigate  [Esc] done";
+    let hint_nav =
+        " [↑/↓] navigate  [Space] toggle  [^A] all  [Enter] confirm  [Esc] close";
+    let hint_search = " [↑/↓] navigate  [Enter] confirm  [Esc] done";
     let popup_hint = if search_focused {
         hint_search
     } else {
@@ -1302,7 +1374,7 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" Filter ")
+        .title(" Search/Filter ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
 
@@ -1315,6 +1387,7 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
         search_focused,
         colors.chrome.search_label,
         colors.chrome.search_query,
+        colors.log.error,
     );
 
     let level_items = levels.iter().enumerate().map(|(i, &level)| {
@@ -1463,7 +1536,7 @@ mod tests {
     fn draw_with_filter_popup_open_does_not_panic() {
         let mut app = app();
         app.push_line("I (1) wifi: msg");
-        app.filter_mut().toggle_popup();
+        app.filter_mut().open_popup();
         render(&app);
     }
 
