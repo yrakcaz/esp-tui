@@ -116,6 +116,7 @@ Options:
   -b, --baud <BAUD>    Serial baud rate (default: 115200)
       --pane <PANE>    Open with only one pane visible [monitor|inspector]
       --config <FILE>  Path to a config file (default: ./esp-tui.toml)
+      --preset <NAME>  Keybinding preset: vim, emacs, or a path to a preset .toml file
   -h, --help           Print help
 ```
 
@@ -125,6 +126,7 @@ Options:
 esp-tui                           # auto-detect port
 esp-tui --port /dev/ttyUSB0       # connect to a specific port
 esp-tui --pane inspector          # open with only the System Inspector visible
+esp-tui --preset vim              # use vim-style keybindings for this session
 ```
 
 ---
@@ -165,9 +167,10 @@ full reference.
 
 **Presets**
 
-Set `preset = "vim"` or `preset = "emacs"` under `[keys]` to switch to a
-familiar binding scheme. Presets replace the default scroll and filter keys;
-all other defaults remain.
+Set `preset = "vim"` or `preset = "emacs"` under `[keys]`, or pass `--preset
+vim` / `--preset emacs` on the command line (the CLI flag wins if both are
+set), to switch to a familiar binding scheme. Presets replace the default
+scroll and filter keys; all other defaults remain.
 
 | Action | vim | emacs |
 |---|---|---|
