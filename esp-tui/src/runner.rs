@@ -44,6 +44,10 @@ struct Args {
     /// Path to an esp-tui.toml config file.
     #[arg(long)]
     config: Option<PathBuf>,
+
+    /// Keybinding preset to use ("vim", "emacs", or a path to a preset .toml file).
+    #[arg(long)]
+    preset: Option<String>,
 }
 
 const MSG_OP_IN_PROGRESS: &str = "Operation already in progress.";
@@ -479,6 +483,8 @@ async fn run_inner(args: Args, mut cfg: config::Config) -> anyhow::Result<()> {
     let baud = args.baud.or(cfg.serial.baud).unwrap_or(DEFAULT_BAUD);
 
     let port_arg = args.port.or(cfg.serial.port.take());
+
+    cfg.keys.preset = args.preset.or(cfg.keys.preset.take());
 
     let initial_pane = args
         .pane
