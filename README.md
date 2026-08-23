@@ -40,6 +40,18 @@ Works with any ESP32 firmware: C, C++, Rust, Arduino.
 - System Inspector pane with live heap gauges (free/total/low-water/largest block), per-core CPU bars with ASCII sparklines showing the last 60 samples, WiFi RSSI and channel, NVS usage, uptime, scrollable task table, and partition table viewer; board info section shows chip model, cores, silicon revision, reset reason, flash size, and MAC; graceful fallback messages when no device or agent is connected
 - Pane focus system: `Tab` cycles between the Serial Monitor and System Inspector; `Ctrl-F` opens the filter popup with a live search bar for tag filtering
 
+**Phase 4**
+
+- Panic backtrace decoder: detects an ESP-IDF `Backtrace:` dump on the serial stream and resolves each address against the configured ELF's DWARF debug info via `addr2line`, showing function, file, and line per frame in a popup (`b`); an always-live ELF path box inside the popup points the decoder at a different ELF and re-resolves in place, without reflashing
+- `esp-tui.toml` config file for port, baud, ELF path, buffer size, colors, and keybindings, with `~/.config/esp-tui/config.toml` as a global fallback and CLI flags taking priority
+- Configurable keybindings via `[keys]` in the config file, with `vim` and `emacs` presets (`--preset` flag or `preset =` in config) and per-key overrides via `[keys.overrides]`
+- Per-pane resizing: `Ctrl-←` / `Ctrl-→` moves the split divider, auto-switching focus when a pane collapses
+- Log search: regex search bar in the filter popup, with matches highlighted inline, `n` / `N` to jump between matches, and invalid patterns shown in red
+- macOS port filtering: only `tty.*` devices are offered by the port selector and auto-connect, since `cu.*` is not the correct interface for ESP32 serial communication
+- `--pane <monitor|inspector>` CLI flag to open with only one pane visible
+- `--elf <path>` CLI flag to pre-load an ELF for flashing and backtrace symbol resolution
+- `--config <file>` CLI flag to point at a config file other than `./esp-tui.toml`
+
 ---
 
 ## Installation
@@ -89,16 +101,19 @@ Produces `target/<triple>/release/libesp_agent.a` for each target. No environmen
 
 **Examples**
 
-Working reference projects live in `examples/c/` and `examples/rust/`. Each can be built with a single command from the repo root; the xtask builds the agent first and then the example:
+Working reference projects live in `examples/c/`, `examples/rust/`, and `examples/panic/`. Each can be built with a single command from the repo root; the xtask builds the agent first and then the example:
 
 ```
-cargo xtask build examples                                             # both, all targets
+cargo xtask build examples                                             # all three, all targets
 cargo xtask build examples rust                                        # Rust only, all targets
 cargo xtask build examples c                                           # C only, all targets
+cargo xtask build examples panic                                       # panic demo only, all targets
 cargo xtask build examples rust --target xtensa-esp32s3-espidf        # one target
 ```
 
-Each command builds for all five ESP-IDF targets by default (ESP32, S2, S3, C3, C6). Pass a target triple as the second argument to build for a single chip. The xtask auto-detects the ESP-IDF installation at `~/.espressif/esp-idf/v5.3.1` for the C example; set `IDF_PATH` to override.
+Each command builds for all five ESP-IDF targets by default (ESP32, S2, S3, C3, C6). Pass a target triple as the second argument to build for a single chip. The xtask auto-detects the ESP-IDF installation at `~/.espressif/esp-idf/v5.3.1` for the C and panic examples; set `IDF_PATH` to override.
+
+`examples/panic/` doesn't demonstrate `esp-agent`; it exists to exercise the panic backtrace decoder against a real device. It logs a message, waits 5 seconds, then deliberately dereferences a null pointer, producing a genuine `Guru Meditation Error` / `Backtrace:` dump on the serial output. Flash it, point esp-tui's ELF path at the build output (e.g. `examples/panic/build/esp32/esp_tui_panic_example.elf`), and connect to watch the decoder resolve the crash live.
 
 **Devcontainer**
 
@@ -117,6 +132,7 @@ Options:
       --pane <PANE>    Open with only one pane visible [monitor|inspector]
       --config <FILE>  Path to a config file (default: ./esp-tui.toml)
       --preset <NAME>  Keybinding preset: vim, emacs, or a path to a preset .toml file
+      --elf <PATH>     ELF path to pre-fill the flash selector and resolve backtrace symbols
   -h, --help           Print help
 ```
 
@@ -127,6 +143,7 @@ esp-tui                           # auto-detect port
 esp-tui --port /dev/ttyUSB0       # connect to a specific port
 esp-tui --pane inspector          # open with only the System Inspector visible
 esp-tui --preset vim              # use vim-style keybindings for this session
+esp-tui --elf build/firmware.elf  # pre-load an ELF for flashing and backtrace symbols
 ```
 
 ---
@@ -138,6 +155,15 @@ esp-tui reads `esp-tui.toml` in the current directory, falling back to
 
 See [`esp-tui.example.toml`](./esp-tui.example.toml) in the repo root for a
 fully documented reference of every available key.
+
+`[flash].elf_path` (or the equivalent `--elf` flag, which takes priority)
+only seeds the initial ELF path at startup; neither triggers a flash. Two
+places change the live path at runtime, with different side effects:
+confirming the flash popup's selector (`f`, then `Enter`) updates the path
+*and* starts a flash; confirming the backtrace popup's box (`b`, then
+`Enter`) updates the same
+path but only re-resolves the currently displayed backtrace, and never
+flashes.
 
 ---
 
@@ -162,6 +188,7 @@ full reference.
 | `↑` / `↓` | Scroll the focused pane up / down |
 | `PgUp` / `PgDn` | Scroll the focused pane by 10 lines |
 | `Ctrl-L` | Clear log buffer |
+| `b` | Open / close the decoded panic backtrace popup (only when one has been captured) |
 | `q` / `Esc` | Exit scroll mode, or quit |
 | `Ctrl-C` | Quit |
 
@@ -212,6 +239,28 @@ Individual bindings can be overridden on top of a preset via `[keys.overrides]`.
 | `Ctrl-U` | Delete from start of input to cursor |
 | `Ctrl-W` | Delete word before cursor (stops at `/`) |
 | `Ctrl-L` | Clear entire input |
+
+**Backtrace popup** (active while the `b` popup is open; the ELF path box
+is always live, there is no separate focus mode to enter)
+
+| Key | Action |
+|---|---|
+| Type characters | Insert into the ELF path box |
+| `Tab` | Tab-complete: auto-accept single match, extend to common prefix for multiple |
+| `Shift-Tab` | Cycle completions backward |
+| `←` / `→` | Move cursor left / right in the box |
+| `Enter` | Accept highlighted completion, or (if no menu is open) load the typed path: updates the same ELF path the flash selector uses and re-resolves this backtrace's symbols in place, without flashing |
+| `↑` / `↓` | Navigate the completion dropdown when one is open; otherwise scroll the frame list |
+| `PgUp` / `PgDn` | Scroll the frame list (never moves into the box) |
+| `Esc` | Close the popup; any unsaved edit to the box is discarded |
+| `Backspace` | Delete character before cursor |
+| `Ctrl-A` | Move cursor to start of box |
+| `Ctrl-E` | Move cursor to end of box |
+| `Ctrl-D` | Delete character under cursor |
+| `Ctrl-K` | Delete from cursor to end of box |
+| `Ctrl-U` | Delete from start of box to cursor |
+| `Ctrl-W` | Delete word before cursor (stops at `/`) |
+| `Ctrl-L` | Clear entire box |
 
 ---
 

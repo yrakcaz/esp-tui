@@ -1,15 +1,19 @@
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use esp_agent_msg as agent_msg;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Wrap,
+    Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Widget,
+    Wrap,
 };
 use ratatui::Frame;
 
 use crate::app::{App, MappableAction, Pane};
+use crate::backtrace;
 use crate::filter;
 use crate::flash;
 
@@ -47,6 +51,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         render_elf_selector_popup(frame, frame.area(), app);
     } else if let Some(sel) = app.port_selector() {
         render_port_selector(frame, frame.area(), sel, app);
+    } else if app.is_backtrace_open() {
+        render_backtrace_popup(frame, frame.area(), app);
     } else if app.filter().is_popup_open() {
         render_filter_popup(frame, frame.area(), app);
     }
@@ -254,7 +260,7 @@ fn render_monitor_footer(
         "  [{}] to follow live",
         app.key_display(MappableAction::Dismiss)
     );
-    let nav_hint = format!(
+    let mut nav_hint = format!(
         "[{}/{}  {}/{}] scroll  [{}] clear  [{}] search/filter  [{}/{}] next/prev  [{}/{}] resize  [{}] focus",
         app.key_display(MappableAction::ScrollUp),
         app.key_display(MappableAction::ScrollDown),
@@ -268,6 +274,13 @@ fn render_monitor_footer(
         app.key_display(MappableAction::GrowMonitor),
         app.key_display(MappableAction::SwitchPane),
     );
+    if app.backtrace().is_some() {
+        let _ = write!(
+            nav_hint,
+            "  [{}] backtrace",
+            app.key_display(MappableAction::ToggleBacktrace)
+        );
+    }
     let footer = scroll_footer(
         w,
         app.scroll() > 0,
@@ -825,6 +838,241 @@ fn render_inspector(frame: &mut Frame, area: Rect, app: &App, is_focused: bool) 
     }
 }
 
+/// Builds the styled display lines for a decoded backtrace report. Called
+/// once per resolve (from [`crate::app::App::set_backtrace`]) rather than
+/// per render, since the report is immutable between resolves.
+///
+/// # Arguments
+///
+/// * `report` - The decoded backtrace to render.
+/// * `colors` - The active color config, used to style the header, warning,
+///   and hint text.
+///
+/// # Returns
+///
+/// One styled [`Line`] per row: the header and warning (if present), each
+/// followed by a blank separator line, then one line per resolved frame.
+pub(crate) fn backtrace_lines(
+    report: &backtrace::Report,
+    colors: &crate::config::ColorsConfig,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if let Some(header) = &report.header {
+        lines.push(Line::from(Span::styled(
+            header.clone(),
+            Style::default()
+                .fg(colors.log.error)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+    }
+    if let Some(warning) = &report.warning {
+        lines.push(Line::from(Span::styled(
+            warning.clone(),
+            Style::default().fg(colors.log.warn),
+        )));
+        lines.push(Line::from(""));
+    }
+    lines.extend(report.frames.iter().enumerate().map(|(i, f)| {
+        let addr = Span::styled(
+            format!("#{i:<2} 0x{:08x}", f.address),
+            Style::default().fg(colors.chrome.hint_text),
+        );
+        let detail = match (&f.function, &f.file, f.line) {
+            (Some(func), Some(file), Some(line)) => {
+                Span::raw(format!("  {func} at {file}:{line}"))
+            }
+            (Some(func), Some(file), None) => {
+                Span::raw(format!("  {func} at {file}"))
+            }
+            (Some(func), None, _) => Span::raw(format!("  {func}")),
+            (None, Some(file), Some(line)) => {
+                Span::raw(format!("  ?? at {file}:{line}"))
+            }
+            (None, Some(file), None) => Span::raw(format!("  ?? at {file}")),
+            (None, None, _) => Span::styled(
+                "  ?? (no debug info)",
+                Style::default().fg(colors.chrome.hint_text),
+            ),
+        };
+        Line::from(vec![addr, detail])
+    }));
+    lines
+}
+
+/// Clamps a desired popup size to at least `(min_width, min_height)` and at
+/// most the available `area`, the same bounds-enforcement every popup in
+/// this module applies to its own content-driven width/height.
+fn clamp_popup_size(
+    width: u16,
+    height: u16,
+    min_width: u16,
+    min_height: u16,
+    area: Rect,
+) -> (u16, u16) {
+    (
+        width.max(min_width).min(area.width),
+        height.max(min_height).min(area.height),
+    )
+}
+
+fn render_backtrace_popup(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(lines) = app.backtrace_lines() else {
+        return;
+    };
+    let colors = &app.config().colors;
+
+    let elf_input = app.backtrace_elf_input();
+    let completions = elf_input.map_or(&[][..], |s| s.completions());
+    // The gap row below the ELF input either shows the completion dropdown,
+    // or (when there's no dropdown to show) is left blank as a separator
+    // between the input and the frame list.
+    let gap_len = if completions.is_empty() {
+        1
+    } else {
+        u16::try_from(completions.len()).unwrap_or(u16::MAX)
+    };
+
+    // Width is decided first (a fixed share of the terminal, wide enough for
+    // typical file paths); wrapped content height, computed next, depends on
+    // it.
+    let desired_width =
+        u16::try_from(u32::from(area.width) * 80 / 100).unwrap_or(area.width);
+    let width = desired_width.max(20).min(area.width);
+    let content_width = width.saturating_sub(2); // borders
+
+    let paragraph = Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false });
+    // Sized to the actual wrapped content (input + gap + frames + footer,
+    // plus borders) rather than a fixed share of the terminal, so a short
+    // report doesn't get a popup mostly full of empty space. Using the
+    // wrapped row count (not `lines.len()`) matters because a frame's
+    // `func at file:line` text routinely wraps across multiple visual rows.
+    // Cached on `App` per content width, so this isn't recomputed on every
+    // render while the popup stays open at the same size.
+    let wrapped_len =
+        u16::try_from(app.backtrace_wrapped_len(content_width).unwrap_or(0))
+            .unwrap_or(u16::MAX);
+    let desired_height = 2 + 1 + gap_len + wrapped_len + 1;
+    let height = desired_height.max(6).min(area.height);
+
+    let popup = centered_rect(width, height, area);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" Panic Backtrace ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let [elf_area, gap_area, content_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(gap_len.min(inner.height)),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    let [label_area, input_area] =
+        Layout::horizontal([Constraint::Length(5), Constraint::Min(0)])
+            .areas(elf_area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "ELF:",
+            Style::default().fg(colors.chrome.hint_text),
+        )),
+        label_area,
+    );
+    if let Some(sel) = elf_input {
+        render_elf_input(frame, input_area, sel.value(), sel.cursor_pos());
+        if !completions.is_empty() {
+            let items: Vec<ListItem> = completions
+                .iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    let style = if i == sel.completion_cursor() {
+                        Style::default().add_modifier(Modifier::REVERSED)
+                    } else {
+                        Style::default()
+                    };
+                    ListItem::new(format!("  {name}")).style(style)
+                })
+                .collect();
+            frame.render_widget(List::new(items), gap_area);
+        }
+    }
+
+    // Scrolling operates on wrapped visual rows (via `Paragraph::scroll`),
+    // not logical `Line` entries, so a single long frame line that wraps
+    // across several rows scrolls smoothly rather than jumping a whole
+    // frame at a time.
+    let viewport = usize::from(content_area.height);
+    let max_scroll = usize::from(wrapped_len).saturating_sub(viewport);
+    app.set_backtrace_max_scroll(max_scroll);
+    let skip = app.backtrace_scroll().min(max_scroll);
+    frame.render_widget(
+        paragraph.scroll((u16::try_from(skip).unwrap_or(u16::MAX), 0)),
+        content_area,
+    );
+
+    let footer_hint = if completions.is_empty() {
+        format!(
+            "[Tab] complete elf   [Enter] load   [Esc] close   [{}/{}  {}/{}] scroll",
+            app.key_display(MappableAction::ScrollUp),
+            app.key_display(MappableAction::ScrollDown),
+            app.key_display(MappableAction::PageUp),
+            app.key_display(MappableAction::PageDown),
+        )
+    } else {
+        format!(
+            "[Tab] cycle  [{}/{}] navigate  [Enter] select  [Esc] close",
+            app.key_display(MappableAction::ScrollUp),
+            app.key_display(MappableAction::ScrollDown),
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            footer_hint,
+            Style::default().fg(colors.chrome.hint_text),
+        ))),
+        footer_area,
+    );
+}
+
+/// Computes the exact number of terminal rows `lines` will occupy once
+/// word-wrapped to `width` columns, by rendering into a scratch buffer and
+/// locating where the content ends. This exercises ratatui's real wrapping
+/// engine directly (the same one `render` itself uses) rather than
+/// approximating it, so popup sizing and scroll-clamping always match what
+/// actually gets drawn. All APIs used here are stable; ratatui's own
+/// row-counting helper (`Paragraph::line_count`) would be simpler but is
+/// marked unstable.
+pub(crate) fn wrapped_row_count(lines: &[Line<'static>], width: u16) -> usize {
+    if width == 0 || lines.is_empty() {
+        return 0;
+    }
+    // A sentinel line appended after the real content: the row it lands on
+    // is exactly the true row count of `lines`, including any trailing
+    // blank lines (which scanning for "last non-blank row" would miss).
+    let mut padded = lines.to_vec();
+    padded.push(Line::from("\u{E000}"));
+    let total_width: usize = padded.iter().map(Line::width).sum();
+    // Generous, safe upper bound: no line needs more wrapped rows than its
+    // full width divided by the render width, plus one row per line as a
+    // floor (covers blank lines and short lines alike).
+    let max_height =
+        u16::try_from(total_width / usize::from(width) + padded.len() + 1)
+            .unwrap_or(u16::MAX);
+    let area = Rect::new(0, 0, width, max_height);
+    let mut buffer = Buffer::empty(area);
+    Paragraph::new(padded)
+        .wrap(Wrap { trim: false })
+        .render(area, &mut buffer);
+    (0..max_height)
+        .find(|&y| (0..width).any(|x| buffer[(x, y)].symbol() == "\u{E000}"))
+        .map_or(lines.len(), usize::from)
+}
+
 fn word_wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
@@ -1226,9 +1474,9 @@ fn render_elf_selector_popup(frame: &mut Frame, area: Rect, app: &App) {
         let height = if completions.is_empty() {
             5u16
         } else {
-            (4 + comp_count).min(area.height)
+            4 + comp_count
         };
-        let width = 64u16.min(area.width);
+        let (width, height) = clamp_popup_size(64, height, 0, 0, area);
         let popup = centered_rect(width, height, area);
 
         frame.render_widget(Clear, popup);
@@ -1361,14 +1609,10 @@ fn render_filter_popup(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         0
     };
-    let height = (2
-        + 1
-        + 1
-        + u16::try_from(levels.len()).unwrap_or(5)
-        + tag_section_rows
-        + 1)
-    .min(area.height);
-    let width = (u16::try_from(hint_width).unwrap_or(70) + 3).min(area.width);
+    let height =
+        2 + 1 + 1 + u16::try_from(levels.len()).unwrap_or(5) + tag_section_rows + 1;
+    let width = u16::try_from(hint_width).unwrap_or(70) + 3;
+    let (width, height) = clamp_popup_size(width, height, 0, 0, area);
     let popup = centered_rect(width, height, area);
 
     frame.render_widget(Clear, popup);
@@ -1458,13 +1702,11 @@ fn render_port_selector(
     );
 
     let ports = sel.ports();
-    let height = (u16::try_from(ports.len())
+    let height = u16::try_from(ports.len())
         .unwrap_or(u16::MAX)
-        .saturating_add(3))
-    .max(4)
-    .min(area.height);
-    let width =
-        (u16::try_from(hint.chars().count()).unwrap_or(50) + 4).min(area.width);
+        .saturating_add(3);
+    let width = u16::try_from(hint.chars().count()).unwrap_or(50) + 4;
+    let (width, height) = clamp_popup_size(width, height, 0, 4, area);
     let popup = centered_rect(width, height, area);
 
     frame.render_widget(Clear, popup);
@@ -1498,6 +1740,7 @@ fn render_port_selector(
 mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
+    use ratatui::text::Line;
     use ratatui::Terminal;
 
     use super::centered_rect;
@@ -1597,6 +1840,163 @@ mod tests {
         std::fs::write(dir.join("fw_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
         let mut app = app();
         app.open_elf_selector(None);
+        for ch in format!("{}/fw", dir.display()).chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Tab));
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_backtrace_popup_open_does_not_panic() {
+        let mut app = app();
+        app.set_backtrace_for_test(crate::backtrace::Report {
+            header: Some("Guru Meditation Error: Core 0 panic'ed".to_owned()),
+            frames: vec![crate::backtrace::Frame {
+                address: 0x400d_1fb2,
+                function: Some("app_main".to_owned()),
+                file: Some("main.c".to_owned()),
+                line: Some(42),
+            }],
+            warning: None,
+        });
+        render(&app);
+    }
+
+    #[test]
+    fn backtrace_lines_shows_file_and_line_when_function_name_is_missing() {
+        let report = crate::backtrace::Report {
+            header: None,
+            frames: vec![crate::backtrace::Frame {
+                address: 0x400d_1fb2,
+                function: None,
+                file: Some("main.c".to_owned()),
+                line: Some(42),
+            }],
+            warning: None,
+        };
+        let colors = Config::default().colors;
+        let lines = super::backtrace_lines(&report, &colors);
+        assert_eq!(lines[0].spans[1].content, "  ?? at main.c:42");
+    }
+
+    #[test]
+    fn backtrace_lines_shows_file_without_line_when_both_function_and_line_missing()
+    {
+        let report = crate::backtrace::Report {
+            header: None,
+            frames: vec![crate::backtrace::Frame {
+                address: 0x400d_1fb2,
+                function: None,
+                file: Some("main.c".to_owned()),
+                line: None,
+            }],
+            warning: None,
+        };
+        let colors = Config::default().colors;
+        let lines = super::backtrace_lines(&report, &colors);
+        assert_eq!(lines[0].spans[1].content, "  ?? at main.c");
+    }
+
+    #[test]
+    fn backtrace_lines_shows_function_and_file_when_line_missing() {
+        let report = crate::backtrace::Report {
+            header: None,
+            frames: vec![crate::backtrace::Frame {
+                address: 0x400d_1fb2,
+                function: Some("app_main".to_owned()),
+                file: Some("main.c".to_owned()),
+                line: None,
+            }],
+            warning: None,
+        };
+        let colors = Config::default().colors;
+        let lines = super::backtrace_lines(&report, &colors);
+        assert_eq!(lines[0].spans[1].content, "  app_main at main.c");
+    }
+
+    #[test]
+    fn wrapped_row_count_counts_one_row_per_line_when_all_fit() {
+        let lines = vec![Line::from("short"), Line::from("also short")];
+        assert_eq!(super::wrapped_row_count(&lines, 40), 2);
+    }
+
+    #[test]
+    fn wrapped_row_count_counts_extra_rows_when_a_line_wraps() {
+        let lines = vec![Line::from(
+            "this line is long enough that it will wrap across rows",
+        )];
+        assert!(super::wrapped_row_count(&lines, 20) > 1);
+    }
+
+    #[test]
+    fn wrapped_row_count_counts_empty_line_as_one_blank_row() {
+        let lines = vec![Line::from("")];
+        assert_eq!(super::wrapped_row_count(&lines, 40), 1);
+    }
+
+    #[test]
+    fn wrapped_row_count_counts_trailing_blank_line() {
+        // Regression: a naive "scan for the last non-blank row" approach
+        // undercounts when the content ends on a blank line, since that
+        // row has no visible content of its own to detect.
+        let lines = vec![Line::from("one"), Line::from("two"), Line::from("")];
+        assert_eq!(super::wrapped_row_count(&lines, 40), 3);
+    }
+
+    #[test]
+    fn draw_with_backtrace_popup_unresolved_does_not_panic() {
+        let mut app = app();
+        app.set_backtrace_for_test(crate::backtrace::Report {
+            header: None,
+            frames: vec![crate::backtrace::Frame {
+                address: 0x400d_1fb2,
+                function: None,
+                file: None,
+                line: None,
+            }],
+            warning: Some("No ELF file loaded; showing raw addresses.".to_owned()),
+        });
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_backtrace_popup_elf_input_open_does_not_panic() {
+        let mut app = app();
+        app.set_backtrace_for_test(crate::backtrace::Report {
+            header: Some("Guru Meditation Error: Core 0 panic'ed".to_owned()),
+            frames: vec![crate::backtrace::Frame {
+                address: 0x400d_1fb2,
+                function: Some("app_main".to_owned()),
+                file: Some("main.c".to_owned()),
+                line: Some(42),
+            }],
+            warning: None,
+        });
+        render(&app);
+    }
+
+    #[test]
+    fn draw_with_backtrace_popup_elf_completions_open_does_not_panic() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        fn key(code: KeyCode) -> KeyEvent {
+            KeyEvent::new(code, KeyModifiers::empty())
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "esp-tui-ui-backtrace-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos())
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("fw_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        std::fs::write(dir.join("fw_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        let mut app = app();
+        app.set_backtrace_for_test(crate::backtrace::Report {
+            header: None,
+            frames: Vec::new(),
+            warning: None,
+        });
         for ch in format!("{}/fw", dir.display()).chars() {
             app.handle_key(key(KeyCode::Char(ch)));
         }
@@ -1782,6 +2182,24 @@ mod tests {
     fn format_mac_formats_correctly() {
         let mac = super::format_mac([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
         assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
+    }
+
+    #[test]
+    fn clamp_popup_size_passes_through_when_within_bounds() {
+        let area = Rect::new(0, 0, 100, 50);
+        assert_eq!(super::clamp_popup_size(40, 20, 10, 5, area), (40, 20));
+    }
+
+    #[test]
+    fn clamp_popup_size_caps_to_area() {
+        let area = Rect::new(0, 0, 30, 20);
+        assert_eq!(super::clamp_popup_size(64, 30, 0, 0, area), (30, 20));
+    }
+
+    #[test]
+    fn clamp_popup_size_enforces_minimum_floor() {
+        let area = Rect::new(0, 0, 100, 50);
+        assert_eq!(super::clamp_popup_size(5, 2, 20, 4, area), (20, 4));
     }
 
     #[test]
