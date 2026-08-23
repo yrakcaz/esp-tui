@@ -18,6 +18,11 @@ baud = 9600             # default: 115200
 # ---------------------------------------------------------------------------
 
 [flash]
+# Only seeds the initial value at startup (overridden by --elf on the
+# command line); never triggers a flash on its own. Change it live instead,
+# without restarting, from either the flash popup (f, then Enter, which
+# also starts a flash) or the backtrace popup (b, then Enter, which only
+# re-resolves symbols and never flashes).
 elf_path = "target/xtensa-esp32s3-espidf/release/my-firmware"   # default: none
 
 # ---------------------------------------------------------------------------
@@ -112,3 +117,6 @@ preset = "vim"   # default: none
 "ctrl+r" = "reset_device"      # default: r
 "ctrl+w" = "disconnect"        # default: d
 "ctrl+s" = "scan_ports"        # default: c
+"alt+n" = "search_next"        # default: n
+"alt+N" = "search_prev"        # default: shift+n (shown as N)
+"alt+b" = "toggle_backtrace"   # default: b

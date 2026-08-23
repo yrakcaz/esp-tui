@@ -1,4 +1,5 @@
 mod app;
+mod backtrace;
 mod config;
 mod elf;
 mod event;

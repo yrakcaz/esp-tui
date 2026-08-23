@@ -8,10 +8,13 @@ use tokio::sync::watch;
 
 use esp_agent_msg as agent_msg;
 
-use crate::{config, elf, filter, flash, log, port, serial};
+use crate::{backtrace, config, elf, filter, flash, log, port, serial};
 
 pub(crate) const DEFAULT_BAUD: u32 = 115_200;
 const STATUS_TTL_SECS: u64 = 3;
+// ESP-IDF prints "Guru Meditation Error: ..." a handful of lines before the
+// "Backtrace:" line; this bounds how far back to look for it as a header.
+const GURU_MEDITATION_LOOKBACK: usize = 20;
 // Sentinel clamped by visible_entries to total.saturating_sub(height), i.e. oldest window.
 const SCROLL_TOP: usize = usize::MAX;
 
@@ -42,6 +45,7 @@ pub(crate) enum MappableAction {
     SearchNext,
     SearchPrev,
     Dismiss,
+    ToggleBacktrace,
 }
 
 pub(crate) type KeyMap = HashMap<(KeyCode, KeyModifiers), MappableAction>;
@@ -69,6 +73,7 @@ pub(crate) fn default_keymap() -> KeyMap {
         ((KeyCode::PageDown, none), MappableAction::PageDown),
         ((KeyCode::Char('n'), none), MappableAction::SearchNext),
         ((KeyCode::Char('N'), shift), MappableAction::SearchPrev),
+        ((KeyCode::Char('b'), none), MappableAction::ToggleBacktrace),
     ]
     .into_iter()
     .collect()
@@ -157,6 +162,7 @@ fn parse_action(s: &str) -> Option<MappableAction> {
         "search_next" => Some(MappableAction::SearchNext),
         "search_prev" => Some(MappableAction::SearchPrev),
         "dismiss" => Some(MappableAction::Dismiss),
+        "toggle_backtrace" => Some(MappableAction::ToggleBacktrace),
         _ => None,
     }
 }
@@ -213,6 +219,9 @@ pub(crate) enum Action {
     ConfirmElfPath,
     /// Open the quit confirmation prompt.
     QuitPrompt,
+    /// Confirm the ELF path currently typed in the backtrace popup's input,
+    /// re-resolving the displayed report without triggering a flash.
+    LoadBacktraceElf,
 }
 
 /// Which pane currently has keyboard focus.
@@ -234,6 +243,52 @@ enum ConfirmDialog {
 
 fn is_modal_safe_key(key: KeyEvent) -> bool {
     !matches!(key.code, KeyCode::Char(_)) || !key.modifiers.is_empty()
+}
+
+/// Dispatches Tab/BackTab/Enter/typing to a text-input-with-autocomplete
+/// widget, shared by the flash ELF selector and the backtrace popup's ELF
+/// box (both wrap an [`elf::Selector`] and only differ in what Enter should
+/// do once there's no completion menu left to accept).
+///
+/// # Arguments
+///
+/// * `selector` - The active selector, if the popup owning it is open.
+/// * `key` - The key event to handle.
+/// * `on_confirm` - The [`Action`] to return when Enter is pressed with no
+///   completion menu open.
+///
+/// # Returns
+///
+/// [`Action::None`] for every key except a confirming Enter, which returns
+/// `on_confirm`.
+fn handle_elf_input_key(
+    selector: Option<&mut elf::Selector>,
+    key: KeyEvent,
+    on_confirm: Action,
+) -> Action {
+    selector.map_or(Action::None, |s| match key.code {
+        KeyCode::Tab => {
+            s.tab_complete();
+            Action::None
+        }
+        KeyCode::BackTab => {
+            s.cycle_completion_back();
+            Action::None
+        }
+        KeyCode::Enter => {
+            let was_cycling = !s.completions().is_empty();
+            s.accept_completion();
+            if was_cycling {
+                Action::None
+            } else {
+                on_confirm
+            }
+        }
+        _ => {
+            s.apply_key(key);
+            Action::None
+        }
+    })
 }
 
 fn normalize_key(key: KeyEvent) -> KeyEvent {
@@ -274,6 +329,32 @@ fn matches_search(
     }
 }
 
+/// State for the panic backtrace popup, kept as a single unit so a
+/// visible popup and its scroll/input state can't exist without a report:
+/// the popup is open exactly when `App::backtrace` is `Some` and its
+/// `visible` field is `true`.
+struct BacktraceState {
+    report: backtrace::Report,
+    /// Precomputed display lines for `report`, built once per resolve
+    /// (see [`ui::backtrace_lines`]) rather than rebuilt on every render.
+    lines: Vec<ratatui::text::Line<'static>>,
+    visible: bool,
+    scroll: usize,
+    max_scroll: Cell<usize>,
+    elf_input: elf::Selector,
+    /// Cached `(content_width, wrapped row count)` for `lines`, since
+    /// `lines` is fixed per resolve but the wrapped row count still
+    /// depends on the render width. Recomputed only when the width
+    /// changes (e.g. the terminal is resized), not on every render.
+    wrapped_len_cache: Cell<Option<(u16, usize)>>,
+    /// The exact pre-resolve address list `report` was built from. Kept
+    /// alongside `report` (rather than reconstructed from its frames on
+    /// demand) since that reconstruction is ambiguous: an inlined address
+    /// expands to several frames sharing one address, indistinguishable
+    /// from a genuine consecutive-duplicate address in the original list.
+    addresses: Vec<u64>,
+}
+
 /// Central application state.
 pub(crate) struct App {
     config: config::Config,
@@ -306,6 +387,11 @@ pub(crate) struct App {
     heap_history: VecDeque<u32>,
     cpu_history: [VecDeque<u32>; 2],
     focused_match: Option<usize>,
+    pending_backtrace: Option<backtrace::Pending>,
+    backtrace: Option<BacktraceState>,
+    /// Generation number of the most recently dispatched backtrace resolve
+    /// request. See [`Self::next_backtrace_generation`].
+    backtrace_generation: u64,
 }
 
 impl App {
@@ -354,6 +440,9 @@ impl App {
             heap_history: VecDeque::new(),
             cpu_history: [VecDeque::new(), VecDeque::new()],
             focused_match: None,
+            pending_backtrace: None,
+            backtrace: None,
+            backtrace_generation: 0,
         }
     }
 
@@ -398,6 +487,14 @@ impl App {
                     None => {}
                 }
             }
+            let addresses = backtrace::extract_addresses(entry.message());
+            if !addresses.is_empty() && !self.matches_displayed_backtrace(&addresses)
+            {
+                self.pending_backtrace = Some(backtrace::Pending {
+                    header: self.recent_guru_meditation_line(),
+                    addresses,
+                });
+            }
             if self.log_buffer.len() >= self.config.ui.buffer_size {
                 let evicted_was_visible = self
                     .log_buffer
@@ -426,6 +523,333 @@ impl App {
         }
     }
 
+    fn recent_guru_meditation_line(&self) -> Option<String> {
+        self.log_buffer
+            .iter()
+            .rev()
+            .take(GURU_MEDITATION_LOOKBACK)
+            .find(|e| e.message().contains("Guru Meditation Error"))
+            .map(|e| e.message().to_owned())
+    }
+
+    /// Returns `true` if `addresses` is the same crash as the currently
+    /// displayed backtrace report, so a device re-announcing the same
+    /// panic (some ESP-IDF panic handlers print `Backtrace:` more than
+    /// once per crash) doesn't force the popup back open after the user
+    /// closes it.
+    ///
+    /// Compares against the exact pre-resolve address list the displayed
+    /// report was built from (see [`Self::set_backtrace`]), not a list
+    /// reconstructed from its resolved frames: an inlined address expands
+    /// to several frames sharing that one address (see
+    /// [`backtrace::resolve`]), so collapsing consecutive duplicates back
+    /// out is ambiguous whenever the *original* list itself contains a
+    /// genuine consecutive repeat (e.g. a corrupted-stack unwind stuck
+    /// re-reporting the same return address) — that would be
+    /// indistinguishable from inline expansion and could wrongly match a
+    /// different, unrelated crash.
+    fn matches_displayed_backtrace(&self, addresses: &[u64]) -> bool {
+        self.backtrace
+            .as_ref()
+            .is_some_and(|b| b.addresses == addresses)
+    }
+
+    /// Takes the pending backtrace request left by [`Self::push_line`], if
+    /// any, so the event loop can dispatch symbol resolution.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with the captured addresses and header the first time this is
+    /// called after a `Backtrace:` line was seen; `None` otherwise.
+    pub(crate) fn take_pending_backtrace(&mut self) -> Option<backtrace::Pending> {
+        self.pending_backtrace.take()
+    }
+
+    /// Allocates a new backtrace-resolve generation number, superseding
+    /// whatever was previously dispatched. Call this once per genuine new
+    /// resolve request (a fresh panic, or a manual ELF reload) right
+    /// before dispatching it, and carry the returned number alongside the
+    /// eventual result so [`Self::apply_backtrace_if_current`] can drop it
+    /// if a newer request has since superseded it (e.g. a slow resolve
+    /// from an older panic in a crash loop, arriving after a faster
+    /// resolve for a subsequent panic already applied).
+    ///
+    /// # Returns
+    ///
+    /// The newly allocated generation number.
+    pub(crate) fn next_backtrace_generation(&mut self) -> u64 {
+        self.backtrace_generation += 1;
+        self.backtrace_generation
+    }
+
+    /// Applies a resolved backtrace report, unless `generation` has been
+    /// superseded by a more recently dispatched resolve request, in which
+    /// case the (stale) report is silently dropped.
+    ///
+    /// # Arguments
+    ///
+    /// * `generation` - The generation number captured from
+    ///   [`Self::next_backtrace_generation`] when this resolve was
+    ///   dispatched.
+    /// * `addresses` - The exact pre-resolve address list `report` was
+    ///   built from.
+    /// * `report` - The resolved report to apply if not stale.
+    pub(crate) fn apply_backtrace_if_current(
+        &mut self,
+        generation: u64,
+        addresses: Vec<u64>,
+        report: backtrace::Report,
+    ) {
+        if generation == self.backtrace_generation {
+            self.set_backtrace(addresses, report);
+        }
+    }
+
+    /// Stores a decoded backtrace report, (re)computes its display lines,
+    /// and opens the backtrace popup.
+    ///
+    /// The ELF-path input is reseeded from the currently configured
+    /// `elf_path` unless the popup was already visible, in which case an
+    /// in-progress edit survives a new panic replacing the displayed report.
+    ///
+    /// # Arguments
+    ///
+    /// * `addresses` - The exact pre-resolve address list `report` was
+    ///   built from, retained for [`Self::matches_displayed_backtrace`] and
+    ///   for `load_backtrace_elf`'s reload-against-a-different-ELF flow;
+    ///   see [`Self::backtrace_addresses`].
+    /// * `report` - The resolved (or best-effort unresolved) backtrace report.
+    pub(crate) fn set_backtrace(
+        &mut self,
+        addresses: Vec<u64>,
+        report: backtrace::Report,
+    ) {
+        let lines = crate::ui::backtrace_lines(&report, &self.config.colors);
+        let elf_input = match self.backtrace.take() {
+            Some(prev) if prev.visible => prev.elf_input,
+            _ => elf::Selector::new(self.elf_path()),
+        };
+        self.backtrace = Some(BacktraceState {
+            report,
+            lines,
+            visible: true,
+            scroll: 0,
+            max_scroll: Cell::new(0),
+            elf_input,
+            wrapped_len_cache: Cell::new(None),
+            addresses,
+        });
+    }
+
+    /// Returns the exact pre-resolve address list the currently displayed
+    /// backtrace report was built from, if any.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with the addresses, or `None` if no panic has been decoded
+    /// this session.
+    #[must_use]
+    pub(crate) fn backtrace_addresses(&self) -> Option<&[u64]> {
+        self.backtrace.as_ref().map(|b| b.addresses.as_slice())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_backtrace_for_test(&mut self, report: backtrace::Report) {
+        // Tests seed reports directly rather than through a real resolve,
+        // so there's no independently-known pre-resolve address list;
+        // reconstructing one from the frames (lossy for a report with a
+        // genuine consecutive-duplicate address, same caveat as
+        // `matches_displayed_backtrace`'s doc comment) is fine here since
+        // none of these tests exercise that ambiguity.
+        let mut addresses: Vec<u64> =
+            report.frames.iter().map(|f| f.address).collect();
+        addresses.dedup();
+        self.set_backtrace(addresses, report);
+    }
+
+    /// Returns the most recently decoded backtrace report, if any.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with a reference to the last [`backtrace::Report`], or `None`
+    /// if no panic has been decoded this session.
+    #[must_use]
+    pub(crate) fn backtrace(&self) -> Option<&backtrace::Report> {
+        self.backtrace.as_ref().map(|b| &b.report)
+    }
+
+    /// Returns the precomputed display lines for the current backtrace
+    /// report, if any.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with the report's display lines, or `None` if no panic has
+    /// been decoded this session.
+    #[must_use]
+    pub(crate) fn backtrace_lines(&self) -> Option<&[ratatui::text::Line<'static>]> {
+        self.backtrace.as_ref().map(|b| b.lines.as_slice())
+    }
+
+    /// Returns the number of terminal rows the current backtrace's display
+    /// lines occupy once wrapped to `content_width` columns, computing and
+    /// caching it on first use for that width and reusing the cached value
+    /// on subsequent calls (e.g. every render while the popup stays open at
+    /// the same size), rather than re-wrapping on every render.
+    ///
+    /// # Arguments
+    ///
+    /// * `content_width` - The render width, in columns, the lines will be
+    ///   wrapped to.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with the wrapped row count, or `None` if no panic has been
+    /// decoded this session.
+    #[must_use]
+    pub(crate) fn backtrace_wrapped_len(&self, content_width: u16) -> Option<usize> {
+        self.backtrace.as_ref().map(|b| {
+            if let Some((cached_width, len)) = b.wrapped_len_cache.get() {
+                if cached_width == content_width {
+                    return len;
+                }
+            }
+            let len = crate::ui::wrapped_row_count(&b.lines, content_width);
+            b.wrapped_len_cache.set(Some((content_width, len)));
+            len
+        })
+    }
+
+    /// Returns `true` while the backtrace popup is visible.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the backtrace popup is open, `false` otherwise.
+    #[must_use]
+    pub(crate) fn is_backtrace_open(&self) -> bool {
+        self.backtrace.as_ref().is_some_and(|b| b.visible)
+    }
+
+    /// Returns the current scroll offset within the backtrace popup.
+    ///
+    /// # Returns
+    ///
+    /// Number of lines scrolled down from the top of the report.
+    #[must_use]
+    pub(crate) fn backtrace_scroll(&self) -> usize {
+        self.backtrace.as_ref().map_or(0, |b| b.scroll)
+    }
+
+    /// Records the maximum valid scroll offset for the backtrace popup.
+    /// Called by the renderer, which knows the viewport height and content
+    /// length; uses interior mutability since rendering only borrows `App`
+    /// immutably.
+    ///
+    /// # Arguments
+    ///
+    /// * `max` - Maximum valid value for `backtrace_scroll`.
+    pub(crate) fn set_backtrace_max_scroll(&self, max: usize) {
+        if let Some(b) = &self.backtrace {
+            b.max_scroll.set(max);
+        }
+    }
+
+    /// Returns the backtrace popup's ELF-path input, if the popup is open.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with a reference to the input, or `None` if the popup is closed.
+    #[must_use]
+    pub(crate) fn backtrace_elf_input(&self) -> Option<&elf::Selector> {
+        self.backtrace.as_ref().map(|b| &b.elf_input)
+    }
+
+    /// Returns a mutable reference to the backtrace popup's ELF-path input,
+    /// if the popup is open.
+    ///
+    /// # Returns
+    ///
+    /// `Some` with a mutable reference to the input, or `None` if the popup
+    /// is closed.
+    #[cfg(test)]
+    pub(crate) fn backtrace_elf_input_mut(&mut self) -> Option<&mut elf::Selector> {
+        self.backtrace.as_mut().map(|b| &mut b.elf_input)
+    }
+
+    /// Toggles the backtrace popup's visibility; a no-op if no report has
+    /// been decoded yet. Reopening reseeds the ELF-path input from the
+    /// current `elf_path`, matching [`Self::set_backtrace`]'s rule that the
+    /// input is only reset on a closed-to-open transition.
+    fn toggle_backtrace_popup(&mut self) {
+        // Computed before the mutable borrow below so `elf_path()` (which
+        // needs `&self`) doesn't conflict with `state`.
+        let elf_path = self.elf_path().map(Path::to_path_buf);
+        if let Some(state) = self.backtrace.as_mut() {
+            state.visible = if state.visible {
+                false
+            } else {
+                state.elf_input = elf::Selector::new(elf_path.as_deref());
+                true
+            };
+        }
+    }
+
+    fn handle_key_backtrace_popup(&mut self, key: KeyEvent) -> Action {
+        // For text-input modals, only look up the keymap for non-printable
+        // keys (arrows, Esc, modifier combos) so that plain chars still type
+        // into the ELF-path input, mirroring `handle_key_elf_selector`. These
+        // keymap lookups need `&self` and so are resolved up front, before
+        // `state` below takes a mutable borrow of `self.backtrace`.
+        let safe = is_modal_safe_key(key);
+        let cancel = key.code == KeyCode::Esc || (safe && self.is_cancel_key(key));
+        let scroll_up = (safe && self.mapped_to(key, MappableAction::ScrollUp))
+            || key.code == KeyCode::Up;
+        let scroll_down = (safe && self.mapped_to(key, MappableAction::ScrollDown))
+            || key.code == KeyCode::Down;
+        let page_up = safe && self.mapped_to(key, MappableAction::PageUp);
+        let page_down = safe && self.mapped_to(key, MappableAction::PageDown);
+
+        let Some(state) = self.backtrace.as_mut() else {
+            return Action::None;
+        };
+        if cancel {
+            state.visible = false;
+            return Action::None;
+        }
+        // Up/Down navigate the completion dropdown when one is open (matching
+        // `handle_key_elf_selector`); otherwise they scroll the frame list.
+        if scroll_up {
+            if state.elf_input.completions().is_empty() {
+                state.scroll = state.scroll.saturating_sub(1);
+            } else {
+                state.elf_input.move_completion(-1);
+            }
+            return Action::None;
+        }
+        if scroll_down {
+            if state.elf_input.completions().is_empty() {
+                state.scroll =
+                    state.scroll.saturating_add(1).min(state.max_scroll.get());
+            } else {
+                state.elf_input.move_completion(1);
+            }
+            return Action::None;
+        }
+        if page_up {
+            state.scroll = state.scroll.saturating_sub(10);
+            return Action::None;
+        }
+        if page_down {
+            state.scroll =
+                state.scroll.saturating_add(10).min(state.max_scroll.get());
+            return Action::None;
+        }
+        handle_elf_input_key(
+            Some(&mut state.elf_input),
+            key,
+            Action::LoadBacktraceElf,
+        )
+    }
+
     /// Handles a keypress and returns the action the event loop should perform.
     ///
     /// # Arguments
@@ -446,6 +870,8 @@ impl App {
             self.handle_key_elf_selector(key)
         } else if self.port_selector.is_some() {
             self.handle_key_port_selector(key)
+        } else if self.is_backtrace_open() {
+            self.handle_key_backtrace_popup(key)
         } else if self.filter.is_popup_open() {
             self.handle_key_filter_popup(key);
             Action::None
@@ -519,40 +945,7 @@ impl App {
             }
             return Action::None;
         }
-        match key.code {
-            KeyCode::Enter => {
-                let was_cycling = self
-                    .elf_selector
-                    .as_ref()
-                    .is_some_and(|s| !s.completions().is_empty());
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.accept_completion();
-                }
-                if was_cycling {
-                    Action::None
-                } else {
-                    Action::ConfirmElfPath
-                }
-            }
-            KeyCode::Tab => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.tab_complete();
-                }
-                Action::None
-            }
-            KeyCode::BackTab => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.cycle_completion_back();
-                }
-                Action::None
-            }
-            _ => {
-                if let Some(s) = self.elf_selector.as_mut() {
-                    s.apply_key(key);
-                }
-                Action::None
-            }
-        }
+        handle_elf_input_key(self.elf_selector.as_mut(), key, Action::ConfirmElfPath)
     }
 
     fn handle_key_port_selector(&mut self, key: KeyEvent) -> Action {
@@ -802,6 +1195,10 @@ impl App {
                 if self.focused_pane == Pane::Monitor {
                     self.search_prev();
                 }
+                Action::None
+            }
+            Some(MappableAction::ToggleBacktrace) => {
+                self.toggle_backtrace_popup();
                 Action::None
             }
             None => Action::None,
@@ -1580,7 +1977,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc;
 
-    use super::{build_keymap, pick_best_key};
+    use super::{build_keymap, pick_best_key, GURU_MEDITATION_LOOKBACK};
     use crate::app::{
         format_key_display, Action, App, MappableAction, Pane, DEFAULT_BAUD,
     };
@@ -1588,7 +1985,7 @@ mod tests {
     use crate::runner::{
         handle_action, handle_event_message, handle_ports_detected,
     };
-    use crate::{flash, log};
+    use crate::{backtrace, flash, log};
 
     fn app() -> App {
         App::new(None, Config::default())
@@ -3135,6 +3532,108 @@ mod tests {
     }
 
     #[test]
+    fn handle_event_message_serial_backtrace_without_elf_sets_report_synchronously()
+    {
+        let mut app = app();
+        let tx = make_tx();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::Serial("Backtrace:0x0:0x0".to_owned()),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        let report = app.backtrace().unwrap();
+        assert!(report.warning.is_some());
+        assert_eq!(report.frames.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn handle_event_message_serial_backtrace_with_elf_resolves_via_channel() {
+        let mut app = app();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/panic_test.elf");
+        app.set_elf_path(fixture);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_event_message(
+            &mut app,
+            crate::event::Message::Serial("Backtrace:0x0:0x0".to_owned()),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        let msg = rx.recv().await.unwrap();
+        handle_event_message(&mut app, msg, DEFAULT_BAUD, &tx);
+        let report = app.backtrace().unwrap();
+        assert_eq!(report.frames[0].function.as_deref(), Some("add"));
+        assert!(app.is_backtrace_open());
+    }
+
+    #[test]
+    fn apply_backtrace_if_current_drops_superseded_generation() {
+        let mut app = app();
+        let stale_gen = app.next_backtrace_generation();
+        let current_gen = app.next_backtrace_generation();
+        app.apply_backtrace_if_current(
+            stale_gen,
+            vec![0x1],
+            backtrace::Report {
+                header: Some("stale".to_owned()),
+                frames: Vec::new(),
+                warning: None,
+            },
+        );
+        assert!(app.backtrace().is_none());
+        app.apply_backtrace_if_current(
+            current_gen,
+            vec![0x2],
+            backtrace::Report {
+                header: Some("current".to_owned()),
+                frames: Vec::new(),
+                warning: None,
+            },
+        );
+        assert_eq!(app.backtrace().unwrap().header.as_deref(), Some("current"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_pending_backtrace_drops_stale_resolve_applied_out_of_order() {
+        // Simulates a crash loop: two panics are detected and dispatched
+        // before either resolve completes. Even if the older request's
+        // result is applied *after* the newer one's (e.g. a slower
+        // resolve for the first panic), the newer report must remain
+        // displayed rather than being silently overwritten.
+        let mut app = app();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/panic_test.elf");
+        app.set_elf_path(fixture);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_event_message(
+            &mut app,
+            crate::event::Message::Serial("Backtrace:0x0:0x0".to_owned()),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        let first = rx.recv().await.unwrap();
+
+        handle_event_message(
+            &mut app,
+            crate::event::Message::Serial("Backtrace:0x400d1fb2:0x0".to_owned()),
+            DEFAULT_BAUD,
+            &tx,
+        );
+        let second = rx.recv().await.unwrap();
+
+        // Apply the newer result first, then the stale one arrives late.
+        handle_event_message(&mut app, second, DEFAULT_BAUD, &tx);
+        let address_after_newer = app.backtrace().unwrap().frames[0].address;
+        handle_event_message(&mut app, first, DEFAULT_BAUD, &tx);
+        assert_eq!(
+            app.backtrace().unwrap().frames[0].address,
+            address_after_newer
+        );
+    }
+
+    #[test]
     fn scroll_routes_to_monitor_when_focused() {
         let mut app = app();
         app.handle_key(key(KeyCode::Up));
@@ -3192,6 +3691,625 @@ mod tests {
         assert!(app.agent_last_seen().is_none());
         push_agent_frame(&mut app, 0);
         assert!(app.agent_last_seen().is_some());
+    }
+
+    #[test]
+    fn push_line_backtrace_line_populates_pending_request() {
+        let mut app = app();
+        assert!(app.take_pending_backtrace().is_none());
+        app.push_line("Backtrace:0x400d1fb2:0x3ffb2170 0x400d2e9d:0x3ffb2190");
+        let pending = app.take_pending_backtrace().unwrap();
+        assert_eq!(pending.addresses, vec![0x400d_1fb2, 0x400d_2e9d]);
+        assert!(pending.header.is_none());
+    }
+
+    #[test]
+    fn push_line_backtrace_line_matching_displayed_report_is_ignored() {
+        // Regression: some ESP-IDF panic handlers print `Backtrace:` more
+        // than once for the same crash. Re-announcing the same addresses
+        // must not force the popup back open after the user closes it.
+        let mut app = app();
+        app.set_backtrace_for_test(backtrace::Report {
+            header: None,
+            frames: vec![
+                backtrace::Frame {
+                    address: 0x400d_1fb2,
+                    function: None,
+                    file: None,
+                    line: None,
+                },
+                backtrace::Frame {
+                    address: 0x400d_2e9d,
+                    function: None,
+                    file: None,
+                    line: None,
+                },
+            ],
+            warning: None,
+        });
+        app.push_line("Backtrace:0x400d1fb2:0x3ffb2170 0x400d2e9d:0x3ffb2190");
+        assert!(app.take_pending_backtrace().is_none());
+    }
+
+    #[test]
+    fn push_line_backtrace_line_matching_displayed_inlined_frames_is_ignored() {
+        // Same as above, but the displayed report has multiple frames per
+        // address (an inlined chain, see `resolve()`), proving the
+        // consecutive-duplicate collapse correctly reconstructs the
+        // original per-address list before comparing.
+        let mut app = app();
+        app.set_backtrace_for_test(backtrace::Report {
+            header: None,
+            frames: vec![
+                backtrace::Frame {
+                    address: 0x400d_1fb2,
+                    function: Some("inner".to_owned()),
+                    file: None,
+                    line: None,
+                },
+                backtrace::Frame {
+                    address: 0x400d_1fb2,
+                    function: Some("outer".to_owned()),
+                    file: None,
+                    line: None,
+                },
+            ],
+            warning: None,
+        });
+        app.push_line("Backtrace:0x400d1fb2:0x3ffb2170");
+        assert!(app.take_pending_backtrace().is_none());
+    }
+
+    #[test]
+    fn push_line_backtrace_line_with_different_addresses_still_pends() {
+        let mut app = app();
+        app.set_backtrace_for_test(backtrace::Report {
+            header: None,
+            frames: vec![backtrace::Frame {
+                address: 0x400d_1fb2,
+                function: None,
+                file: None,
+                line: None,
+            }],
+            warning: None,
+        });
+        app.push_line("Backtrace:0x400d2e9d:0x3ffb2190");
+        let pending = app.take_pending_backtrace().unwrap();
+        assert_eq!(pending.addresses, vec![0x400d_2e9d]);
+    }
+
+    #[test]
+    fn push_line_backtrace_line_not_confused_by_displayed_repeated_address() {
+        // Regression: comparing against an address list *reconstructed*
+        // from the displayed report's frames (collapsing consecutive
+        // duplicates) was ambiguous whenever the original pre-resolve
+        // list had a genuine consecutive repeat (e.g. a corrupted-stack
+        // unwind stuck re-reporting the same return address) -- that
+        // collapses to the same shape as a single occurrence of that
+        // address, so a later, distinct single-address crash would be
+        // wrongly swallowed as "the same" crash. Comparing against the
+        // exact stored pre-resolve list (not a reconstruction) fixes it.
+        let mut app = app();
+        app.set_backtrace(
+            vec![0x400d_1fb2, 0x400d_1fb2],
+            backtrace::Report {
+                header: None,
+                frames: vec![
+                    backtrace::Frame {
+                        address: 0x400d_1fb2,
+                        function: None,
+                        file: None,
+                        line: None,
+                    },
+                    backtrace::Frame {
+                        address: 0x400d_1fb2,
+                        function: None,
+                        file: None,
+                        line: None,
+                    },
+                ],
+                warning: None,
+            },
+        );
+        app.push_line("Backtrace:0x400d1fb2:0x3ffb2170");
+        let pending = app.take_pending_backtrace().unwrap();
+        assert_eq!(pending.addresses, vec![0x400d_1fb2]);
+    }
+
+    #[test]
+    fn push_line_non_backtrace_line_leaves_pending_request_empty() {
+        let mut app = app();
+        app.push_line("I (1) wifi: connected");
+        assert!(app.take_pending_backtrace().is_none());
+    }
+
+    #[test]
+    fn push_line_backtrace_header_lookback_finds_recent_guru_meditation() {
+        let mut app = app();
+        app.push_line("Guru Meditation Error: Core 0 panic'ed (LoadProhibited)");
+        app.push_line("Register dump:");
+        app.push_line("Backtrace:0x400d1fb2:0x3ffb2170");
+        let pending = app.take_pending_backtrace().unwrap();
+        assert_eq!(
+            pending.header.as_deref(),
+            Some("Guru Meditation Error: Core 0 panic'ed (LoadProhibited)")
+        );
+    }
+
+    #[test]
+    fn push_line_backtrace_header_lookback_outside_window_is_none() {
+        let mut app = app();
+        app.push_line("Guru Meditation Error: Core 0 panic'ed (LoadProhibited)");
+        for i in 0..GURU_MEDITATION_LOOKBACK {
+            app.push_line(&format!("I (1) tag: filler {i}"));
+        }
+        app.push_line("Backtrace:0x400d1fb2:0x3ffb2170");
+        let pending = app.take_pending_backtrace().unwrap();
+        assert!(pending.header.is_none());
+    }
+
+    #[test]
+    fn set_backtrace_precomputes_display_lines() {
+        let mut app = app();
+        assert!(app.backtrace_lines().is_none());
+        app.set_backtrace_for_test(backtrace::Report {
+            header: Some("Guru Meditation Error: test".to_owned()),
+            frames: vec![backtrace::Frame {
+                address: 0x1,
+                function: Some("foo".to_owned()),
+                file: None,
+                line: None,
+            }],
+            warning: None,
+        });
+        // Lines exist immediately after set_backtrace, without any render
+        // pass having run, confirming they're precomputed once per resolve
+        // rather than rebuilt from the report on every render call.
+        let lines = app.backtrace_lines().unwrap();
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn backtrace_wrapped_len_returns_correct_value_for_a_fresh_width() {
+        let mut app = app();
+        app.set_backtrace_for_test(backtrace::Report {
+            header: Some("Guru Meditation Error: test".to_owned()),
+            frames: vec![backtrace::Frame {
+                address: 0x1,
+                function: Some("foo".to_owned()),
+                file: None,
+                line: None,
+            }],
+            warning: None,
+        });
+        let lines = app.backtrace_lines().unwrap().to_vec();
+        assert_eq!(
+            app.backtrace_wrapped_len(40),
+            Some(crate::ui::wrapped_row_count(&lines, 40))
+        );
+    }
+
+    #[test]
+    fn backtrace_wrapped_len_reuses_cached_value_for_the_same_width() {
+        let mut app = app();
+        app.set_backtrace_for_test(backtrace::Report {
+            header: Some("Guru Meditation Error: test".to_owned()),
+            frames: vec![backtrace::Frame {
+                address: 0x1,
+                function: Some("foo".to_owned()),
+                file: None,
+                line: None,
+            }],
+            warning: None,
+        });
+        let real_len = app.backtrace_wrapped_len(40).unwrap();
+        // Stuff a deliberately wrong cached value for the same width; if
+        // the cache is actually consulted (not recomputed every call),
+        // this wrong value comes back unchanged.
+        app.backtrace
+            .as_ref()
+            .unwrap()
+            .wrapped_len_cache
+            .set(Some((40, real_len + 100)));
+        assert_eq!(app.backtrace_wrapped_len(40), Some(real_len + 100));
+        // A different width must not reuse that stale entry.
+        assert_ne!(app.backtrace_wrapped_len(20), Some(real_len + 100));
+    }
+
+    #[test]
+    fn set_backtrace_opens_popup_and_resets_scroll() {
+        let mut app = app();
+        app.set_backtrace_for_test(backtrace::Report {
+            header: None,
+            frames: Vec::new(),
+            warning: None,
+        });
+        app.set_backtrace_max_scroll(20);
+        app.handle_key(key(KeyCode::PageDown));
+        assert_eq!(app.backtrace_scroll(), 10);
+        // A second panic replaces the report while the popup is already open.
+        app.set_backtrace_for_test(backtrace::Report {
+            header: None,
+            frames: Vec::new(),
+            warning: None,
+        });
+        assert!(app.is_backtrace_open());
+        assert_eq!(app.backtrace_scroll(), 0);
+        assert!(app.backtrace().is_some());
+    }
+
+    #[test]
+    fn toggle_backtrace_action_is_noop_without_report() {
+        let mut app = app();
+        app.apply_keymap(key(KeyCode::Char('b')));
+        assert!(!app.is_backtrace_open());
+    }
+
+    #[test]
+    fn toggle_backtrace_action_toggles_visibility_when_report_present() {
+        let mut app = app();
+        app.set_backtrace_for_test(backtrace::Report {
+            header: None,
+            frames: Vec::new(),
+            warning: None,
+        });
+        assert!(app.is_backtrace_open());
+        app.apply_keymap(key(KeyCode::Char('b')));
+        assert!(!app.is_backtrace_open());
+        app.apply_keymap(key(KeyCode::Char('b')));
+        assert!(app.is_backtrace_open());
+    }
+
+    #[test]
+    fn handle_key_backtrace_popup_esc_closes_without_clearing_report() {
+        let mut app = app();
+        app.set_backtrace_for_test(backtrace::Report {
+            header: None,
+            frames: Vec::new(),
+            warning: None,
+        });
+        app.handle_key(key(KeyCode::Esc));
+        assert!(!app.is_backtrace_open());
+        assert!(app.backtrace().is_some());
+    }
+
+    fn empty_backtrace_report() -> backtrace::Report {
+        backtrace::Report {
+            header: None,
+            frames: Vec::new(),
+            warning: None,
+        }
+    }
+
+    #[test]
+    fn open_backtrace_popup_prefills_elf_input_from_elf_path() {
+        let mut app = app();
+        app.set_elf_path(std::path::PathBuf::from("/tmp/firmware.elf"));
+        app.set_backtrace_for_test(empty_backtrace_report());
+        assert_eq!(
+            app.backtrace_elf_input().unwrap().value(),
+            "/tmp/firmware.elf"
+        );
+    }
+
+    #[test]
+    fn open_backtrace_popup_with_no_elf_path_prefills_empty_input() {
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        assert_eq!(app.backtrace_elf_input().unwrap().value(), "");
+    }
+
+    #[test]
+    fn set_backtrace_does_not_reset_elf_input_when_already_open() {
+        let mut app = app();
+        app.set_elf_path(std::path::PathBuf::from("/tmp/firmware.elf"));
+        app.set_backtrace_for_test(empty_backtrace_report());
+        app.backtrace_elf_input_mut()
+            .unwrap()
+            .apply_key(key(KeyCode::Char('X')));
+        // A second panic replaces the report while the popup is already open.
+        app.set_backtrace_for_test(empty_backtrace_report());
+        assert_eq!(
+            app.backtrace_elf_input().unwrap().value(),
+            "/tmp/firmware.elfX"
+        );
+    }
+
+    #[test]
+    fn toggle_backtrace_reopen_reinitializes_elf_input_from_current_elf_path() {
+        let mut app = app();
+        app.set_elf_path(std::path::PathBuf::from("/tmp/old.elf"));
+        app.set_backtrace_for_test(empty_backtrace_report());
+        app.backtrace_elf_input_mut()
+            .unwrap()
+            .apply_key(key(KeyCode::Char('X')));
+        app.handle_key(key(KeyCode::Esc));
+        assert!(!app.is_backtrace_open());
+        app.set_elf_path(std::path::PathBuf::from("/tmp/new.elf"));
+        app.apply_keymap(key(KeyCode::Char('b')));
+        assert!(app.is_backtrace_open());
+        assert_eq!(app.backtrace_elf_input().unwrap().value(), "/tmp/new.elf");
+    }
+
+    #[test]
+    fn handle_key_backtrace_popup_char_types_into_elf_input() {
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        for ch in "/tmp/foo.elf".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(app.backtrace_elf_input().unwrap().value(), "/tmp/foo.elf");
+    }
+
+    #[test]
+    fn handle_key_backtrace_popup_backspace_and_arrows_edit_elf_input() {
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        for ch in "/tmp/foo".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Backspace));
+        app.handle_key(key(KeyCode::Left));
+        app.handle_key(key(KeyCode::Char('X')));
+        assert_eq!(app.backtrace_elf_input().unwrap().value(), "/tmp/fXo");
+    }
+
+    #[test]
+    fn handle_key_backtrace_popup_up_down_pageup_pagedown_scroll_frames_not_box() {
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        app.set_backtrace_max_scroll(20);
+        for ch in "/tmp/foo.elf".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.backtrace_scroll(), 0);
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.backtrace_scroll(), 2);
+        app.handle_key(key(KeyCode::PageDown));
+        assert_eq!(app.backtrace_scroll(), 12);
+        app.handle_key(key(KeyCode::PageUp));
+        assert_eq!(app.backtrace_scroll(), 2);
+        assert_eq!(app.backtrace_elf_input().unwrap().value(), "/tmp/foo.elf");
+    }
+
+    // Regression: without the `is_modal_safe_key` guard, a bare `q` (bound to
+    // `QuitPrompt`, and thus treated as a cancel key) or a preset-remapped
+    // scroll letter would fire that action instead of typing into the box.
+    #[test]
+    fn handle_key_backtrace_popup_letter_bound_to_quit_prompt_still_types() {
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        for ch in "/tmp/quinn.elf".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert!(app.is_backtrace_open());
+        assert_eq!(app.backtrace_elf_input().unwrap().value(), "/tmp/quinn.elf");
+    }
+
+    fn elf_fixture_dir(name: &str) -> std::path::PathBuf {
+        let dir = unique_temp_path(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn handle_key_backtrace_popup_tab_single_match_autocompletes() {
+        let dir = elf_fixture_dir("esp-tui-backtrace-popup-single");
+        std::fs::write(dir.join("only.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        for ch in format!("{}/on", dir.display()).chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(
+            app.backtrace_elf_input().unwrap().value(),
+            dir.join("only.elf").to_str().unwrap()
+        );
+        assert!(app.backtrace_elf_input().unwrap().completions().is_empty());
+    }
+
+    #[test]
+    fn handle_key_backtrace_popup_tab_multiple_matches_shows_completions() {
+        let dir = elf_fixture_dir("esp-tui-backtrace-popup-multi");
+        std::fs::write(dir.join("fw_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        std::fs::write(dir.join("fw_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        for ch in format!("{}/fw", dir.display()).chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.backtrace_elf_input().unwrap().completions().len(), 2);
+    }
+
+    #[test]
+    fn handle_key_backtrace_popup_up_down_navigate_completions_when_dropdown_open() {
+        let dir = elf_fixture_dir("esp-tui-backtrace-popup-arrow-nav");
+        std::fs::write(dir.join("fw_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        std::fs::write(dir.join("fw_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        for ch in format!("{}/fw", dir.display()).chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Tab));
+        let start = app.backtrace_elf_input().unwrap().completion_cursor();
+        app.handle_key(key(KeyCode::Down));
+        assert_ne!(
+            app.backtrace_elf_input().unwrap().completion_cursor(),
+            start
+        );
+        // Arrow navigation of the dropdown must not also move the frame scroll.
+        assert_eq!(app.backtrace_scroll(), 0);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(
+            app.backtrace_elf_input().unwrap().completion_cursor(),
+            start
+        );
+    }
+
+    #[test]
+    fn handle_key_backtrace_popup_back_tab_cycles_completion_backward() {
+        let dir = elf_fixture_dir("esp-tui-backtrace-popup-backtab");
+        std::fs::write(dir.join("fw_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        std::fs::write(dir.join("fw_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        for ch in format!("{}/fw", dir.display()).chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Tab));
+        let forward = app.backtrace_elf_input().unwrap().completion_cursor();
+        app.handle_key(key(KeyCode::BackTab));
+        app.handle_key(key(KeyCode::BackTab));
+        assert_eq!(
+            app.backtrace_elf_input().unwrap().completion_cursor(),
+            forward
+        );
+    }
+
+    #[test]
+    fn handle_key_backtrace_popup_enter_with_completions_accepts_not_loads() {
+        let dir = elf_fixture_dir("esp-tui-backtrace-popup-enter-accept");
+        std::fs::write(dir.join("fw_a.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        std::fs::write(dir.join("fw_b.elf"), b"\x7fELF\x00\x00\x00\x00").unwrap();
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        for ch in format!("{}/fw", dir.display()).chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        app.handle_key(key(KeyCode::Tab));
+        assert!(!app.backtrace_elf_input().unwrap().completions().is_empty());
+        let action = app.handle_key(key(KeyCode::Enter));
+        assert_eq!(action, Action::None);
+        assert!(app.backtrace_elf_input().unwrap().completions().is_empty());
+        assert!(app.elf_path().is_none());
+    }
+
+    #[test]
+    fn handle_key_backtrace_popup_enter_without_completions_returns_load_action() {
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        for ch in "/tmp/foo.elf".chars() {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter)),
+            Action::LoadBacktraceElf
+        );
+    }
+
+    #[test]
+    fn handle_key_backtrace_popup_esc_discards_draft() {
+        let mut app = app();
+        app.set_elf_path(std::path::PathBuf::from("/tmp/original.elf"));
+        app.set_backtrace_for_test(empty_backtrace_report());
+        app.backtrace_elf_input_mut()
+            .unwrap()
+            .apply_key(key(KeyCode::Char('X')));
+        app.handle_key(key(KeyCode::Esc));
+        app.apply_keymap(key(KeyCode::Char('b')));
+        assert_eq!(
+            app.backtrace_elf_input().unwrap().value(),
+            "/tmp/original.elf"
+        );
+    }
+
+    fn seed_backtrace_elf_input(app: &mut App, value: &str) {
+        if let Some(s) = app.backtrace_elf_input_mut() {
+            for ch in value.chars() {
+                s.push_char(ch);
+            }
+        }
+    }
+
+    #[test]
+    fn handle_action_load_backtrace_elf_nonexistent_path_sets_status_and_does_not_mutate(
+    ) {
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        seed_backtrace_elf_input(&mut app, "/nonexistent/path/to.elf");
+        handle_action(&mut app, Action::LoadBacktraceElf, &make_tx());
+        assert!(app.elf_path().is_none());
+        assert!(app.is_backtrace_open());
+        assert_eq!(app.status_msg(), Some("Path not found."));
+        assert_eq!(app.backtrace().unwrap().frames.len(), 0);
+    }
+
+    #[test]
+    fn handle_action_load_backtrace_elf_directory_rejected() {
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        seed_backtrace_elf_input(&mut app, std::env::temp_dir().to_str().unwrap());
+        handle_action(&mut app, Action::LoadBacktraceElf, &make_tx());
+        assert!(app.elf_path().is_none());
+        assert!(app.is_backtrace_open());
+        assert_eq!(app.status_msg(), Some("Path is a directory."));
+    }
+
+    #[test]
+    fn handle_action_load_backtrace_elf_non_elf_rejected() {
+        let path = unique_temp_path("esp-tui-backtrace-popup-not-elf");
+        std::fs::write(&path, b"not an elf file").unwrap();
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        seed_backtrace_elf_input(&mut app, path.to_str().unwrap());
+        handle_action(&mut app, Action::LoadBacktraceElf, &make_tx());
+        assert!(app.elf_path().is_none());
+        assert!(app.is_backtrace_open());
+        assert_eq!(app.status_msg(), Some("Not a valid ELF file."));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn handle_action_load_backtrace_elf_valid_updates_elf_path_and_reresolves()
+    {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/panic_test.elf");
+        let mut app = app();
+        app.set_backtrace_for_test(backtrace::Report {
+            header: Some("Guru Meditation Error: Core 0 panic'ed".to_owned()),
+            frames: vec![backtrace::Frame {
+                address: 0x0,
+                function: None,
+                file: None,
+                line: None,
+            }],
+            warning: Some("No ELF file loaded; showing raw addresses.".to_owned()),
+        });
+        seed_backtrace_elf_input(&mut app, fixture.to_str().unwrap());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_action(&mut app, Action::LoadBacktraceElf, &tx);
+        assert_eq!(app.elf_path(), Some(fixture.as_path()));
+        let msg = rx.recv().await.unwrap();
+        handle_event_message(&mut app, msg, DEFAULT_BAUD, &tx);
+        let report = app.backtrace().unwrap();
+        assert_eq!(report.frames[0].function.as_deref(), Some("add"));
+        assert!(report.warning.is_none());
+        assert!(app.is_backtrace_open());
+    }
+
+    #[tokio::test]
+    async fn handle_action_load_backtrace_elf_valid_updates_prefill_seen_by_flash_selector(
+    ) {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/panic_test.elf");
+        let mut app = app();
+        app.set_backtrace_for_test(empty_backtrace_report());
+        seed_backtrace_elf_input(&mut app, fixture.to_str().unwrap());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_action(&mut app, Action::LoadBacktraceElf, &tx);
+        let msg = rx.recv().await.unwrap();
+        handle_event_message(&mut app, msg, DEFAULT_BAUD, &tx);
+        let prefill = app.elf_path().map(std::path::Path::to_path_buf);
+        app.open_elf_selector(prefill.as_deref());
+        assert_eq!(
+            app.elf_selector().unwrap().value(),
+            fixture.to_str().unwrap()
+        );
     }
 
     #[test]

@@ -19,7 +19,7 @@ enum Command {
         target: BuildTarget,
     },
     /// Remove all build artifacts (workspace target/, examples/rust/target/,
-    /// examples/c/build/)
+    /// examples/c/build/, examples/panic/build/)
     Clean,
 }
 
@@ -31,10 +31,10 @@ enum BuildTarget {
         #[arg(long, value_parser = PossibleValuesParser::new(agent::TARGETS))]
         target: Option<String>,
     },
-    /// Build the C and/or Rust example projects
+    /// Build the C, Rust, and/or panic example projects
     Examples {
-        /// Which example to build: c or rust (builds both when omitted)
-        #[arg(value_parser = PossibleValuesParser::new(["c", "rust"]))]
+        /// Which example to build: c, rust, or panic (builds all three when omitted)
+        #[arg(value_parser = PossibleValuesParser::new(["c", "rust", "panic"]))]
         lang: Option<String>,
         /// Target triple to build; builds all ESP-IDF targets when omitted
         #[arg(long, value_parser = PossibleValuesParser::new(agent::TARGETS))]
@@ -61,6 +61,7 @@ fn clean() -> anyhow::Result<()> {
         root.join("target"),
         root.join("examples").join("rust").join("target"),
         root.join("examples").join("c").join("build"),
+        root.join("examples").join("panic").join("build"),
     ] {
         match std::fs::remove_dir_all(&dir) {
             Ok(()) => println!("removed {}", dir.display()),

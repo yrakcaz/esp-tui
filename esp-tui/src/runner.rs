@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::{interval, Duration};
 
 use crate::app::{Action, App, Pane, DEFAULT_BAUD};
-use crate::{config, elf, event, flash, serial, ui};
+use crate::{backtrace, config, elf, event, flash, serial, ui};
 
 /// Which pane to focus on startup.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -48,6 +48,11 @@ struct Args {
     /// Keybinding preset to use ("vim", "emacs", or a path to a preset .toml file).
     #[arg(long)]
     preset: Option<String>,
+
+    /// Path to an ELF firmware image, used to pre-fill the flash selector
+    /// and to resolve panic backtrace symbols.
+    #[arg(long)]
+    elf: Option<PathBuf>,
 }
 
 const MSG_OP_IN_PROGRESS: &str = "Operation already in progress.";
@@ -210,22 +215,86 @@ fn spawn_port_poller(
     });
 }
 
+/// Validates a typed ELF path, shared by the flash selector and the
+/// backtrace popup's ELF input.
+///
+/// # Arguments
+///
+/// * `value` - The raw path text as typed.
+///
+/// # Returns
+///
+/// `Ok` with the validated path, or `Err` with a user-facing status message.
+fn validate_elf_path(value: &str) -> Result<PathBuf, &'static str> {
+    let path = PathBuf::from(value);
+    if path.is_dir() {
+        Err("Path is a directory.")
+    } else if !path.is_file() {
+        Err("Path not found.")
+    } else if !elf::is_elf_file(&path) {
+        Err("Not a valid ELF file.")
+    } else {
+        Ok(path)
+    }
+}
+
 fn confirm_elf_path(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
     let value = app
         .elf_selector()
         .map(|s| s.value().to_owned())
         .unwrap_or_default();
-    let path = PathBuf::from(&value);
-    if path.is_dir() {
-        app.set_status("Path is a directory.");
-    } else if !path.is_file() {
-        app.set_status("Path not found.");
-    } else if !elf::is_elf_file(&path) {
-        app.set_status("Not a valid ELF file.");
-    } else {
-        app.set_elf_path(path);
-        app.close_elf_selector();
-        do_flash(app, tx);
+    match validate_elf_path(&value) {
+        Err(msg) => app.set_status(msg),
+        Ok(path) => {
+            app.set_elf_path(path);
+            app.close_elf_selector();
+            do_flash(app, tx);
+        }
+    }
+}
+
+// Shared by `load_backtrace_elf` and `dispatch_pending_backtrace`: resolving
+// against the ELF requires a file read + DWARF parse, so it's dispatched on
+// a blocking task, with the result sent back as a `BacktraceResolved`
+// message for the event loop to apply.
+fn spawn_backtrace_resolve(
+    header: Option<String>,
+    addresses: Vec<u64>,
+    elf_path: PathBuf,
+    generation: u64,
+    tx: &mpsc::UnboundedSender<event::Message>,
+) {
+    let tx_task = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let report_addresses = addresses.clone();
+        let report = backtrace::build_report(header, addresses, Some(&elf_path));
+        let _ = tx_task.send(event::Message::BacktraceResolved {
+            generation,
+            addresses: report_addresses,
+            report,
+        });
+    });
+}
+
+fn load_backtrace_elf(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
+    let value = app
+        .backtrace_elf_input()
+        .map(|s| s.value().to_owned())
+        .unwrap_or_default();
+    match validate_elf_path(&value) {
+        Err(msg) => app.set_status(msg),
+        Ok(path) => {
+            app.set_elf_path(path.clone());
+            if let Some(report) = app.backtrace() {
+                let header = report.header.clone();
+                // The exact pre-resolve address list (not reconstructed
+                // from `report`'s frames, which is ambiguous whenever an
+                // address expands to multiple inline frames).
+                let addresses = app.backtrace_addresses().unwrap_or(&[]).to_vec();
+                let generation = app.next_backtrace_generation();
+                spawn_backtrace_resolve(header, addresses, path, generation, tx);
+            }
+        }
     }
 }
 
@@ -257,6 +326,37 @@ fn spawn_hardware_op<F>(
         std::thread::sleep(std::time::Duration::from_millis(200));
         let _ = tx_task.send(op());
     });
+}
+
+// Address extraction/header lookback happen in `App::push_line` (pure, no
+// I/O); resolving against the ELF requires a file read + DWARF parse, so
+// that part is dispatched here on a blocking task, consistent with the rest
+// of the app.rs/runner.rs I/O split.
+fn dispatch_pending_backtrace(
+    app: &mut App,
+    tx: &mpsc::UnboundedSender<event::Message>,
+) {
+    if let Some(pending) = app.take_pending_backtrace() {
+        // Bumped for both branches, even the synchronous one below: this
+        // makes it "current" and correctly supersedes any older async
+        // resolve still in flight, so that one is dropped on arrival
+        // instead of overwriting this newer report.
+        let generation = app.next_backtrace_generation();
+        if let Some(elf_path) = app.elf_path().map(Path::to_path_buf) {
+            spawn_backtrace_resolve(
+                pending.header,
+                pending.addresses,
+                elf_path,
+                generation,
+                tx,
+            );
+        } else {
+            let addresses = pending.addresses.clone();
+            let report =
+                backtrace::build_report(pending.header, pending.addresses, None);
+            app.set_backtrace(addresses, report);
+        }
+    }
 }
 
 fn do_flash(app: &mut App, tx: &mpsc::UnboundedSender<event::Message>) {
@@ -331,6 +431,7 @@ pub(crate) fn handle_action(
             app.close_elf_selector();
         }
         Action::ConfirmElfPath => confirm_elf_path(app, tx),
+        Action::LoadBacktraceElf => load_backtrace_elf(app, tx),
         Action::ResetDevice => {
             if app.is_flashing() {
                 app.set_status(MSG_OP_IN_PROGRESS);
@@ -403,7 +504,10 @@ pub(crate) fn handle_event_message(
             let action = app.handle_key(key);
             handle_action(app, action, tx);
         }
-        event::Message::Serial(line) => app.push_line(&line),
+        event::Message::Serial(line) => {
+            app.push_line(&line);
+            dispatch_pending_backtrace(app, tx);
+        }
         event::Message::Disconnected => {
             app.disconnect();
             app.set_status("Disconnected.");
@@ -476,6 +580,13 @@ pub(crate) fn handle_event_message(
                 begin_reconnect(&port, baud, tx);
             }
         }
+        event::Message::BacktraceResolved {
+            generation,
+            addresses,
+            report,
+        } => {
+            app.apply_backtrace_if_current(generation, addresses, report);
+        }
     }
 }
 
@@ -485,6 +596,7 @@ async fn run_inner(args: Args, mut cfg: config::Config) -> anyhow::Result<()> {
     let port_arg = args.port.or(cfg.serial.port.take());
 
     cfg.keys.preset = args.preset.or(cfg.keys.preset.take());
+    cfg.flash.elf_path = args.elf.or(cfg.flash.elf_path.take());
 
     let initial_pane = args
         .pane

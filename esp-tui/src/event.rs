@@ -38,4 +38,14 @@ pub(crate) enum Message {
     DeviceInfo(anyhow::Result<crate::flash::DeviceInfo>),
     /// Erase operation completed; carries the result.
     EraseDone(anyhow::Result<()>),
+    /// A panic backtrace was resolved against the configured ELF file;
+    /// `generation` ties the result back to the resolve request that
+    /// produced it, so a stale (superseded) result can be recognized and
+    /// dropped instead of overwriting a newer one. `addresses` is the
+    /// exact pre-resolve address list `report` was built from.
+    BacktraceResolved {
+        generation: u64,
+        addresses: Vec<u64>,
+        report: crate::backtrace::Report,
+    },
 }

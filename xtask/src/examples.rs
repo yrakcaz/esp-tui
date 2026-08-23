@@ -7,7 +7,8 @@ const ESP_IDF_VERSION: &str = "v5.3.1";
 ///
 /// # Arguments
 ///
-/// * `filter` - Optional example selector; `"c"`, `"rust"`, or `None` for both.
+/// * `filter` - Optional example selector; `"c"`, `"rust"`, `"panic"`, or
+///   `None` for all three.
 /// * `target` - Optional target triple; must be one of [`crate::agent::TARGETS`].
 ///   When `None`, iterates over all [`crate::agent::TARGETS`].
 ///
@@ -24,10 +25,11 @@ pub(crate) fn build(
     } else {
         None
     };
-    // C-only: IDF must already be installed; run idf_tools.py install once upfront.
-    // Both: IDF is installed by esp-idf-sys during the first Rust build, so defer
-    // the idf_tools.py call to after that build (tracked by idf_tools_done below).
-    if matches!(filter, Some("c")) {
+    // C/panic-only: IDF must already be installed; run idf_tools.py install once
+    // upfront. All/rust: IDF is installed by esp-idf-sys during the first Rust
+    // build, so defer the idf_tools.py call to after that build (tracked by
+    // idf_tools_done below).
+    if matches!(filter, Some("c" | "panic")) {
         ensure_idf_tools()?;
     }
     let mut idf_tools_done = false;
@@ -41,11 +43,15 @@ pub(crate) fn build(
                     idf_tools_done = true;
                 }
                 build_c(t)?;
+                build_panic(t)?;
             }
             Some("rust") => build_rust(t, esp_env.as_deref().unwrap())?,
             Some("c") => build_c(t)?,
+            Some("panic") => build_panic(t)?,
             Some(other) => {
-                anyhow::bail!("unknown example {other:?}; valid options: c, rust")
+                anyhow::bail!(
+                    "unknown example {other:?}; valid options: c, rust, panic"
+                )
             }
         }
     }
@@ -89,8 +95,8 @@ fn ensure_idf_tools() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_c(target: &str) -> anyhow::Result<()> {
-    println!("building C example for {target}...");
+fn build_idf_project(target: &str, dir_name: &str) -> anyhow::Result<()> {
+    println!("building {dir_name} example for {target}...");
     let chip = chip_for_target(target)?;
     let idf_path = resolve_idf_path()?;
     let idf_py = std::path::Path::new(&idf_path).join("tools").join("idf.py");
@@ -99,7 +105,9 @@ fn build_c(target: &str) -> anyhow::Result<()> {
         "idf.py not found at {}; check IDF_PATH",
         idf_py.display()
     );
-    let example_dir = crate::agent::workspace_root().join("examples").join("c");
+    let example_dir = crate::agent::workspace_root()
+        .join("examples")
+        .join(dir_name);
     let build_dir = format!("build/{chip}");
     for step in [
         format!("-B {build_dir} set-target {chip}"),
@@ -117,8 +125,16 @@ fn build_c(target: &str) -> anyhow::Result<()> {
             "idf.py {step} failed"
         );
     }
-    println!("  -> examples/c [{target}] built");
+    println!("  -> examples/{dir_name} [{target}] built");
     Ok(())
+}
+
+fn build_c(target: &str) -> anyhow::Result<()> {
+    build_idf_project(target, "c")
+}
+
+fn build_panic(target: &str) -> anyhow::Result<()> {
+    build_idf_project(target, "panic")
 }
 
 fn chip_for_target(target: &str) -> anyhow::Result<&'static str> {
